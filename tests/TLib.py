@@ -21,8 +21,9 @@ from io import BytesIO, StringIO
 __all__ = ['HOSTNAME', 'load_cfg', 'make_temp_filename', 'make_temp_file',
            'make_temp_dir', 'CLI_main']
 
-# Get machine short hostname
-HOSTNAME = socket.gethostname().split('.', 1)[0]
+# Get machine short hostname; allow override for CI/environments where the
+# short hostname is not resolvable via SSH (e.g. macOS random hostnames).
+HOSTNAME = os.environ.get('CSTEST_HOSTNAME') or socket.gethostname().split('.', 1)[0]
 
 class TBytesIO(BytesIO):
     """Standard stream of in memory bytes for testing purpose."""

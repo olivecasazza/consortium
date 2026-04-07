@@ -1,0 +1,12 @@
+[package]
+name = "consortium"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core library — Rust implementation of ClusterShell"
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]

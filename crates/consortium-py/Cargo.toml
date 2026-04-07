@@ -1,0 +1,15 @@
+[package]
+name = "consortium-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for consortium (ClusterShell-compatible API)"
+
+[lib]
+name = "_consortium"
+crate-type = ["cdylib"]
+
+[dependencies]
+consortium.workspace = true
+pyo3.workspace = true

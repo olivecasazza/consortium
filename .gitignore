@@ -1,2 +1,26 @@
-.gitignore
+# Rust
+/target/
+# Note: Cargo.lock is tracked (required by Crane/Nix builds)
+
+# Python
+__pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.so
+*.dylib
+
+# Nix
+/result
+/result-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.fastembed_cache/

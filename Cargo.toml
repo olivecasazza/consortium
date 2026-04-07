@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/consortium",
+    "crates/consortium-py",
+]
+
+[workspace.metadata.crane]
+name = "consortium"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+repository = "https://github.com/olivecasazza/consortium"
+description = "A Rust rewrite of ClusterShell with Python bindings"
+
+[workspace.dependencies]
+consortium = { path = "crates/consortium" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+thiserror = "2"
