@@ -1,0 +1,3 @@
+[profile.ci]
+# Fail-fast off so we get all results
+fail-fast = false
