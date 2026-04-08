@@ -163,6 +163,14 @@
 
             shellHook = ''
               export RUST_BACKTRACE=1
+
+              # Create a venv if one doesn't exist (maturin develop needs it)
+              if [ ! -d .venv ]; then
+                echo "  Creating .venv for maturin..."
+                python3 -m venv .venv --system-site-packages
+              fi
+              source .venv/bin/activate
+
               export PYTHONPATH="$PWD/lib:$PYTHONPATH"
               ${config.pre-commit.installationScript}
 
@@ -171,8 +179,8 @@
               echo "  ─────────────────────────────────────────"
               echo "  cargo test                    — Rust tests"
               echo "  cargo watch -x test           — Rust TDD"
-              echo "  pytest tests/ -v              — Python tests (original ClusterShell)"
               echo "  maturin develop               — build Rust→Python bindings"
+              echo "  pytest tests/ -v              — Python tests (original ClusterShell)"
               echo "  pytest tests/ -v              — Python tests (Rust-backed)"
               echo ""
             '';

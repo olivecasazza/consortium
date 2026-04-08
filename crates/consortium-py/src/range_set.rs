@@ -44,12 +44,12 @@ impl PyRangeSet {
         self.inner.len()
     }
 
-    fn __contains__(&self, value: u32) -> bool {
-        self.inner.contains(value)
+    fn __contains__(&self, value: i64) -> bool {
+        self.inner.contains_int(value)
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyResult<Py<RangeSetIterator>> {
-        let values: Vec<u32> = slf.inner.iter().collect();
+        let values: Vec<i64> = slf.inner.intiter().collect();
         Py::new(slf.py(), RangeSetIterator { values, index: 0 })
     }
 
@@ -112,7 +112,7 @@ impl PyRangeSet {
 
 #[pyclass]
 struct RangeSetIterator {
-    values: Vec<u32>,
+    values: Vec<i64>,
     index: usize,
 }
 
@@ -122,7 +122,7 @@ impl RangeSetIterator {
         slf
     }
 
-    fn __next__(&mut self) -> Option<u32> {
+    fn __next__(&mut self) -> Option<i64> {
         if self.index < self.values.len() {
             let val = self.values[self.index];
             self.index += 1;
