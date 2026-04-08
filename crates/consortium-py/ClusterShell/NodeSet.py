@@ -1,4 +1,20 @@
-"""ClusterShell.NodeSet — Rust-backed via consortium."""
+"""ClusterShell.NodeSet — backend-aware shim.
 
-from ClusterShell._consortium import NodeSet
-from ClusterShell._consortium import NodeSetParseError
+When CONSORTIUM_BACKEND=rust (default), imports from Rust PyO3 bindings.
+When no Rust binding exists yet, falls back to the original pure-Python source.
+When CONSORTIUM_BACKEND=python, this file is never reached (the __init__.py
+redirects the entire ClusterShell package to the original pure-Python source).
+"""
+
+try:
+    from ClusterShell._consortium import NodeSet, NodeSetParseError  # noqa: F401
+except ImportError:
+    # Rust binding not yet available — fall back to pure Python
+    import sys as _sys
+    import os as _os
+    _lib_dir = _os.path.normpath(
+        _os.path.join(_os.path.dirname(__file__), "..", "..", "..", "..", "lib")
+    )
+    if _lib_dir not in _sys.path:
+        _sys.path.insert(0, _lib_dir)
+    from ClusterShell.NodeSet import *  # noqa: F403
