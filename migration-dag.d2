@@ -1,0 +1,125 @@
+direction: down
+
+# Styling
+classes: {
+  done: {
+    style.fill: "#2d6a4f"
+    style.font-color: "#ffffff"
+    style.stroke: "#1b4332"
+    style.bold: true
+  }
+  stub: {
+    style.fill: "#f8f9fa"
+    style.stroke: "#adb5bd"
+  }
+  leaf: {
+    style.fill: "#e9ecef"
+    style.stroke: "#6c757d"
+    style.font-color: "#212529"
+  }
+  big: {
+    style.fill: "#fff3cd"
+    style.stroke: "#ffc107"
+    style.font-color: "#664d03"
+    style.bold: true
+  }
+}
+
+# --- Leaf modules (0 deps) ---
+RangeSet: "RangeSet ✅\n1241 lines, 100% parity" {
+  class: done
+}
+
+MsgTree: "MsgTree\n(0 deps)" {
+  class: leaf
+}
+
+Event: "Event\n(0 deps)" {
+  class: leaf
+}
+
+Defaults: "Defaults\n(0 deps)" {
+  class: leaf
+}
+
+NodeUtils: "NodeUtils\n(0 deps)" {
+  class: leaf
+}
+
+Engine: "Engine\n(0 deps)" {
+  class: leaf
+}
+
+# --- Mid-tier modules ---
+NodeSet: "NodeSet\n(big module)" {
+  class: big
+}
+
+Topology: "Topology" {
+  class: stub
+}
+
+Communication: "Communication" {
+  class: stub
+}
+
+Worker: "Worker" {
+  class: stub
+}
+
+# --- Upper-tier modules ---
+Propagation: "Propagation" {
+  class: stub
+}
+
+Gateway: "Gateway" {
+  class: stub
+}
+
+Task: "Task" {
+  class: stub
+}
+
+# --- Top-level ---
+CLI: "CLI\n(final layer)" {
+  class: stub
+}
+
+# --- Edges (dependency flows: dep -> dependent) ---
+RangeSet -> NodeSet
+Defaults -> NodeSet
+NodeUtils -> NodeSet
+
+NodeSet -> Topology
+NodeSet -> Propagation
+NodeSet -> Gateway
+NodeSet -> Task
+NodeSet -> CLI
+
+Event -> Communication
+Event -> Gateway
+
+Communication -> Propagation
+Communication -> Gateway
+
+Defaults -> Propagation
+Defaults -> Task
+
+Topology -> Propagation
+Topology -> Task
+
+Engine -> Worker
+Engine -> Gateway
+Engine -> Task
+
+Worker -> Gateway
+Worker -> Task
+
+MsgTree -> Task
+
+Propagation -> Task
+Propagation -> Gateway
+
+Task -> Gateway
+Task -> CLI
+Gateway -> CLI

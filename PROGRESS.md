@@ -1,68 +1,67 @@
 # Consortium Migration Progress
 
+## Migration DAG
+
+![Migration DAG](migration-dag.svg)
+
 ## Summary
 
 | Metric                | Count |
 |-----------------------|-------|
-| Total Python tests    |   698 |
+| Total Python tests    |   582 |
+| Mapped to Rust        |    37 |
 | Rust unit tests       |    43 |
-| Modules in progress   |     1 |
-| Progress              |  ~8%  |
+| Extra Rust tests      |    27 |
+| Modules complete      |     1 |
+| Modules remaining     |    13 |
 
 ## Per-Module Status
 
-| Module         | Rust impl | PyO3 binding | Python tests | Rust tests | Status      |
-|----------------|-----------|--------------|--------------|------------|-------------|
-| RangeSet       | done      | partial      | 57           | 41         | in progress |
-| RangeSetND     | stub      | -            | 23           | 0          | not started |
-| NodeSet        | partial   | partial      | 125          | 1          | in progress |
-| NodeSetGroup   | -         | -            | 76           | 0          | not started |
-| MsgTree        | stub      | -            | 11           | 1          | not started |
-| Defaults       | stub      | -            | 9            | 0          | not started |
-| Event          | stub      | -            | 20           | 0          | not started |
-| Topology       | stub      | -            | 25           | 0          | not started |
-| Task           | stub      | -            | 46           | 0          | not started |
-| Worker         | -         | -            | 85           | 0          | not started |
-| Gateway        | stub      | -            | 34           | 0          | not started |
-| CLI            | -         | -            | 135          | 0          | not started |
-| Misc           | -         | -            | 4            | 0          | not started |
+| Module         | Tier | Deps                                      | Rust impl | PyO3 | Status      |
+|----------------|------|-------------------------------------------|-----------|------|-------------|
+| RangeSet       | 0    | —                                         | done      | done | ✅ complete |
+| MsgTree        | 1    | —                                         | stub      | —    | not started |
+| Event          | 1    | —                                         | stub      | —    | not started |
+| Defaults       | 1    | —                                         | stub      | —    | not started |
+| NodeUtils      | 1    | —                                         | stub      | —    | not started |
+| Engine         | 1    | —                                         | stub      | —    | not started |
+| NodeSet        | 2    | RangeSet, Defaults, NodeUtils             | stub      | —    | not started |
+| Communication  | 2    | Event                                     | stub      | —    | not started |
+| Worker         | 2    | Engine                                    | stub      | —    | not started |
+| Topology       | 3    | NodeSet                                   | stub      | —    | not started |
+| Propagation    | 3    | Communication, Defaults, NodeSet, Topology| stub      | —    | not started |
+| Task           | 4    | most modules                              | stub      | —    | not started |
+| Gateway        | 4    | Comm, Event, NodeSet, Task, Engine, Worker| stub      | —    | not started |
+| CLI            | 5    | Task, Gateway, NodeSet                    | —         | —    | not started |
 
-## RangeSet Detailed Coverage
+## Tier Execution Order
 
-The RangeSet Rust implementation covers the core functionality:
+Modules within the same tier can be worked in parallel.
+
+- **Tier 0** — RangeSet ✅
+- **Tier 1** — MsgTree, Event, Defaults, NodeUtils, Engine (all independent, 0 deps)
+- **Tier 2** — NodeSet, Communication, Worker (depend on tier 0+1)
+- **Tier 3** — Topology, Propagation (depend on tier 2)
+- **Tier 4** — Task, Gateway (depend on most modules)
+- **Tier 5** — CLI (final layer)
+
+## RangeSet (Complete)
+
+- 1241 lines Rust, 43 unit tests, 57 Python parity tests at 100%
+- PyO3 bindings working via `maturin develop`
+- Backend switching via `CONSORTIUM_BACKEND=rust|python`
 
 ### Implemented
-- **Parsing**: Full pattern parsing with comma-separated subranges, `start-stop/step` syntax
-- **Padding**: Zero-padded ranges (`001-099`), mixed-width padding, padding mismatch errors
-- **Display/Fold**: Canonical string output with autostep-based folding (step detection)
-- **Set operations**: union, intersection, difference, symmetric_difference (+ `_update` variants)
-- **Element operations**: add, remove, discard, contains, len, sorted, intiter, add_range
-- **Properties**: autostep (get/set), padding
+- Parsing, padding, display/fold, autostep
+- Set operations: union, intersection, difference, symmetric_difference
+- Element operations: add, remove, discard, contains, len, sorted, intiter, add_range
 
-### 41 Rust tests mapping to Python RangeSetTest.py:
-- test_simple, test_step_simple, test_step_advanced, test_step_advanced_more, test_step_more_complex
-- test_bad_syntax (error cases)
-- test_padding, test_padding_display, test_padding_property, test_padding_mismatch_errors
-- test_mixed_padding, test_mixed_padding_with_different_widths
-- test_folding (autostep-based step detection)
-- test_intersection, test_intersection_step, test_intersection_complex, test_intersection_length
-- test_union, test_union_complex, test_update_complex
-- test_difference, test_difference_bounds, test_diff_step, test_diff_step_complex
-- test_symmetric_difference, test_symmetric_difference_complex
-- test_ior, test_iand, test_ixor, test_isub
-- test_add_remove, test_remove_and_discard, test_remove_missing_panics
-- test_contains, test_intiter, test_empty, test_large_range
-- test_copy, test_autostep_property
-- test_add_range_api, test_add_range_bounds
-
-### Not yet ported from Python
+### Not yet ported
 - Indexing / slicing (`__getitem__`, `__setitem__`)
 - `split()`, `contiguous()`, `dim()`, `slices()`
 - `fromlist()`, `fromone()` constructors
-- Iterator protocol (`__iter__`, `striter()`)
 - Comparison operators (`__gt__`, `__lt__`, `issubset`, `issuperset`)
-- Pickle/unpickle support
-- `__hash__`
+- Pickle/unpickle, `__hash__`
 
 ## Architecture
 
@@ -71,29 +70,32 @@ consortium/
   crates/
     consortium/          # Core Rust library
       src/
-        range_set.rs     # RangeSet (1250+ lines, 41 tests) ← ACTIVE
-        node_set.rs      # NodeSet (partial)
+        range_set.rs     # RangeSet (1241 lines, 43 tests) ✅
+        node_set.rs      # NodeSet (stub)
         msg_tree.rs      # MsgTree (stub)
-        lib.rs           # Module exports
         ...              # Other stubs
     consortium-py/       # PyO3 bindings
       src/
         range_set.rs     # Python-facing RangeSet wrapper
-        node_set.rs      # Python-facing NodeSet wrapper
-      ClusterShell/      # Python compatibility shims
+      ClusterShell/      # Python compatibility shims (backend switching)
+  harness/               # Migration test harness
+    generate_test_mapping.py
+    run_comparison.py
+    render_summary.py
+    cargo_to_junit.py
+    sync_upstream_tests.sh
   tests/                 # Original Python test suite (oracle)
+  TEST_MAPPING.toml      # 582 Python tests tracked
   flake.nix              # Nix flake (flake-parts + Crane)
 ```
 
-## Legend
+## Branch Strategy
 
-- Rust impl: `done` | `partial` | `stub` | `-`
-- PyO3 binding: `done` | `partial` | `-`
-- Status: `not started` | `in progress` | `done`
+Stacked feature branches merging back to master:
 
-## Next Steps
-
-1. Port remaining Python RangeSet tests (slicing, contiguous, split, iterators)
-2. Wire up PyO3 bindings so original Python tests pass against Rust backend
-3. Begin NodeSet implementation (depends on complete RangeSet)
-4. MsgTree implementation (independent, small)
+```
+master
+  └── feat/pyo3-binding-fixes
+        └── feat/migration-harness
+              └── feat/<next-module> ...
+```
