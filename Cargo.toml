@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/consortium",
     "crates/consortium-py",
+    "crates/consortium-cli",
 ]
 
 [workspace.metadata.crane]

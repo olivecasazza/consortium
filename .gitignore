@@ -25,5 +25,15 @@ build/
 .DS_Store
 .fastembed_cache/
 .venv
-results/
+.results/
 .env.local
+
+# Test reports
+test-reports/
+
+# Direnv / Hermes
+.direnv/
+.hermes/
+test_ini.rs
+results/
+scripts/

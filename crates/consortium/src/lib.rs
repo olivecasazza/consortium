@@ -16,6 +16,7 @@
 //! - [`task`] — Task orchestration (ClusterShell.Task)
 //! - [`gateway`] — Gateway node logic (ClusterShell.Gateway)
 //! - [`engine`] — I/O engine abstraction (ClusterShell.Engine)
+//! - [`worker`] — Worker abstraction for node execution (ClusterShell.Worker)
 
 pub mod communication;
 pub mod defaults;
@@ -29,3 +30,4 @@ pub mod propagation;
 pub mod range_set;
 pub mod task;
 pub mod topology;
+pub mod worker;
