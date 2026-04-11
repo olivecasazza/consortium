@@ -85,6 +85,15 @@
             }
           );
 
+          # ── CLI binaries (claw, molt, pinch) ─────────────────────────
+          consortium-cli = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoExtraArgs = "-p consortium-cli";
+            }
+          );
+
           # ── Python environment ─────────────────────────────────────────
           python = pkgs.python312;
           pythonEnv = python.withPackages (
@@ -139,7 +148,7 @@
 
           # ── Packages ───────────────────────────────────────────────────
           packages = {
-            inherit consortium;
+            inherit consortium consortium-cli;
             default = consortium;
           };
 
