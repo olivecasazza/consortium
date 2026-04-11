@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 
@@ -226,9 +226,23 @@ fn run(args: Args) -> anyhow::Result<i32> {
 
     // ── Create and run the task ────────────────────────────────────────
     let mut task = Task::new();
-    let worker = ExecWorker::new(node_list, effective_command, fanout, timeout).with_stderr(true);
-    let _worker_id = task.schedule(Box::new(worker), None, false);
+    let worker =
+        ExecWorker::new(node_list.clone(), effective_command, fanout, timeout).with_stderr(true);
 
+    // Set up progress tracking (only when stderr is a TTY and >1 node)
+    let num_nodes = node_list.len();
+    let show_progress = !args.quiet && is_terminal::is_terminal(io::stderr()) && num_nodes > 1;
+
+    let (pb, state) = if show_progress {
+        let (bar, state, handler) = display::create_progress(num_nodes);
+        task.schedule(Box::new(worker), Some(Box::new(handler)), false);
+        (Some(bar), Some(state))
+    } else {
+        task.schedule(Box::new(worker), None, false);
+        (None, None)
+    };
+
+    let start = Instant::now();
     let task_timeout = args.command_timeout.map(|t| Duration::from_secs(t + 5));
     match task.run(task_timeout) {
         Ok(()) => {}
@@ -238,6 +252,11 @@ fn run(args: Args) -> anyhow::Result<i32> {
             }
         }
         Err(e) => return Err(e.into()),
+    }
+
+    // Finalize progress display
+    if let (Some(bar), Some(state)) = (&pb, &state) {
+        display::finish_progress(bar, state, start.elapsed());
     }
 
     // ── Collect and display output ─────────────────────────────────────
