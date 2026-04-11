@@ -54,7 +54,7 @@ pub enum RouteResolvingError {
 
 /// A routing table entry: (reachable network, next-hop gateways).
 #[derive(Debug, Clone)]
-struct RouteEntry {
+pub struct RouteEntry {
     /// Set of all nodes reachable through this route (transitive children).
     network: NodeSet,
     /// Direct next-hop gateway(s) for this route.

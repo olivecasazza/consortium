@@ -74,6 +74,7 @@ impl ChildProcess {
     }
 
     /// Get file descriptors for read interest.
+    #[allow(dead_code)]
     fn read_fds(&self) -> Vec<RawFd> {
         let mut fds = vec![self.stdout_fd];
         if self.read_stderr {
@@ -85,6 +86,7 @@ impl ChildProcess {
     }
 
     /// Check if this process is done (exited).
+    #[allow(dead_code)]
     fn is_done(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
@@ -118,6 +120,7 @@ pub struct ExecWorker {
     /// Maximum number of concurrent processes.
     fanout: usize,
     /// Optional timeout for each node's command.
+    #[allow(dead_code)]
     timeout: Option<Duration>,
     /// Whether to capture stderr.
     stderr: bool,

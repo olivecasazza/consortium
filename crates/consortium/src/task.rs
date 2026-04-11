@@ -20,7 +20,6 @@
 //! }
 //! ```
 
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -199,6 +198,7 @@ struct ManagedWorker {
 /// direct callback.
 struct TaskGatheringHandler {
     /// Worker ID that this handler is associated with.
+    #[allow(dead_code)]
     worker_id: usize,
     /// Collected stdout lines: node -> Vec<lines>.
     stdout: HashMap<String, Vec<Vec<u8>>>,
@@ -331,6 +331,7 @@ pub struct Task {
     /// Propagation tree router (shared across tree workers).
     router: Option<PropagationTreeRouter>,
     /// Gateway channels: gateway_name -> worker_id.
+    #[allow(dead_code)]
     gateways: HashMap<String, usize>,
 }
 
@@ -614,14 +615,14 @@ impl Task {
         self.state = TaskState::Running;
 
         // Start all pending workers, respecting fanout
-        let mut running_count = 0;
+        let mut _running_count = 0;
         let mut errors: Vec<TaskError> = Vec::new();
 
         // Start workers
         for (_wid, mw) in &mut self.workers {
             if mw.worker.state() == WorkerState::Pending {
                 match mw.worker.start() {
-                    Ok(()) => running_count += 1,
+                    Ok(()) => _running_count += 1,
                     Err(e) => errors.push(TaskError::Worker(e)),
                 }
             }

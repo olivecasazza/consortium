@@ -282,6 +282,7 @@ impl fmt::Display for NodeSetBase {
 
 /// Scan a single node name like `node003` into (pattern, optional int value).
 /// Returns (pattern_with_%s, Option<integer_value>).
+#[allow(dead_code)]
 fn scan_node_single(node: &str) -> (String, Option<i64>) {
     // Split into alternating non-digit/digit segments
     // e.g., "node003" -> [("node", "003")]

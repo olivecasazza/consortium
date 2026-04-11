@@ -68,11 +68,13 @@ impl<K: Eq + std::hash::Hash + Clone> MsgTree<K> {
     }
 
     /// Get the node from the arena by key
+    #[allow(dead_code)]
     fn get_node(&self, key: DefaultKey) -> Option<&MsgTreeNode<K>> {
         self.arena.get(key)
     }
 
     /// Get the node from the arena by key (mutable)
+    #[allow(dead_code)]
     fn get_node_mut(&mut self, key: DefaultKey) -> Option<&mut MsgTreeNode<K>> {
         self.arena.get_mut(key)
     }

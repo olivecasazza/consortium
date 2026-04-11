@@ -8,7 +8,7 @@ use std::os::unix::io::RawFd;
 use std::time::Duration;
 
 use crate::worker::exec::ExecWorker;
-use crate::worker::{EventHandler, Worker, WorkerError, WorkerState};
+use crate::worker::{EventHandler, Worker, WorkerState};
 
 /// SSH connection options.
 #[derive(Debug, Clone)]
@@ -270,6 +270,7 @@ pub struct ScpWorker {
     /// Underlying ExecWorker for running SCP commands.
     inner: ExecWorker,
     /// SSH/SCP options.
+    #[allow(dead_code)]
     ssh_options: SshOptions,
     /// Source path.
     source: String,
