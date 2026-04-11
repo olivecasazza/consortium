@@ -7,14 +7,16 @@
 //!   claw --copy /etc/hosts -w node[1-5]  # copy file to nodes
 //!   echo 'script' | claw -w node[1-5]    # pipe stdin to command
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
 use clap::Parser;
 
 use consortium::node_set::NodeSet;
+use consortium::node_utils::GroupResolverConfig;
 use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
@@ -250,6 +252,38 @@ fn run(args: Args) -> anyhow::Result<i32> {
     }
 }
 
+/// Find groups.conf config files in standard locations.
+fn find_groups_conf() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // User config: ~/.config/clustershell/groups.conf
+    if let Some(home) = std::env::var_os("HOME") {
+        let user_conf = PathBuf::from(home).join(".config/clustershell/groups.conf");
+        if user_conf.exists() {
+            paths.push(user_conf);
+        }
+    }
+
+    // System config: /etc/clustershell/groups.conf
+    let sys_conf = PathBuf::from("/etc/clustershell/groups.conf");
+    if sys_conf.exists() {
+        paths.push(sys_conf);
+    }
+
+    paths
+}
+
+/// Load a GroupResolverConfig from standard config file locations.
+fn load_group_resolver() -> anyhow::Result<GroupResolverConfig> {
+    let paths = find_groups_conf();
+    if paths.is_empty() {
+        anyhow::bail!(
+            "no groups.conf found (checked ~/.config/clustershell/ and /etc/clustershell/)"
+        );
+    }
+    Ok(GroupResolverConfig::new(paths, HashSet::new()))
+}
+
 /// Resolve target nodes from all sources.
 fn resolve_nodes(args: &Args) -> anyhow::Result<NodeSet> {
     let mut ns = NodeSet::new();
@@ -258,6 +292,36 @@ fn resolve_nodes(args: &Args) -> anyhow::Result<NodeSet> {
     if let Some(ref pattern) = args.nodes {
         let parsed = NodeSet::parse(pattern)?;
         ns.update(&parsed);
+    }
+
+    // -g / --group
+    if !args.group.is_empty() || args.all {
+        let mut config = load_group_resolver()?;
+        let resolver = config.resolver()?;
+
+        if args.all {
+            // -a: all nodes from default group source
+            let all_nodes = resolver.all_nodes(None)?;
+            for node in &all_nodes {
+                let _ = ns.update_str(node);
+            }
+        }
+
+        for group_name in &args.group {
+            let nodes = resolver.group_nodes(group_name, None)?;
+            for node in &nodes {
+                let _ = ns.update_str(node);
+            }
+        }
+
+        // -X / --exclude-group
+        for group_name in &args.exclude_group {
+            let nodes = resolver.group_nodes(group_name, None)?;
+            for node in &nodes {
+                let exclude_ns = NodeSet::parse(node)?;
+                ns.difference_update(&exclude_ns);
+            }
+        }
     }
 
     // --hostfile
@@ -271,7 +335,7 @@ fn resolve_nodes(args: &Args) -> anyhow::Result<NodeSet> {
         }
     }
 
-    // Excludes
+    // Excludes (-x)
     for pat in &args.exclude {
         let other = NodeSet::parse(pat)?;
         ns.difference_update(&other);

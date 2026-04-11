@@ -9,7 +9,7 @@ description = "Core library — Rust implementation of ClusterShell"
 [dependencies]
 thiserror.workspace = true
 slotmap = "1.1"
-ini = "1"
+configparser = "3"
 dirs-next = "2"
 hostname = "0.4"
 libc = "0.2"

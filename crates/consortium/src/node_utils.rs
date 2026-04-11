@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use ini::configparser::ini::Ini;
+use configparser::ini::Ini;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -193,6 +193,7 @@ impl UpcallGroupSource {
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
+            .env("GROUP", arg)
             .output()
             .map_err(|e| GroupSourceError::GroupSourceQueryFailed(e.to_string()))?;
 
@@ -412,17 +413,18 @@ impl GroupResolverConfig {
             }
 
             let mut ini = Ini::new();
+            // configparser lowercases keys/sections by default
             ini.load(filename.to_string_lossy().as_ref())
                 .map_err(|e| GroupResolverConfigError::ParseError(e.to_string()))?;
 
-            // Process [Main] section
-            if let Some(default) = ini.get("Main", "default") {
+            // Process [Main] section (lowercased by configparser)
+            if let Some(default) = ini.get("main", "default") {
                 resolver.set_default(default);
             }
 
             // Process other sections as UpcallGroupSource
             for section_name in ini.sections() {
-                if section_name == "Main" {
+                if section_name == "main" || section_name == "default" {
                     continue;
                 }
 

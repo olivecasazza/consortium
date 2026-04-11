@@ -274,6 +274,48 @@ impl ExecWorker {
         Ok(read_something)
     }
 
+    /// Drain all remaining data from a process's stdout/stderr.
+    /// Must be called before removing the process so no output is lost.
+    fn drain_process(process: &mut ChildProcess, handler: &mut Option<Box<dyn EventHandler>>) {
+        let mut buffer = [0u8; 4096];
+
+        // Drain stdout
+        if let Some(ref mut stdout) = process.child.stdout {
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let msg = &buffer[..n];
+                        process.buf_stdout.extend_from_slice(msg);
+                        if let Some(ref mut h) = handler {
+                            h.on_read(&process.node, process.stdout_fd, msg);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drain stderr
+        if process.read_stderr {
+            if let Some(ref mut stderr) = process.child.stderr {
+                loop {
+                    match stderr.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let msg = &buffer[..n];
+                            process.buf_stderr.extend_from_slice(msg);
+                            if let Some(ref mut h) = handler {
+                                if let Some(fd) = process.stderr_fd {
+                                    h.on_read(&process.node, fd, msg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Check for exited processes and update state.
     fn check_exited_processes(&mut self) -> Result<bool> {
         let mut something_changed = false;
@@ -283,11 +325,19 @@ impl ExecWorker {
             if let Ok(Some(rc)) = process.try_wait() {
                 exited_nodes.push(node.clone());
                 self.retcodes.insert(node.clone(), rc);
+            }
+        }
 
-                // Notify handler
-                if let Some(ref mut handler) = self.handler {
-                    handler.on_close(node.as_str(), rc);
-                }
+        for node in &exited_nodes {
+            // Drain remaining output before removing the process
+            if let Some(process) = self.processes.get_mut(node) {
+                Self::drain_process(process, &mut self.handler);
+            }
+
+            // Notify handler of close
+            if let Some(ref mut handler) = self.handler {
+                let rc = self.retcodes.get(node).copied().unwrap_or(-1);
+                handler.on_close(node, rc);
             }
         }
 
@@ -630,5 +680,87 @@ mod tests {
 
         let fds = worker.write_fds();
         assert!(fds.is_empty(), "ExecWorker doesn't write to children");
+    }
+
+    /// Test that all nodes produce output even when processes exit quickly.
+    /// Regression test: fast-exiting processes must have their output drained
+    /// before being reaped, otherwise data is lost.
+    #[test]
+    fn test_exec_worker_all_nodes_produce_output() {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+
+        let nodes: Vec<String> = (1..=5).map(|i| format!("node{i}")).collect();
+        let mut worker =
+            ExecWorker::new(nodes.clone(), "echo output_from_%h".to_string(), 64, None);
+
+        let collected = Arc::new(Mutex::new(HashMap::<String, Vec<u8>>::new()));
+        let collected_clone = collected.clone();
+        let close_count = Arc::new(AtomicUsize::new(0));
+        let close_count_clone = close_count.clone();
+
+        struct CollectorHandler {
+            collected: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+            close_count: Arc<AtomicUsize>,
+        }
+
+        impl EventHandler for CollectorHandler {
+            fn on_start(&mut self, _worker: &dyn Worker) {}
+
+            fn on_read(&mut self, node: &str, _fd: RawFd, msg: &[u8]) {
+                let mut map = self.collected.lock().unwrap();
+                map.entry(node.to_string())
+                    .or_insert_with(Vec::new)
+                    .extend_from_slice(msg);
+            }
+
+            fn on_close(&mut self, _node: &str, _rc: i32) {
+                self.close_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        worker.set_handler(Box::new(CollectorHandler {
+            collected: collected_clone,
+            close_count: close_count_clone,
+        }));
+
+        let _ = worker.start();
+
+        let start = std::time::Instant::now();
+        while !worker.is_done() && start.elapsed() < Duration::from_secs(10) {
+            let fds = worker.read_fds();
+            for fd in &fds {
+                let _ = worker.handle_read(*fd);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(worker.is_done(), "worker should finish");
+
+        // All 5 nodes should have been closed
+        assert_eq!(
+            close_count.load(Ordering::SeqCst),
+            5,
+            "all nodes should close"
+        );
+
+        // All 5 nodes should have produced output
+        let map = collected.lock().unwrap();
+        let nodes_with_output: HashSet<&String> = map.keys().collect();
+        for node in &nodes {
+            assert!(
+                nodes_with_output.contains(node),
+                "node {} should have output, got nodes: {:?}",
+                node,
+                nodes_with_output
+            );
+            let output = String::from_utf8_lossy(&map[node]);
+            assert!(
+                output.contains(&format!("output_from_{node}")),
+                "node {} should have correct output, got: {}",
+                node,
+                output
+            );
+        }
     }
 }

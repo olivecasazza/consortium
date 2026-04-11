@@ -542,12 +542,18 @@ fn parse_single_pattern(pat: &str, autostep: Option<u32>) -> Result<NodeSetBase>
                 rs.add_int(val, pad);
                 base.add(&pattern, Some(rs));
             } else {
-                // Multi-dimensional: for now, treat each dimension independently
-                // Build combined rangeset for the first dimension only
-                // (full nD support would need RangeSetND)
+                // Multi-dimensional: expand leading indices into the pattern,
+                // keeping only the last dimension as the rangeset.
+                // e.g., "192.168.1.29" → pattern "%s.%s.%s.%s", indices [(192,0),(168,0),(1,0),(29,0)]
+                //   → expanded pattern "192.168.1.%s", rangeset {29}
+                let digit_strs = extract_all_digit_strs(pat);
+                let mut expanded_pat = pattern.clone();
+                for ds in &digit_strs[..digit_strs.len() - 1] {
+                    expanded_pat = expanded_pat.replacen("%s", ds, 1);
+                }
                 let (val, pad) = indices[indices.len() - 1];
                 rs.add_int(val, pad);
-                base.add(&pattern, Some(rs));
+                base.add(&expanded_pat, Some(rs));
             }
         }
     }
@@ -1202,5 +1208,97 @@ mod tests {
         assert!(!ns.is_empty());
         ns.clear();
         assert!(ns.is_empty());
+    }
+
+    // ── Dotted hostname / IP address tests ──────────────────────────────
+
+    #[test]
+    fn test_dotted_hostname_single() {
+        let ns = NodeSet::parse("server1.example.com").unwrap();
+        assert_eq!(ns.len(), 1);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["server1.example.com"]);
+        assert_eq!(format!("{ns}"), "server1.example.com");
+    }
+
+    #[test]
+    fn test_dotted_hostname_multiple() {
+        let ns = NodeSet::parse("server1.local,server2.local").unwrap();
+        assert_eq!(ns.len(), 2);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["server1.local", "server2.local"]);
+    }
+
+    #[test]
+    fn test_ip_address_single() {
+        let ns = NodeSet::parse("192.168.1.29").unwrap();
+        assert_eq!(ns.len(), 1);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["192.168.1.29"]);
+        assert_eq!(format!("{ns}"), "192.168.1.29");
+    }
+
+    #[test]
+    fn test_ip_address_multiple_same_subnet() {
+        let ns = NodeSet::parse("192.168.1.3,192.168.1.29").unwrap();
+        assert_eq!(ns.len(), 2);
+        let mut nodes: Vec<String> = ns.iter().collect();
+        nodes.sort();
+        assert_eq!(nodes, vec!["192.168.1.29", "192.168.1.3"]);
+        assert_eq!(format!("{ns}"), "192.168.1.[3,29]");
+    }
+
+    #[test]
+    fn test_ip_address_different_subnets() {
+        let ns = NodeSet::parse("10.0.0.1,192.168.1.1").unwrap();
+        assert_eq!(ns.len(), 2);
+        let mut nodes: Vec<String> = ns.iter().collect();
+        nodes.sort();
+        assert_eq!(nodes, vec!["10.0.0.1", "192.168.1.1"]);
+    }
+
+    #[test]
+    fn test_ip_address_contains() {
+        let ns = NodeSet::parse("192.168.1.3,192.168.1.29").unwrap();
+        assert!(ns.contains("192.168.1.3"));
+        assert!(ns.contains("192.168.1.29"));
+        assert!(!ns.contains("192.168.1.4"));
+        assert!(!ns.contains("10.0.0.1"));
+    }
+
+    #[test]
+    fn test_dotted_hostname_with_numbers() {
+        // Hostname like "node1.rack2.dc3" has numbers in each component
+        let ns = NodeSet::parse("node1.rack2.dc3").unwrap();
+        assert_eq!(ns.len(), 1);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["node1.rack2.dc3"]);
+    }
+
+    #[test]
+    fn test_mdns_hostname() {
+        let ns = NodeSet::parse("GN9CFLM92K-MBP.local").unwrap();
+        assert_eq!(ns.len(), 1);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["GN9CFLM92K-MBP.local"]);
+    }
+
+    #[test]
+    fn test_mdns_hostname_comma_list() {
+        let ns = NodeSet::parse("CK2Q9LN7PM-MBA.local,GJHC5VVN49-MBP.local,GN9CFLM92K-MBP.local")
+            .unwrap();
+        assert_eq!(ns.len(), 3);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert!(nodes.contains(&"CK2Q9LN7PM-MBA.local".to_string()));
+        assert!(nodes.contains(&"GJHC5VVN49-MBP.local".to_string()));
+        assert!(nodes.contains(&"GN9CFLM92K-MBP.local".to_string()));
+    }
+
+    #[test]
+    fn test_thunderbolt_hostname() {
+        let ns = NodeSet::parse("CK2Q9LN7PM-MBA.tb").unwrap();
+        assert_eq!(ns.len(), 1);
+        let nodes: Vec<String> = ns.iter().collect();
+        assert_eq!(nodes, vec!["CK2Q9LN7PM-MBA.tb"]);
     }
 }

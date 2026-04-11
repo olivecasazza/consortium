@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use ini::configparser::ini::Ini;
+use configparser::ini::Ini;
 
 /// Configuration section names matching the Python implementation.
 const CFG_SECTION_TASK_DEFAULT: &str = "task.default";
