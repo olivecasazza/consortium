@@ -24,6 +24,10 @@ struct Args {
     #[arg(short, long, default_value = "fleet.json")]
     config: PathBuf,
 
+    /// Override the flake URI from fleet config (e.g. /home/user/nixlab or github:user/repo).
+    #[arg(long)]
+    flake: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -101,7 +105,7 @@ enum Commands {
 fn main() {
     let args = Args::parse();
 
-    let config = match FleetConfig::from_file(&args.config) {
+    let mut config = match FleetConfig::from_file(&args.config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -111,6 +115,11 @@ fn main() {
             process::exit(1);
         }
     };
+
+    // Override flake URI if --flake was provided
+    if let Some(ref flake) = args.flake {
+        config.flake_uri = flake.clone();
+    }
 
     let result = match args.command {
         Commands::Eval { on, tag } => cmd_eval(&config, on.as_deref(), &tag),
