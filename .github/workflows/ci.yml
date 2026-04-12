@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'doc/**'
+      - 'README.md'
+      - '.gitignore'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # ── Layer 1: Unit Tests (fast, GitHub-hosted) ─────────────────────
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run unit tests
+        run: cargo test --workspace
+
+      - name: Run clippy
+        run: cargo clippy --workspace -- -D warnings
+        continue-on-error: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ── Layer 2: Docker Integration Tests (GitHub-hosted) ─────────────
+  docker-integration:
+    name: Docker Integration Tests
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docker-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build SSH node image
+        run: docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
+
+      - name: Run Docker integration tests (small cluster)
+        run: |
+          cargo test -p consortium \
+            --features docker-tests \
+            --test docker_integration \
+            -- --test-threads=1
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker ps -a --filter "name=consortium-test" -q | xargs -r docker rm -f
+          docker network ls --filter "name=consortium-test" -q | xargs -r docker network rm
+
+  # ── Layer 2b: Tool Integration Tests (GitHub-hosted, nix/ansible) ─
+  tool-integration:
+    name: Tool Integration Tests
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-tool-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build specialized Docker images
+        run: |
+          docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
+          docker build -t consortium-nix-node -f tests/docker/Dockerfile.nix-node tests/docker/
+          docker build -t consortium-ansible-node -f tests/docker/Dockerfile.ansible-node tests/docker/
+
+      - name: Run tool integration tests
+        run: |
+          cargo test -p consortium \
+            --features docker-tests \
+            --test tool_integration \
+            -- --test-threads=1
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
+
+  # ── Layer 3: Nix Integration Tests (self-hosted on nixlab K8s) ────
+  nix-integration:
+    name: Nix Integration (self-hosted)
+    needs: [docker-integration, tool-integration]
+    runs-on: [self-hosted, nix-builder]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Nix flake check
+        run: nix flake check
+
+      - name: Build consortium packages
+        run: |
+          nix build .#consortium
+          nix build .#consortium-cli
+          nix build .#consortium-nix
+
+      - name: Test distributed builds
+        run: |
+          nix build .#consortium --builders @/etc/nix/machines --max-jobs 0
+
+      - name: Builder health check
+        run: |
+          nix build .#fleet-config 2>/dev/null && cp result fleet.json || true
+          if [ -f fleet.json ]; then
+            nix run .#consortium-cli -- cast --config fleet.json health
+          fi
+
+      # NixOS VM integration test (container backend, no KVM needed)
+      # Uncomment when tests/nixos/integration-test.nix is implemented
+      # - name: NixOS VM integration test
+      #   run: nix build .#checks.x86_64-linux.integration-test
