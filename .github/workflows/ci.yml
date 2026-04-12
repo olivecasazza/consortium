@@ -78,11 +78,11 @@ jobs:
           docker ps -a --filter "name=consortium-test" -q | xargs -r docker rm -f
           docker network ls --filter "name=consortium-test" -q | xargs -r docker network rm
 
-  # ── Layer 2b: Tool Integration Tests (GitHub-hosted, needs Docker) ─
+  # ── Layer 2b: Tool Integration Tests (self-hosted, needs Docker + nix images) ─
   tool-integration:
     name: Tool Integration Tests
     needs: unit
-    runs-on: ubuntu-latest
+    runs-on: nix-builder
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
