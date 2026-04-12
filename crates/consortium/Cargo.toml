@@ -14,5 +14,10 @@ dirs-next = "2"
 hostname = "0.4"
 libc = "0.2"
 
+[features]
+docker-tests = []
+
 [dev-dependencies]
 tempfile = "3"
+consortium-test-harness = { path = "../consortium-test-harness" }
+consortium-nix = { path = "../consortium-nix" }

@@ -83,6 +83,9 @@ impl DockerCluster {
 
     /// Start a cluster with the given topology.
     pub fn start(topology: ClusterTopology) -> Result<Self, String> {
+        // Clean up any stale containers from previous runs
+        Self::cleanup_stale();
+
         // Check Docker is available
         let docker_check = Command::new("docker")
             .arg("info")
@@ -235,6 +238,24 @@ impl DockerCluster {
     }
 
     // ─── Internal ────────────────────────────────────────────────────────
+
+    /// Clean up any stale consortium test containers from previous runs.
+    fn cleanup_stale() {
+        // Remove containers
+        let _ = Command::new("sh")
+            .args([
+                "-c",
+                "docker ps -a --filter 'name=consortium-test' -q | xargs -r docker rm -f 2>/dev/null",
+            ])
+            .output();
+        // Remove networks
+        let _ = Command::new("sh")
+            .args([
+                "-c",
+                "docker network ls --filter 'name=consortium-test' -q | xargs -r docker network rm 2>/dev/null",
+            ])
+            .output();
+    }
 
     fn docker_dir() -> PathBuf {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
