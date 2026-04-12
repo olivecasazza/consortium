@@ -1,0 +1,12 @@
+# Conventional Commits pre-commit hook configuration
+# This file is referenced in .pre-commit-config.yaml
+# To enable, add to your .pre-commit-config.yaml:
+
+repos:
+  - repo: https://github.com/conventional-changelog/commitlint
+    rev: v19.5.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        additional_dependencies:
+          - '@commitlint/config-conventional@^19.5.0'

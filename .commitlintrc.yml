@@ -1,0 +1,92 @@
+# Conventional Commits Configuration
+# This file enforces conventional commit message format
+# Format: <type>(<scope>): <subject>
+
+plugins:
+  - '@commitlint/plugin-angular'
+
+rules:
+  # Type must be one of the conventional types
+  type-enum:
+    - 2
+    - always
+    - - chore
+      - ci
+      - docs
+      - feat
+      - fix
+      - perf
+      - refactor
+      - revert
+      - style
+      - test
+      - build
+      - ops
+      - hotfix
+
+  # Type must be lowercase
+  type-case:
+    - 2
+    - always
+    - lower-case
+
+  # Type must not be empty
+  type-empty:
+    - 2
+    - never
+
+  # Scope must be lowercase
+  scope-case:
+    - 2
+    - always
+    - lower-case
+
+  # Subject must not be empty
+  subject-empty:
+    - 2
+    - never
+
+  # Subject must start with capital letter
+  subject-capital:
+    - 2
+    - always
+    - - first-sentence
+      - sentence-case
+
+  # Subject must not end with period
+  subject-final-period:
+    - 2
+    - never
+
+  # Subject must be in imperative mood
+  subject-imperative:
+    - 2
+    - always
+
+  # Header must not exceed 100 characters
+  header-max-length:
+    - 2
+    - always
+    - - 100
+
+  # Body must have blank line before body
+  body-leading-blank:
+    - 2
+    - always
+
+  # Body line length (optional, 100 chars recommended)
+  body-max-line-length:
+    - 0
+    - always
+    - - 100
+
+  # Footer must have blank line before footer
+  footer-leading-blank:
+    - 2
+    - always
+
+  # Breaking change must be in footer
+  footer-format:
+    - 2
+    - always
+    - - 'BREAKING CHANGE: {subject}'

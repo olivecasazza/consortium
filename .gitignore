@@ -31,9 +31,15 @@ build/
 # Test reports
 test-reports/
 
+# Node.js
+node_modules/
+.npm/
+.nvmrc
+package-lock.json
+yarn.lock
+
 # Direnv / Hermes
 .direnv/
 .hermes/
 test_ini.rs
 results/
-scripts/

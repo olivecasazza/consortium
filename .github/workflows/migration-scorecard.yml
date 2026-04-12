@@ -2,8 +2,19 @@ name: Migration Scorecard
 
 on:
   push:
-    branches: [master, main]
+    branches: [main, master, develop]
+    paths-ignore:
+      - '.gitignore'
+      - '.gitattributes'
+      - 'doc/**'
+      - 'README.md'
   pull_request:
+    branches: [main, master, develop]
+    paths-ignore:
+      - '.gitignore'
+      - '.gitattributes'
+      - 'doc/**'
+      - 'README.md'
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -33,6 +44,9 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install virtualenv
+          python -m virtualenv .venv
+          source .venv/bin/activate
           pip install pytest pytest-timeout pytest-xdist maturin pyyaml
 
       # ── Upstream sync ──────────────────────────────────────────
@@ -49,6 +63,7 @@ jobs:
       - name: Build PyO3 bindings
         run: |
           cd crates/consortium-py
+          source ../../.venv/bin/activate
           maturin develop --release
 
       # ── Rust unit tests ────────────────────────────────────────
@@ -56,6 +71,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p results
+          source .venv/bin/activate
           cargo nextest run \
             -p consortium \
             --profile ci \
@@ -73,6 +89,7 @@ jobs:
           CONSORTIUM_BACKEND: python
           PYTHONPATH: ${{ github.workspace }}/lib
         run: |
+          source .venv/bin/activate
           python -m pytest tests/ -v \
             --timeout=30 \
             --tb=short \
@@ -85,6 +102,7 @@ jobs:
         env:
           CONSORTIUM_BACKEND: rust
         run: |
+          source .venv/bin/activate
           python -m pytest tests/ -v \
             --timeout=30 \
             --tb=short \

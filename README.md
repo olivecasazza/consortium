@@ -1,5 +1,5 @@
 ClusterShell Python Library and Tools
-=====================================
+ =====================================
 
 ClusterShell is an event-driven open source Python library, designed to run
 local or distant commands in parallel on server farms or on large Linux
@@ -14,6 +14,46 @@ performance clusters by providing a lightweight but scalable Python API for
 developers. It also provides clush, clubak and cluset/nodeset, convenient
 command-line tools that allow traditional shell scripts to benefit from some
 of the library features.
+
+## Development
+
+This repository uses **conventional commits** and **semantic versioning** for automated releases.
+
+### Commit Message Format
+
+All commits must follow the [conventional commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<scope>): <subject>
+```
+
+**Types:**
+- `feat`: New feature (bumps MINOR version)
+- `fix`: Bug fix (bumps PATCH version)
+- `perf`: Performance improvement (bumps PATCH version)
+- `refactor`: Code refactoring (bumps PATCH version)
+- `docs`: Documentation changes (no version bump)
+- `style`: Code style changes (no code change)
+- `test`: Adding or updating tests (no version bump)
+- `chore`: Maintenance tasks (no version bump)
+- `ci`: CI/CD changes (no version bump)
+- `build`: Build system changes
+- `revert`: Revert previous commit
+
+**Breaking Changes:**
+```
+feat: remove deprecated API
+
+BREAKING CHANGE: The old API has been removed. Use new API instead.
+```
+
+For full details, see [CONVENTIONAL_COMMITS.md](./CONVENTIONAL_COMMITS.md).
+
+### Development Requirements
+
+- **Node.js 20+** (for commitlint and semantic-release)
+- **Rust stable** (for Rust crates)
+- **Python 3.7+** (for Python library)
 
 Requirements
 ------------

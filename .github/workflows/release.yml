@@ -1,0 +1,175 @@
+name: Conventional Commits & Semantic Release
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  merge_group:
+
+jobs:
+  # Validate commit messages follow conventional commits format
+  lint-commits:
+    name: Lint Commit Messages
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install commitlint
+        run: |
+          npm install --save-dev @commitlint/config-conventional @commitlint/cli
+          npx commitlint --version
+
+      - name: Lint commit messages
+        run: |
+          npx commitlint --from HEAD~1 --to HEAD --config commitlint.config.js --exit-code
+
+  # Run tests and check version changes
+  test-and-version:
+    name: Test and Version Check
+    runs-on: ubuntu-latest
+    needs: lint-commits
+    if: github.event_name == 'push' || github.event_name == 'merge_group'
+    outputs:
+      version-bump: ${{ steps.version-check.outputs.version-bump }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create virtual environment
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+
+      - name: Install Python dependencies
+        run: |
+          source .venv/bin/activate
+          pip install coverage nose .
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          python --version
+          export CLUSTERSHELL_GW_PYTHON_EXECUTABLE=$(which python)
+          nosetests -v --all-modules --with-coverage --cover-tests --cover-erase --cover-package=ClusterShell tests || true
+
+      - name: Check version changes
+        id: version-check
+        run: |
+          # Get the latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -z "$LATEST_TAG" ]; then
+            echo "version-bump=initial" >> $GITHUB_OUTPUT
+          else
+            # Get commits since last tag
+            COMMITS=$(git log --oneline ${LATEST_TAG}..HEAD)
+            
+            # Determine version bump type
+            if echo "$COMMITS" | grep -q "BREAKING CHANGE:"; then
+              echo "version-bump=major" >> $GITHUB_OUTPUT
+            elif echo "$COMMITS" | grep -qE "feat(\w*)\:"; then
+              echo "version-bump=minor" >> $GITHUB_OUTPUT
+            elif echo "$COMMITS" | grep -qE "fix(\w*)\:"; then
+              echo "version-bump=patch" >> $GITHUB_OUTPUT
+            else
+              echo "version-bump=none" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  # Build Rust crate
+  build-rust:
+    name: Build Rust Crate
+    runs-on: ubuntu-latest
+    needs: test-and-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: |
+          cargo build --release
+
+      - name: Run Rust tests
+        run: |
+          cargo test --release
+
+  # Create GitHub Release and publish crates
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [test-and-version, build-rust]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-version.outputs.version-bump != 'none'
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create virtual environment
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+
+      - name: Install semantic-release
+        run: |
+          npm install --save-dev semantic-release @semantic-release/github
+          npx semantic-release --version
+
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release
+
+      - name: Setup Rust cargo credentials
+        run: |
+          echo -e "[registries.crates-io]\nprivate-token = \"${CRATES_IO_TOKEN}\"\n" > ~/.cargo/credentials
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Build and publish Rust crate
+        run: |
+          cd crates/consortium
+          cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

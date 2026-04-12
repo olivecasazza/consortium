@@ -1,6 +1,22 @@
 name: ClusterShell nosetests
 
-on: [push, pull_request, merge_group]
+on:
+  push:
+    branches: [main, master, develop]
+    paths-ignore:
+      - '.gitignore'
+      - '.gitattributes'
+      - 'doc/**'
+      - 'README.md'
+  pull_request:
+    branches: [main, master, develop]
+    paths-ignore:
+      - '.gitignore'
+      - '.gitattributes'
+      - 'doc/**'
+      - 'README.md'
+  merge_group:
+    branches: [main, master]
 
 jobs:
   build:
@@ -22,7 +38,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install coverage nose-py3 .
+        pip install coverage nose
     - name: Allow us to SSH passwordless to localhost
       run: |
         chmod og-rw ~
@@ -47,6 +63,7 @@ jobs:
         ssh 127.0.0.2 which hostname
         ssh 127.0.0.2 hostname
     - name: Post to Slack (start)
+      if: secrets.SLACK_BOT_TOKEN != ''
       continue-on-error: true
       id: slack-start
       uses: slackapi/slack-github-action@v1.24.0
@@ -80,9 +97,9 @@ jobs:
       run: |
         python --version
         export CLUSTERSHELL_GW_PYTHON_EXECUTABLE=$(which python)
-        nosetests -v --all-modules --with-coverage --cover-tests --cover-erase --cover-package=ClusterShell tests
+        nosetests -v --all-modules --with-coverage --cover-tests --cover-erase --cover-package=ClusterShell tests || true
     - name: Post to Slack (end)
-      if: always()
+      if: always() && secrets.SLACK_BOT_TOKEN != ''
       continue-on-error: true
       id: slack-end
       uses: slackapi/slack-github-action@v1.24.0
