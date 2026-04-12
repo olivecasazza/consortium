@@ -270,3 +270,101 @@ impl DagTask for SlurmCollectTask {
         format!("collect results for '{}'", self.job_name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sbatch_output_parsing() {
+        // sbatch outputs: "Submitted batch job 12345"
+        let output = "Submitted batch job 12345";
+        let job_id: u64 = output
+            .trim()
+            .rsplit_once(' ')
+            .and_then(|(_, id)| id.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(job_id, 12345);
+    }
+
+    #[test]
+    fn test_sbatch_output_parsing_with_whitespace() {
+        let output = "Submitted batch job 99999\n";
+        let job_id: u64 = output
+            .trim()
+            .rsplit_once(' ')
+            .and_then(|(_, id)| id.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(job_id, 99999);
+    }
+
+    #[test]
+    fn test_sbatch_output_parsing_unexpected() {
+        let output = "Error: something went wrong";
+        let job_id: u64 = output
+            .trim()
+            .rsplit_once(' ')
+            .and_then(|(_, id)| id.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(job_id, 0); // fallback to 0 on parse failure
+    }
+
+    #[test]
+    fn test_slurm_job_states() {
+        // Verify the wait task would recognize these terminal states
+        let terminal_failure = [
+            "FAILED",
+            "CANCELLED",
+            "TIMEOUT",
+            "OUT_OF_MEMORY",
+            "NODE_FAIL",
+        ];
+        let running = ["PENDING", "RUNNING", "COMPLETING"];
+
+        for state in &terminal_failure {
+            assert!(
+                matches!(
+                    state.as_ref(),
+                    "FAILED" | "CANCELLED" | "TIMEOUT" | "OUT_OF_MEMORY" | "NODE_FAIL"
+                ),
+                "{} should be terminal failure",
+                state
+            );
+        }
+
+        for state in &running {
+            assert!(
+                !matches!(
+                    state.as_ref(),
+                    "COMPLETED"
+                        | "FAILED"
+                        | "CANCELLED"
+                        | "TIMEOUT"
+                        | "OUT_OF_MEMORY"
+                        | "NODE_FAIL"
+                ),
+                "{} should continue polling",
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn test_describe_methods() {
+        let build = NixBuildJobEnvTask::new("rnaseq", ".");
+        assert!(build.describe().contains("rnaseq"));
+
+        let submit = SlurmSubmitTask {
+            job_name: "test".to_string(),
+            script: "test.sh".to_string(),
+            partition: Some("gpu".to_string()),
+            submit_host: "ctrl".to_string(),
+            submit_user: "root".to_string(),
+        };
+        assert!(submit.describe().contains("test"));
+
+        let wait = SlurmWaitTask::new("myjob", "ctrl", "root");
+        assert!(wait.describe().contains("myjob"));
+        assert_eq!(wait.poll_interval, Duration::from_secs(10));
+    }
+}

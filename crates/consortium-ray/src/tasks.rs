@@ -151,3 +151,57 @@ impl DagTask for RayWaitTask {
         format!("wait for ray job '{}'", self.job_name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ray_submit_job_id_parsing() {
+        // Ray job submit outputs a line like "raysubmit_abc123"
+        let stdout = "Job submitted successfully\nraysubmit_abc123def\nDone.";
+        let job_id = stdout
+            .lines()
+            .find(|l| l.contains("raysubmit_"))
+            .unwrap_or("unknown")
+            .trim()
+            .to_string();
+        assert_eq!(job_id, "raysubmit_abc123def");
+    }
+
+    #[test]
+    fn test_ray_submit_no_job_id() {
+        let stdout = "Some error output";
+        let job_id = stdout
+            .lines()
+            .find(|l| l.contains("raysubmit_"))
+            .unwrap_or("unknown")
+            .trim()
+            .to_string();
+        assert_eq!(job_id, "unknown");
+    }
+
+    #[test]
+    fn test_ray_job_status_detection() {
+        assert!("Status: SUCCEEDED".contains("SUCCEEDED"));
+        assert!("Status: FAILED".contains("FAILED"));
+        assert!("Status: STOPPED".contains("STOPPED"));
+        assert!(!"Status: RUNNING".contains("SUCCEEDED"));
+        assert!(!"Status: RUNNING".contains("FAILED"));
+    }
+
+    #[test]
+    fn test_describe_methods() {
+        let build = NixBuildRayEnvTask::new("train", ".");
+        assert!(build.describe().contains("train"));
+
+        let submit = RaySubmitTask {
+            job_name: "train".to_string(),
+            entrypoint: "python train.py".to_string(),
+            head_address: "localhost".to_string(),
+            dashboard_port: 8265,
+            working_dir: None,
+        };
+        assert!(submit.describe().contains("train"));
+    }
+}

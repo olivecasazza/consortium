@@ -134,3 +134,40 @@ impl DagTask for SkyDownTask {
         format!("tear down sky cluster '{}'", self.cluster_name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_describe_methods() {
+        let build = NixBuildSkyEnvTask::new("train", ".");
+        assert!(build.describe().contains("train"));
+        assert!(build.flake_attr.contains("skyEnvs.train"));
+
+        let launch = SkyLaunchTask {
+            cluster_name: "my-cluster".to_string(),
+            task_yaml: "task.yaml".to_string(),
+            cloud: Some("gcp".to_string()),
+            region: Some("us-central1".to_string()),
+        };
+        assert!(launch.describe().contains("my-cluster"));
+
+        let exec = SkyExecTask {
+            cluster_name: "my-cluster".to_string(),
+            command: "python train.py".to_string(),
+        };
+        assert!(exec.describe().contains("my-cluster"));
+
+        let down = SkyDownTask {
+            cluster_name: "my-cluster".to_string(),
+        };
+        assert!(down.describe().contains("my-cluster"));
+    }
+
+    #[test]
+    fn test_flake_attr_generation() {
+        let build = NixBuildSkyEnvTask::new("train-gpt", "github:user/repo");
+        assert_eq!(build.flake_attr, "github:user/repo#skyEnvs.train-gpt");
+    }
+}
