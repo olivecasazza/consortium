@@ -702,6 +702,335 @@ mod tests {
         );
     }
 
+    // ─── Functional proof tests ────────────────────────────────────────
+    // These tests prove that parallelism, pipelining, and concurrency
+    // limits are working via observable state (not timing assertions).
+
+    #[test]
+    fn test_parallelism_proven_by_overlapping_execution() {
+        // PROOF: If tasks run in parallel, their execution windows overlap.
+        // Each task records its (start_time, end_time). If any two tasks
+        // have overlapping windows, parallelism is proven.
+        use std::time::SystemTime;
+
+        let ctx = DagContext::new();
+        let timestamps: Arc<Mutex<Vec<(String, u128, u128)>>> = Arc::new(Mutex::new(Vec::new()));
+        ctx.set_state("timestamps", timestamps.clone());
+
+        let mut dag = DagBuilder::new();
+        for i in 0..5 {
+            dag.add_task(
+                format!("t{}", i),
+                FnTask::new(format!("task {}", i), move |ctx| {
+                    let ts: Arc<Mutex<Vec<(String, u128, u128)>>> =
+                        ctx.get_state("timestamps").unwrap();
+                    let start = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    std::thread::sleep(Duration::from_millis(50));
+                    let end = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    ts.lock().unwrap().push((format!("t{}", i), start, end));
+                    TaskOutcome::Success
+                }),
+            );
+        }
+        // No dependencies — all should run in parallel
+        dag.context(ctx);
+
+        let report = dag.build().unwrap().run().unwrap();
+        assert!(report.is_success());
+
+        let ts = timestamps.lock().unwrap();
+        assert_eq!(ts.len(), 5);
+
+        // Check for overlapping execution windows
+        let mut found_overlap = false;
+        for i in 0..ts.len() {
+            for j in (i + 1)..ts.len() {
+                let (_, s1, e1) = &ts[i];
+                let (_, s2, e2) = &ts[j];
+                // Overlap: one starts before the other ends
+                if s1 < e2 && s2 < e1 {
+                    found_overlap = true;
+                    break;
+                }
+            }
+            if found_overlap {
+                break;
+            }
+        }
+        assert!(
+            found_overlap,
+            "no overlapping execution windows found — tasks may not be running in parallel. timestamps: {:?}",
+            *ts
+        );
+    }
+
+    #[test]
+    fn test_pipelining_proven_by_stage_overlap() {
+        // PROOF: With per-host pipelining, fast_host's stage 2 should START
+        // before slow_host's stage 1 ENDS. We record timestamps per task
+        // and check that deploy:fast starts before build:slow ends.
+        use std::time::SystemTime;
+
+        let ctx = DagContext::new();
+        let timestamps: Arc<Mutex<HashMap<String, (u128, u128)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        ctx.set_state("timestamps", timestamps.clone());
+
+        let report = StageBuilder::new()
+            .resources(vec!["fast".into(), "slow".into()])
+            .stage("build", None, |host| {
+                let h = host.to_string();
+                Box::new(FnTask::new(format!("build {}", h), move |ctx| {
+                    let ts: Arc<Mutex<HashMap<String, (u128, u128)>>> =
+                        ctx.get_state("timestamps").unwrap();
+                    let start = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    let delay = if h == "slow" { 200 } else { 10 };
+                    std::thread::sleep(Duration::from_millis(delay));
+                    let end = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    ts.lock()
+                        .unwrap()
+                        .insert(format!("build:{}", h), (start, end));
+                    TaskOutcome::Success
+                }))
+            })
+            .stage("deploy", None, |host| {
+                let h = host.to_string();
+                Box::new(FnTask::new(format!("deploy {}", h), move |ctx| {
+                    let ts: Arc<Mutex<HashMap<String, (u128, u128)>>> =
+                        ctx.get_state("timestamps").unwrap();
+                    let start = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    std::thread::sleep(Duration::from_millis(10));
+                    let end = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    ts.lock()
+                        .unwrap()
+                        .insert(format!("deploy:{}", h), (start, end));
+                    TaskOutcome::Success
+                }))
+            })
+            .context(ctx)
+            .build()
+            .unwrap()
+            .run()
+            .unwrap();
+
+        assert!(report.is_success());
+
+        let ts = timestamps.lock().unwrap();
+        let build_slow = ts.get("build:slow").expect("build:slow missing");
+        let deploy_fast = ts.get("deploy:fast").expect("deploy:fast missing");
+
+        // Pipelining proof: deploy:fast should START before build:slow ENDS
+        assert!(
+            deploy_fast.0 < build_slow.1,
+            "pipelining not working: deploy:fast started at {} but build:slow ended at {} \
+             (deploy should start BEFORE build:slow finishes)",
+            deploy_fast.0,
+            build_slow.1
+        );
+    }
+
+    #[test]
+    fn test_concurrency_limit_proven_by_max_concurrent() {
+        // PROOF: With concurrency limit=2 and 10 tasks, the maximum number
+        // of simultaneously executing tasks must never exceed 2.
+        // We track this with an atomic counter that increments on start
+        // and decrements on end, recording the peak.
+        let ctx = DagContext::new();
+        let peak = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        ctx.set_state("peak", peak.clone());
+        ctx.set_state("active", active.clone());
+
+        let report = StageBuilder::new()
+            .resources((0..10).map(|i| format!("n{}", i)).collect())
+            .stage("work", Some(2), |host| {
+                let h = host.to_string();
+                Box::new(FnTask::new(format!("work {}", h), |ctx| {
+                    let active: Arc<AtomicUsize> = ctx.get_state("active").unwrap();
+                    let peak: Arc<AtomicUsize> = ctx.get_state("peak").unwrap();
+
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    // Update peak
+                    peak.fetch_max(current, Ordering::SeqCst);
+
+                    // Hold the slot for a bit so concurrency is observable
+                    std::thread::sleep(Duration::from_millis(30));
+
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }))
+            })
+            .context(ctx)
+            .build()
+            .unwrap()
+            .run()
+            .unwrap();
+
+        assert!(report.is_success());
+        assert_eq!(report.completed.len(), 10);
+
+        let observed_peak = peak.load(Ordering::SeqCst);
+        assert!(
+            observed_peak <= 2,
+            "concurrency limit violated: peak concurrent tasks was {}, limit is 2",
+            observed_peak
+        );
+        // Also prove tasks DID run concurrently (peak > 1)
+        assert!(
+            observed_peak >= 2,
+            "tasks never ran concurrently: peak was {} (expected 2 with limit=2 and 10 tasks)",
+            observed_peak
+        );
+    }
+
+    #[test]
+    fn test_concurrency_limit_different_groups() {
+        // PROOF: Two concurrency groups with different limits operate independently.
+        // Group "fast" has limit=4, group "slow" has limit=1.
+        // Fast tasks should have peak=4, slow tasks should have peak=1.
+        let ctx = DagContext::new();
+        let fast_peak = Arc::new(AtomicUsize::new(0));
+        let fast_active = Arc::new(AtomicUsize::new(0));
+        let slow_peak = Arc::new(AtomicUsize::new(0));
+        let slow_active = Arc::new(AtomicUsize::new(0));
+        ctx.set_state("fast_peak", fast_peak.clone());
+        ctx.set_state("fast_active", fast_active.clone());
+        ctx.set_state("slow_peak", slow_peak.clone());
+        ctx.set_state("slow_active", slow_active.clone());
+
+        let mut dag = DagBuilder::new();
+        dag.concurrency_group("fast", 4);
+        dag.concurrency_group("slow", 1);
+
+        for i in 0..8 {
+            let id = format!("fast-{}", i);
+            dag.add_task(
+                id.clone(),
+                FnTask::new(format!("fast {}", i), |ctx| {
+                    let active: Arc<AtomicUsize> = ctx.get_state("fast_active").unwrap();
+                    let peak: Arc<AtomicUsize> = ctx.get_state("fast_peak").unwrap();
+                    let c = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(c, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(30));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }),
+            );
+            dag.assign_group(id, "fast");
+        }
+
+        for i in 0..4 {
+            let id = format!("slow-{}", i);
+            dag.add_task(
+                id.clone(),
+                FnTask::new(format!("slow {}", i), |ctx| {
+                    let active: Arc<AtomicUsize> = ctx.get_state("slow_active").unwrap();
+                    let peak: Arc<AtomicUsize> = ctx.get_state("slow_peak").unwrap();
+                    let c = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(c, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }),
+            );
+            dag.assign_group(id, "slow");
+        }
+
+        dag.context(ctx);
+        let report = dag.build().unwrap().run().unwrap();
+
+        assert!(report.is_success());
+        assert_eq!(report.completed.len(), 12);
+
+        let fp = fast_peak.load(Ordering::SeqCst);
+        let sp = slow_peak.load(Ordering::SeqCst);
+
+        assert!(fp <= 4, "fast group exceeded limit: peak={}, limit=4", fp);
+        assert!(sp <= 1, "slow group exceeded limit: peak={}, limit=1", sp);
+        // Prove fast group actually used concurrency
+        assert!(
+            fp >= 2,
+            "fast group didn't use concurrency: peak={}, expected >=2",
+            fp
+        );
+    }
+
+    #[test]
+    fn test_dependencies_prevent_early_execution() {
+        // PROOF: A dependent task NEVER executes before its dependency,
+        // even under high parallelism. We verify this by having the
+        // dependent task check a flag that the dependency sets.
+        // If the dependent runs first, the flag won't be set and the task fails.
+        let ctx = DagContext::new();
+        let flag = Arc::new(AtomicUsize::new(0));
+        ctx.set_state("flag", flag.clone());
+
+        let mut dag = DagBuilder::new();
+
+        // 10 independent "setup" tasks that all set flags
+        for i in 0..10 {
+            dag.add_task(
+                format!("setup-{}", i),
+                FnTask::new(format!("setup {}", i), move |ctx| {
+                    let f: Arc<AtomicUsize> = ctx.get_state("flag").unwrap();
+                    std::thread::sleep(Duration::from_millis(10));
+                    f.fetch_add(1, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }),
+            );
+        }
+
+        // "check" task depends on ALL setup tasks
+        dag.add_task(
+            "check",
+            FnTask::new("check all flags", move |ctx| {
+                let f: Arc<AtomicUsize> = ctx.get_state("flag").unwrap();
+                let count = f.load(Ordering::SeqCst);
+                if count == 10 {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed(format!(
+                        "only {}/10 setup tasks completed before check ran!",
+                        count
+                    ))
+                }
+            }),
+        );
+
+        for i in 0..10 {
+            dag.add_dep("check", format!("setup-{}", i));
+        }
+
+        // High parallelism — check must still wait for all 10
+        dag.pool(FixedPool::new(100));
+        dag.context(ctx);
+
+        let report = dag.build().unwrap().run().unwrap();
+        assert!(
+            report.is_success(),
+            "dependency violation: {:?}",
+            report.failed
+        );
+    }
+
     #[test]
     fn test_shell_task() {
         let mut dag = DagBuilder::new();
