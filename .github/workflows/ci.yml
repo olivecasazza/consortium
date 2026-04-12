@@ -32,7 +32,45 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run unit tests
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace -- -Z unstable-options --format json --report-time 2>&1 | tee test-results.json
+          # Also run normally to get exit code
+          cargo test --workspace
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Layer 1: Unit Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Parse JSON test results
+          if [ -f test-results.json ]; then
+            PASSED=$(grep -c '"ok"' test-results.json 2>/dev/null || echo "0")
+            FAILED=$(grep '"event":"failed"' test-results.json | grep -c '"type":"test"' 2>/dev/null || echo "0")
+            TOTAL=$((PASSED + FAILED))
+
+            if [ "$FAILED" -eq 0 ]; then
+              echo "✅ **All $TOTAL tests passed**" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Test breakdown by crate</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Crate | Tests | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+            for crate in consortium consortium-nix consortium-ansible consortium-slurm consortium-ray consortium-skypilot consortium-cli; do
+              count=$(grep "\"name\":\"$crate" test-results.json 2>/dev/null | grep -c '"event":"ok"' || echo "0")
+              if [ "$count" -gt 0 ]; then
+                echo "| $crate | $count | ✅ |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Run clippy
         run: cargo clippy --workspace -- -D warnings
@@ -71,12 +109,45 @@ jobs:
       - name: Build SSH node image
         run: docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
 
-      - name: Run Docker integration tests (small cluster)
+      - name: Run Docker integration tests
+        id: docker_tests
         run: |
           cargo test -p consortium \
             --features docker-tests \
             --test docker_integration \
-            -- --test-threads=1
+            -- --test-threads=1 2>&1 | tee docker-results.txt
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Layer 2: Docker Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f docker-results.txt ]; then
+            PASSED=$(grep -c "... ok$" docker-results.txt || echo "0")
+            FAILED=$(grep -c "... FAILED$" docker-results.txt || echo "0")
+            TOTAL=$((PASSED + FAILED))
+
+            if [ "$FAILED" -eq 0 ]; then
+              echo "✅ **All $PASSED tests passed** against Docker SSH cluster" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Test results</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+            grep "^test " docker-results.txt | while read line; do
+              name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
+              status=$(echo "$line" | grep -o 'ok\|FAILED')
+              icon=$([ "$status" = "ok" ] && echo "✅" || echo "❌")
+              echo "| \`$name\` | $icon |" >> $GITHUB_STEP_SUMMARY
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Cleanup containers
         if: always()
@@ -124,7 +195,43 @@ jobs:
           cargo test -p consortium \
             --features docker-tests \
             --test tool_integration \
-            -- --test-threads=1
+            -- --test-threads=1 2>&1 | tee tool-results.txt
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Layer 2b: Tool Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Runner:** \`$(hostname)\` (self-hosted NixOS)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f tool-results.txt ]; then
+            PASSED=$(grep -c "... ok$" tool-results.txt || echo "0")
+            FAILED=$(grep -c "... FAILED$" tool-results.txt || echo "0")
+            TOTAL=$((PASSED + FAILED))
+
+            if [ "$FAILED" -eq 0 ] && [ "$PASSED" -gt 0 ]; then
+              echo "✅ **All $PASSED tests passed** (real nix build, real ansible)" >> $GITHUB_STEP_SUMMARY
+            elif [ "$TOTAL" -eq 0 ]; then
+              echo "⚠️ **No tests ran**" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Test results</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+            grep "^test " tool-results.txt | while read line; do
+              name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
+              status=$(echo "$line" | grep -o 'ok\|FAILED')
+              icon=$([ "$status" = "ok" ] && echo "✅" || echo "❌")
+              echo "| \`$name\` | $icon |" >> $GITHUB_STEP_SUMMARY
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Cleanup containers
         if: always()
@@ -141,7 +248,6 @@ jobs:
       - uses: actions/checkout@v4
 
       # Nix is pre-installed on NixOS runners (Mac Minis).
-      # Magic Nix Cache for GitHub Actions caching.
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Build consortium-cli
@@ -160,3 +266,49 @@ jobs:
           else
             echo "No machines file, skipping distributed build test"
           fi
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Layer 3: Nix Integration (self-hosted)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Runner:** \`$(hostname)\` (NixOS Mac Mini)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ -L result ]; then
+            echo "| \`nix build .#consortium-cli\` | ✅ Built: \`$(readlink result)\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| \`nix build .#consortium-cli\` | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f /etc/nix/machines ]; then
+            BUILDERS=$(wc -l < /etc/nix/machines)
+            echo "| Distributed builders | ✅ $BUILDERS builders configured |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Distributed builders | ⚠️ No machines file |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "| Runner host | \`$(hostname)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nix version | \`$(nix --version)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| System | \`$(uname -m)\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Summary ──────────────────────────────────────────────────────
+  summary:
+    name: Test Summary
+    needs: [unit, docker-integration, tool-integration, nix-integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate overall summary
+        run: |
+          echo "# Consortium CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Layer | Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 | Unit Tests | ${{ needs.unit.result == 'success' && '✅' || '❌' }} ${{ needs.unit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 | Docker Integration | ${{ needs.docker-integration.result == 'success' && '✅' || '❌' }} ${{ needs.docker-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2b | Tool Integration | ${{ needs.tool-integration.result == 'success' && '✅' || '❌' }} ${{ needs.tool-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 | Nix Integration | ${{ needs.nix-integration.result == 'success' && '✅' || '❌' }} ${{ needs.nix-integration.result }} |" >> $GITHUB_STEP_SUMMARY
