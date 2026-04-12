@@ -19,6 +19,7 @@
 //! - [`worker`] — Worker abstraction for node execution (ClusterShell.Worker)
 
 pub mod communication;
+pub mod dag;
 pub mod defaults;
 pub mod engine;
 pub mod event;

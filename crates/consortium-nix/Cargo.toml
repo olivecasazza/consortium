@@ -1,0 +1,16 @@
+[package]
+name = "consortium-nix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NixOS deployment orchestration for consortium"
+
+[dependencies]
+consortium.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

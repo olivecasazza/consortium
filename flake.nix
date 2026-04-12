@@ -31,6 +31,17 @@
         "x86_64-darwin"
       ];
 
+      # Non-per-system outputs
+      flake = {
+        # Nix library for fleet configuration (system-independent)
+        lib = import ./nix/lib {
+          inherit (nixpkgs) lib;
+          writeText =
+            name: text:
+            builtins.toFile name text;
+        };
+      };
+
       perSystem =
         {
           config,
@@ -94,6 +105,21 @@
             }
           );
 
+          # ── NixOS deployment library ────────────────────────────────
+          consortium-nix = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoExtraArgs = "-p consortium-nix";
+            }
+          );
+
+          # ── Nix library for fleet configuration ────────────────────
+          consortiumLib = import ./nix/lib {
+            inherit lib;
+            inherit (pkgs) writeText;
+          };
+
           # ── Python environment ─────────────────────────────────────────
           python = pkgs.python312;
           pythonEnv = python.withPackages (
@@ -148,7 +174,7 @@
 
           # ── Packages ───────────────────────────────────────────────────
           packages = {
-            inherit consortium consortium-cli;
+            inherit consortium consortium-cli consortium-nix;
             default = consortium;
           };
 

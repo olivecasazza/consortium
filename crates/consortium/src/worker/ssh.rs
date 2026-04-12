@@ -27,6 +27,33 @@ pub struct SshOptions {
     pub strict_host_key_checking: bool,
     /// Whether to enable password authentication.
     pub password_auth: bool,
+    /// Path to SSH identity file (passed as -i).
+    pub identity_file: Option<String>,
+    /// Path to SSH config file (passed as -F).
+    pub config_file: Option<String>,
+    /// Enable SSH ControlMaster multiplexing.
+    pub control_master: Option<ControlMaster>,
+    /// Path for ControlMaster socket (passed as -oControlPath=...).
+    pub control_path: Option<String>,
+    /// ControlPersist timeout (e.g. "10m", "yes").
+    pub control_persist: Option<String>,
+    /// SSH ProxyJump host (passed as -J).
+    pub proxy_jump: Option<String>,
+    /// SSH port (passed as -p).
+    pub port: Option<u16>,
+}
+
+/// SSH ControlMaster modes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlMaster {
+    /// Automatically start a master if one isn't running.
+    Auto,
+    /// Automatically start and automatically close.
+    AutoAsk,
+    /// Always be the master.
+    Yes,
+    /// Never be the master.
+    No,
 }
 
 impl Default for SshOptions {
@@ -39,6 +66,13 @@ impl Default for SshOptions {
             connect_timeout: Some(10),
             strict_host_key_checking: false,
             password_auth: false,
+            identity_file: None,
+            config_file: None,
+            control_master: None,
+            control_path: None,
+            control_persist: None,
+            proxy_jump: None,
+            port: None,
         }
     }
 }
@@ -50,6 +84,12 @@ impl SshOptions {
     pub fn build_ssh_cmd(&self, node: &str, command: &str) -> String {
         let mut parts = Vec::new();
         parts.push(self.ssh_path.clone());
+
+        // Config file must come early (before other options)
+        if let Some(ref config_file) = self.config_file {
+            parts.push("-F".to_string());
+            parts.push(config_file.clone());
+        }
 
         // Standard hardened options (mirrors Python SshClient._build_cmd)
         parts.push("-oForwardX11=no".to_string());
@@ -66,9 +106,44 @@ impl SshOptions {
             parts.push(format!("-oConnectTimeout={}", timeout));
         }
 
+        // ControlMaster multiplexing
+        if let Some(ref cm) = self.control_master {
+            let val = match cm {
+                ControlMaster::Auto => "auto",
+                ControlMaster::AutoAsk => "autoask",
+                ControlMaster::Yes => "yes",
+                ControlMaster::No => "no",
+            };
+            parts.push(format!("-oControlMaster={}", val));
+        }
+        if let Some(ref cp) = self.control_path {
+            parts.push(format!("-oControlPath={}", cp));
+        }
+        if let Some(ref persist) = self.control_persist {
+            parts.push(format!("-oControlPersist={}", persist));
+        }
+
         // Custom options
         for opt in &self.options {
             parts.push(format!("-o{}", opt));
+        }
+
+        // Identity file
+        if let Some(ref identity) = self.identity_file {
+            parts.push("-i".to_string());
+            parts.push(identity.clone());
+        }
+
+        // ProxyJump
+        if let Some(ref jump) = self.proxy_jump {
+            parts.push("-J".to_string());
+            parts.push(jump.clone());
+        }
+
+        // Port
+        if let Some(port) = self.port {
+            parts.push("-p".to_string());
+            parts.push(port.to_string());
         }
 
         // User
@@ -99,6 +174,12 @@ impl SshOptions {
         let mut parts = Vec::new();
         parts.push(self.scp_path.clone());
 
+        // Config file
+        if let Some(ref config_file) = self.config_file {
+            parts.push("-F".to_string());
+            parts.push(config_file.clone());
+        }
+
         if !self.strict_host_key_checking {
             parts.push("-oStrictHostKeyChecking=no".to_string());
         }
@@ -111,12 +192,47 @@ impl SshOptions {
             parts.push(format!("-oConnectTimeout={}", timeout));
         }
 
+        // ControlMaster multiplexing
+        if let Some(ref cm) = self.control_master {
+            let val = match cm {
+                ControlMaster::Auto => "auto",
+                ControlMaster::AutoAsk => "autoask",
+                ControlMaster::Yes => "yes",
+                ControlMaster::No => "no",
+            };
+            parts.push(format!("-oControlMaster={}", val));
+        }
+        if let Some(ref cp) = self.control_path {
+            parts.push(format!("-oControlPath={}", cp));
+        }
+        if let Some(ref persist) = self.control_persist {
+            parts.push(format!("-oControlPersist={}", persist));
+        }
+
         if preserve {
             parts.push("-p".to_string());
         }
 
         if directory {
             parts.push("-r".to_string());
+        }
+
+        // Identity file
+        if let Some(ref identity) = self.identity_file {
+            parts.push("-i".to_string());
+            parts.push(identity.clone());
+        }
+
+        // ProxyJump
+        if let Some(ref jump) = self.proxy_jump {
+            parts.push("-J".to_string());
+            parts.push(jump.clone());
+        }
+
+        // Port
+        if let Some(port) = self.port {
+            parts.push("-P".to_string()); // SCP uses -P (uppercase) for port
+            parts.push(port.to_string());
         }
 
         // Custom options
@@ -552,6 +668,77 @@ mod tests {
 
         assert!(worker.is_reverse());
         assert_eq!(worker.num_nodes(), 1);
+    }
+
+    #[test]
+    fn test_ssh_options_with_identity_file() {
+        let opts = SshOptions {
+            identity_file: Some("/path/to/key".to_string()),
+            ..SshOptions::default()
+        };
+        let cmd = opts.build_ssh_cmd("node1", "hostname");
+        assert!(cmd.contains("-i /path/to/key"));
+    }
+
+    #[test]
+    fn test_ssh_options_with_config_file() {
+        let opts = SshOptions {
+            config_file: Some("/etc/ssh/config".to_string()),
+            ..SshOptions::default()
+        };
+        let cmd = opts.build_ssh_cmd("node1", "hostname");
+        assert!(cmd.contains("-F /etc/ssh/config"));
+    }
+
+    #[test]
+    fn test_ssh_options_with_control_master() {
+        let opts = SshOptions {
+            control_master: Some(ControlMaster::Auto),
+            control_path: Some("/tmp/ssh-%r@%h:%p".to_string()),
+            control_persist: Some("10m".to_string()),
+            ..SshOptions::default()
+        };
+        let cmd = opts.build_ssh_cmd("node1", "hostname");
+        assert!(cmd.contains("-oControlMaster=auto"));
+        assert!(cmd.contains("-oControlPath=/tmp/ssh-%r@%h:%p"));
+        assert!(cmd.contains("-oControlPersist=10m"));
+    }
+
+    #[test]
+    fn test_ssh_options_with_proxy_jump() {
+        let opts = SshOptions {
+            proxy_jump: Some("bastion.example.com".to_string()),
+            ..SshOptions::default()
+        };
+        let cmd = opts.build_ssh_cmd("node1", "hostname");
+        assert!(cmd.contains("-J bastion.example.com"));
+    }
+
+    #[test]
+    fn test_ssh_options_with_port() {
+        let opts = SshOptions {
+            port: Some(2222),
+            ..SshOptions::default()
+        };
+        let ssh_cmd = opts.build_ssh_cmd("node1", "hostname");
+        assert!(ssh_cmd.contains("-p 2222"));
+
+        let scp_cmd = opts.build_scp_cmd("node1", "/src", "/dst", false, false, false);
+        assert!(scp_cmd.contains("-P 2222")); // SCP uses uppercase -P
+    }
+
+    #[test]
+    fn test_scp_options_with_control_master() {
+        let opts = SshOptions {
+            control_master: Some(ControlMaster::Auto),
+            control_path: Some("/tmp/ssh-%r@%h:%p".to_string()),
+            identity_file: Some("/key".to_string()),
+            ..SshOptions::default()
+        };
+        let cmd = opts.build_scp_cmd("node1", "/src", "/dst", false, false, false);
+        assert!(cmd.contains("-oControlMaster=auto"));
+        assert!(cmd.contains("-oControlPath=/tmp/ssh-%r@%h:%p"));
+        assert!(cmd.contains("-i /key"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ description = "CLI tools for consortium — claw, molt, pinch"
 
 [dependencies]
 consortium.workspace = true
+consortium-nix.workspace = true
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 is-terminal = "0.4"
@@ -26,6 +27,11 @@ path = "src/molt.rs"
 name = "pinch"
 path = "src/pinch.rs"
 
+[[bin]]
+name = "cast"
+path = "src/cast.rs"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3"

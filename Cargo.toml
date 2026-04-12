@@ -4,6 +4,7 @@ members = [
     "crates/consortium",
     "crates/consortium-py",
     "crates/consortium-cli",
+    "crates/consortium-nix",
 ]
 
 [workspace.metadata.crane]
@@ -18,5 +19,6 @@ description = "A Rust rewrite of ClusterShell with Python bindings"
 
 [workspace.dependencies]
 consortium = { path = "crates/consortium" }
+consortium-nix = { path = "crates/consortium-nix" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 thiserror = "2"
