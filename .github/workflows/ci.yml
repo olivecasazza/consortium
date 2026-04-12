@@ -126,8 +126,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@main
-
+      # Nix is pre-installed on NixOS runners (Mac Minis).
+      # Magic Nix Cache for GitHub Actions caching.
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Build consortium-cli
