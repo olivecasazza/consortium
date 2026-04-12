@@ -57,30 +57,27 @@ pub fn build_closures(
     Ok(results)
 }
 
-/// Build the system closure for a single host.
-pub fn build_host(flake_uri: &str, hostname: &str, machines_file: Option<&str>) -> Result<String> {
-    let attr = format!(
-        "{}#nixosConfigurations.{}.config.system.build.toplevel",
-        flake_uri, hostname
-    );
-
+/// Build any flake attribute and return its store path.
+///
+/// This is the generic build primitive — consortium-ansible uses it for
+/// `ansibleEnvs.{name}`, consortium-slurm for `slurmEnvs.{name}`, etc.
+pub fn build_flake_attr(flake_attr: &str, machines_file: Option<&str>) -> Result<String> {
     let mut cmd = Command::new("nix");
-    cmd.args(["build", &attr, "--no-link", "--print-out-paths"]);
+    cmd.args(["build", flake_attr, "--no-link", "--print-out-paths"]);
 
-    // Use distributed builders if a machines file is provided
     if let Some(path) = machines_file {
         cmd.arg("--builders").arg(format!("@{}", path));
     }
 
     let output = cmd.output().map_err(|e| NixError::BuildFailed {
-        host: hostname.to_string(),
+        host: flake_attr.to_string(),
         message: format!("failed to run nix build: {}", e),
     })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NixError::BuildFailed {
-            host: hostname.to_string(),
+            host: flake_attr.to_string(),
             message: stderr.to_string(),
         });
     }
@@ -88,12 +85,21 @@ pub fn build_host(flake_uri: &str, hostname: &str, machines_file: Option<&str>) 
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if path.is_empty() {
         return Err(NixError::BuildFailed {
-            host: hostname.to_string(),
+            host: flake_attr.to_string(),
             message: "nix build returned empty path".to_string(),
         });
     }
 
     Ok(path)
+}
+
+/// Build the system closure for a single host.
+pub fn build_host(flake_uri: &str, hostname: &str, machines_file: Option<&str>) -> Result<String> {
+    let attr = format!(
+        "{}#nixosConfigurations.{}.config.system.build.toplevel",
+        flake_uri, hostname
+    );
+    build_flake_attr(&attr, machines_file)
 }
 
 /// Generate a temporary machines file from healthy builders.

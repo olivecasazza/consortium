@@ -196,6 +196,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "consortium-ansible"
+version = "0.1.0"
+dependencies = [
+ "consortium",
+ "consortium-nix",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "consortium-cli"
 version = "0.1.0"
 dependencies = [
@@ -204,7 +216,11 @@ dependencies = [
  "clap",
  "console",
  "consortium",
+ "consortium-ansible",
  "consortium-nix",
+ "consortium-ray",
+ "consortium-skypilot",
+ "consortium-slurm",
  "indicatif",
  "is-terminal",
  "predicates",
@@ -228,6 +244,50 @@ version = "0.1.0"
 dependencies = [
  "consortium",
  "pyo3",
+]
+
+[[package]]
+name = "consortium-ray"
+version = "0.1.0"
+dependencies = [
+ "consortium",
+ "consortium-nix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "consortium-skypilot"
+version = "0.1.0"
+dependencies = [
+ "consortium",
+ "consortium-nix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "consortium-slurm"
+version = "0.1.0"
+dependencies = [
+ "consortium",
+ "consortium-nix",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "consortium-test-harness"
+version = "0.1.0"
+dependencies = [
+ "consortium",
+ "consortium-nix",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -709,6 +769,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -755,6 +821,19 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -871,6 +950,12 @@ name = "unindent"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "utf8parse"

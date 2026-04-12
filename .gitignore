@@ -42,3 +42,7 @@ yarn.lock
 .hermes/
 test_ini.rs
 results/
+
+# Docker test artifacts
+tests/docker/ssh/
+tests/docker/docker-compose.generated.yml

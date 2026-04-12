@@ -26,6 +26,12 @@ impl From<String> for TaskId {
     }
 }
 
+impl From<&String> for TaskId {
+    fn from(s: &String) -> Self {
+        TaskId(s.clone())
+    }
+}
+
 /// The outcome of executing a single task.
 #[derive(Debug, Clone)]
 pub enum TaskOutcome {

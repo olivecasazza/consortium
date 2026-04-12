@@ -5,6 +5,11 @@ members = [
     "crates/consortium-py",
     "crates/consortium-cli",
     "crates/consortium-nix",
+    "crates/consortium-ansible",
+    "crates/consortium-slurm",
+    "crates/consortium-ray",
+    "crates/consortium-skypilot",
+    "crates/consortium-test-harness",
 ]
 
 [workspace.metadata.crane]
@@ -20,5 +25,9 @@ description = "A Rust rewrite of ClusterShell with Python bindings"
 [workspace.dependencies]
 consortium = { path = "crates/consortium" }
 consortium-nix = { path = "crates/consortium-nix" }
+consortium-ansible = { path = "crates/consortium-ansible" }
+consortium-slurm = { path = "crates/consortium-slurm" }
+consortium-ray = { path = "crates/consortium-ray" }
+consortium-skypilot = { path = "crates/consortium-skypilot" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 thiserror = "2"

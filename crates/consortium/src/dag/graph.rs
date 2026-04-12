@@ -294,4 +294,54 @@ mod tests {
             Err(DagError::UnknownTask(_))
         ));
     }
+
+    #[test]
+    fn test_self_loop_cycle() {
+        let mut g = DagGraph::new();
+        g.add_task(TaskId::from("a"), noop_task("a")).unwrap();
+        g.add_dep(&TaskId::from("a"), &TaskId::from("a")).unwrap();
+        assert!(matches!(g.validate(), Err(DagError::CycleDetected(_))));
+    }
+
+    #[test]
+    fn test_deep_cycle() {
+        let mut g = DagGraph::new();
+        for name in &["a", "b", "c", "d", "e"] {
+            g.add_task(TaskId::from(*name), noop_task(name)).unwrap();
+        }
+        g.add_dep(&TaskId::from("b"), &TaskId::from("a")).unwrap();
+        g.add_dep(&TaskId::from("c"), &TaskId::from("b")).unwrap();
+        g.add_dep(&TaskId::from("d"), &TaskId::from("c")).unwrap();
+        g.add_dep(&TaskId::from("e"), &TaskId::from("d")).unwrap();
+        g.add_dep(&TaskId::from("a"), &TaskId::from("e")).unwrap(); // closes the cycle
+        assert!(matches!(g.validate(), Err(DagError::CycleDetected(_))));
+    }
+
+    #[test]
+    fn test_large_dag_performance() {
+        let mut g = DagGraph::new();
+        // 1000 tasks in a linear chain — should validate in <100ms
+        for i in 0..1000 {
+            let id = format!("t{}", i);
+            g.add_task(TaskId::from(id.as_str()), noop_task(&id))
+                .unwrap();
+            if i > 0 {
+                let prev = format!("t{}", i - 1);
+                g.add_dep(&TaskId::from(id.as_str()), &TaskId::from(prev.as_str()))
+                    .unwrap();
+            }
+        }
+        let start = std::time::Instant::now();
+        assert!(g.validate().is_ok());
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "1000-task DAG validation took {:?}",
+            elapsed
+        );
+        let order = g.topo_sort().unwrap();
+        assert_eq!(order.len(), 1000);
+        assert_eq!(order[0], TaskId::from("t0"));
+        assert_eq!(order[999], TaskId::from("t999"));
+    }
 }

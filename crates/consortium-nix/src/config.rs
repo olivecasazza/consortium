@@ -80,6 +80,119 @@ pub struct FleetConfig {
     /// Flake URI for builds (e.g. "." or "github:user/repo").
     #[serde(default = "default_flake_uri")]
     pub flake_uri: String,
+    /// Ansible configuration (if ansible integration is enabled).
+    #[serde(default, rename = "ansibleConfig")]
+    pub ansible_config: Option<AnsibleFleetConfig>,
+    /// Slurm configuration (if slurm integration is enabled).
+    #[serde(default, rename = "slurmConfig")]
+    pub slurm_config: Option<SlurmFleetConfig>,
+    /// Ray configuration (if ray integration is enabled).
+    #[serde(default, rename = "rayConfig")]
+    pub ray_config: Option<RayFleetConfig>,
+    /// SkyPilot configuration (if skypilot integration is enabled).
+    #[serde(default, rename = "skypilotConfig")]
+    pub skypilot_config: Option<SkypilotFleetConfig>,
+}
+
+/// Ansible fleet configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnsibleFleetConfig {
+    /// Host that runs ansible-playbook (the control node).
+    pub control_node: String,
+    /// Pinned ansible version (e.g. "2.16").
+    #[serde(default)]
+    pub ansible_version: Option<String>,
+    /// Ansible collections to include in the environment.
+    #[serde(default)]
+    pub collections: Vec<String>,
+    /// Path to playbooks directory.
+    #[serde(default)]
+    pub playbook_dir: Option<String>,
+    /// Additional host group assignments beyond tags.
+    #[serde(default)]
+    pub host_groups: HashMap<String, Vec<String>>,
+}
+
+/// Slurm fleet configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlurmFleetConfig {
+    /// Host for sbatch submission.
+    pub submit_node: String,
+    /// SSH user for submission.
+    pub submit_user: String,
+    /// Host running slurmctld.
+    pub control_node: String,
+    /// Partition definitions.
+    #[serde(default)]
+    pub partitions: HashMap<String, SlurmPartition>,
+}
+
+/// Slurm partition definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlurmPartition {
+    /// Nodes in this partition.
+    pub nodes: Vec<String>,
+    /// Whether this is the default partition.
+    #[serde(default)]
+    pub default: bool,
+    /// Maximum job time (e.g. "7-00:00:00").
+    #[serde(default)]
+    pub max_time: Option<String>,
+}
+
+/// Ray fleet configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RayFleetConfig {
+    /// Ray head node (or dashboard address for K8s).
+    pub head_address: String,
+    /// Ray dashboard port.
+    #[serde(default = "default_ray_port")]
+    pub dashboard_port: u16,
+    /// Whether ray is running on K8s (KubeRay) vs bare metal.
+    #[serde(default)]
+    pub kubernetes: bool,
+    /// Worker groups with their node assignments.
+    #[serde(default)]
+    pub worker_groups: HashMap<String, RayWorkerGroup>,
+}
+
+fn default_ray_port() -> u16 {
+    8265
+}
+
+/// Ray worker group definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RayWorkerGroup {
+    /// Nodes in this group.
+    pub nodes: Vec<String>,
+    /// CPUs per worker.
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    /// GPUs per worker.
+    #[serde(default)]
+    pub gpus: Option<u32>,
+    /// Memory per worker (MB).
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+}
+
+/// SkyPilot fleet configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkypilotFleetConfig {
+    /// Default cloud provider.
+    pub cloud: String,
+    /// Default region.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Default instance type.
+    #[serde(default)]
+    pub instance_type: Option<String>,
 }
 
 fn default_flake_uri() -> String {

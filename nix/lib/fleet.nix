@@ -30,6 +30,11 @@
       hostOverrides ? { },
       # Flake URI for builds (e.g. "." or "github:user/repo").
       flakeUri ? ".",
+      # Tool-specific configurations (optional).
+      ansibleConfig ? null,
+      slurmConfig ? null,
+      rayConfig ? null,
+      skypilotConfig ? null,
     }:
     let
       # Merge NixOS and Darwin configurations
@@ -78,11 +83,16 @@
       ) nodes;
 
       # JSON config for the consortium-nix CLI
-      configData = {
-        nodes = jsonNodes;
-        inherit flakeUri;
-        builders = normalizedBuilders;
-      };
+      configData =
+        {
+          nodes = jsonNodes;
+          inherit flakeUri;
+          builders = normalizedBuilders;
+        }
+        // (lib.optionalAttrs (ansibleConfig != null) { inherit ansibleConfig; })
+        // (lib.optionalAttrs (slurmConfig != null) { inherit slurmConfig; })
+        // (lib.optionalAttrs (rayConfig != null) { inherit rayConfig; })
+        // (lib.optionalAttrs (skypilotConfig != null) { inherit skypilotConfig; });
 
       configJson = builtins.toJSON configData;
     in

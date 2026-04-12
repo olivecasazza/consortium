@@ -1,0 +1,14 @@
+[package]
+name = "consortium-skypilot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SkyPilot multi-cloud job orchestration with nix-built environments for consortium"
+
+[dependencies]
+consortium.workspace = true
+consortium-nix.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
