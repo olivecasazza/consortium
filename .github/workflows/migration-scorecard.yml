@@ -23,8 +23,9 @@ on:
         default: ""
 
 jobs:
+  # ── Layer 1: Unit Tests (fast, no external deps) ──────────────────
   scorecard:
-    name: Migration Scorecard
+    name: Unit Tests & Migration Scorecard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,3 +127,51 @@ jobs:
             results/
             TEST_MAPPING.toml
           retention-days: 30
+
+  # ── Layer 2: Integration Tests (Docker, runs after unit tests) ────
+  integration:
+    name: Docker Integration Tests
+    needs: scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Docker SSH node image
+        run: |
+          cd tests/docker
+          docker build -t consortium-ssh-node -f Dockerfile.ssh-node .
+
+      - name: Run integration tests (small cluster — 6 nodes)
+        run: |
+          cargo test -p consortium \
+            --features docker-tests \
+            --test docker_integration \
+            -- --test-threads=1 \
+            -Z unstable-options --format json 2>&1 | tee results-integration.json || true
+
+      - name: Run integration tests (large cluster — 33 nodes)
+        run: |
+          cargo test -p consortium \
+            --features docker-tests \
+            --test docker_integration \
+            "test_scale" \
+            -- --test-threads=1 || true
+
+      - name: Cleanup Docker containers
+        if: always()
+        run: |
+          docker ps -a --filter "name=consortium-test" -q | xargs -r docker rm -f
+          docker network ls --filter "name=consortium-test" -q | xargs -r docker network rm
