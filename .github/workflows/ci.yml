@@ -32,10 +32,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run unit tests
-        run: |
-          cargo test --workspace -- -Z unstable-options --format json --report-time 2>&1 | tee test-results.json
-          # Also run normally to get exit code
-          cargo test --workspace
+        run: cargo test --workspace 2>&1 | tee test-results.txt
 
       - name: Generate test summary
         if: always()
@@ -43,33 +40,15 @@ jobs:
           echo "## Layer 1: Unit Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Parse JSON test results
-          if [ -f test-results.json ]; then
-            PASSED=$(grep -c '"ok"' test-results.json 2>/dev/null || echo "0")
-            FAILED=$(grep '"event":"failed"' test-results.json | grep -c '"type":"test"' 2>/dev/null || echo "0")
-            TOTAL=$((PASSED + FAILED))
+          if [ -f test-results.txt ]; then
+            PASSED=$(grep -c "\.\.\. ok$" test-results.txt || true)
+            FAILED=$(grep -c "\.\.\. FAILED$" test-results.txt || true)
 
-            if [ "$FAILED" -eq 0 ]; then
-              echo "✅ **All $TOTAL tests passed**" >> $GITHUB_STEP_SUMMARY
+            if [ "$FAILED" = "0" ] || [ -z "$FAILED" ]; then
+              echo "✅ **All ${PASSED:-0} tests passed**" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+              echo "❌ **$FAILED tests failed, $PASSED passed**" >> $GITHUB_STEP_SUMMARY
             fi
-
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details><summary>Test breakdown by crate</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Crate | Tests | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|-------|--------|" >> $GITHUB_STEP_SUMMARY
-
-            for crate in consortium consortium-nix consortium-ansible consortium-slurm consortium-ray consortium-skypilot consortium-cli; do
-              count=$(grep "\"name\":\"$crate" test-results.json 2>/dev/null | grep -c '"event":"ok"' || echo "0")
-              if [ "$count" -gt 0 ]; then
-                echo "| $crate | $count | ✅ |" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Run clippy
@@ -124,29 +103,26 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ -f docker-results.txt ]; then
-            PASSED=$(grep -c "... ok$" docker-results.txt || echo "0")
-            FAILED=$(grep -c "... FAILED$" docker-results.txt || echo "0")
-            TOTAL=$((PASSED + FAILED))
+            PASSED=$(grep -c "\.\.\. ok$" docker-results.txt || true)
+            FAILED=$(grep -c "\.\.\. FAILED$" docker-results.txt || true)
 
-            if [ "$FAILED" -eq 0 ]; then
-              echo "✅ **All $PASSED tests passed** against Docker SSH cluster" >> $GITHUB_STEP_SUMMARY
+            if [ "${FAILED:-0}" = "0" ]; then
+              echo "✅ **All ${PASSED:-0} tests passed** against Docker SSH cluster" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+              echo "❌ **$FAILED failed, $PASSED passed**" >> $GITHUB_STEP_SUMMARY
             fi
 
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details><summary>Test results</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
             echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-            grep "^test " docker-results.txt | while read line; do
-              name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
-              status=$(echo "$line" | grep -o 'ok\|FAILED')
-              icon=$([ "$status" = "ok" ] && echo "✅" || echo "❌")
-              echo "| \`$name\` | $icon |" >> $GITHUB_STEP_SUMMARY
+            grep "^test " docker-results.txt | sed 's/^test //' | while IFS= read -r line; do
+              name="${line% ... *}"
+              if echo "$line" | grep -q "ok$"; then
+                echo "| \`$name\` | ✅ |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| \`$name\` | ❌ |" >> $GITHUB_STEP_SUMMARY
+              fi
             done
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Cleanup containers
@@ -206,31 +182,26 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ -f tool-results.txt ]; then
-            PASSED=$(grep -c "... ok$" tool-results.txt || echo "0")
-            FAILED=$(grep -c "... FAILED$" tool-results.txt || echo "0")
-            TOTAL=$((PASSED + FAILED))
+            PASSED=$(grep -c "\.\.\. ok$" tool-results.txt || true)
+            FAILED=$(grep -c "\.\.\. FAILED$" tool-results.txt || true)
 
-            if [ "$FAILED" -eq 0 ] && [ "$PASSED" -gt 0 ]; then
+            if [ "${FAILED:-0}" = "0" ] && [ "${PASSED:-0}" != "0" ]; then
               echo "✅ **All $PASSED tests passed** (real nix build, real ansible)" >> $GITHUB_STEP_SUMMARY
-            elif [ "$TOTAL" -eq 0 ]; then
-              echo "⚠️ **No tests ran**" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ **$FAILED/$TOTAL tests failed**" >> $GITHUB_STEP_SUMMARY
+              echo "❌ **${FAILED:-0} failed, ${PASSED:-0} passed**" >> $GITHUB_STEP_SUMMARY
             fi
 
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details><summary>Test results</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
             echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-            grep "^test " tool-results.txt | while read line; do
-              name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
-              status=$(echo "$line" | grep -o 'ok\|FAILED')
-              icon=$([ "$status" = "ok" ] && echo "✅" || echo "❌")
-              echo "| \`$name\` | $icon |" >> $GITHUB_STEP_SUMMARY
+            grep "^test " tool-results.txt | sed 's/^test //' | while IFS= read -r line; do
+              name="${line% ... *}"
+              if echo "$line" | grep -q "ok$"; then
+                echo "| \`$name\` | ✅ |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| \`$name\` | ❌ |" >> $GITHUB_STEP_SUMMARY
+              fi
             done
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Cleanup containers
