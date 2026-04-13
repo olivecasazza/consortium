@@ -70,9 +70,9 @@
             "target/**/*.tar.gz",
             "target/**/*.zip"
           ],
-          "releasedLabels": [
-            "Status: Released"
-          ]
+          "successComment": false,
+          "failComment": false,
+          "releasedLabels": false
         }
       ]
     ],

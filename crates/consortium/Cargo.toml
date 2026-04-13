@@ -21,3 +21,7 @@ docker-tests = []
 tempfile = "3"
 consortium-test-harness = { path = "../consortium-test-harness" }
 consortium-nix = { path = "../consortium-nix" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
