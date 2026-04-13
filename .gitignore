@@ -46,3 +46,4 @@ results/
 # Docker test artifacts
 tests/docker/ssh/
 tests/docker/docker-compose.generated.yml
+.pre-commit-config.yaml
