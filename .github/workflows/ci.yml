@@ -122,11 +122,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - name: Install Rust and cargo-nextest
+        run: |
+          # On NixOS, use nix-shell for rust toolchain + nextest
+          nix-env -iA nixpkgs.rustup nixpkgs.cargo-nextest 2>/dev/null || true
+          rustup default stable 2>/dev/null || true
 
       - name: Cache cargo
         uses: actions/cache@v4
