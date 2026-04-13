@@ -174,8 +174,9 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
+          RUNNER_HOST=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "$RUNNER_NAME")
           echo "## Tool Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "**Runner:** \`$(hostname)\` (self-hosted NixOS)" >> $GITHUB_STEP_SUMMARY
+          echo "**Runner:** \`${RUNNER_HOST}\` (self-hosted NixOS)" >> $GITHUB_STEP_SUMMARY
 
       - name: Cleanup containers
         if: always()
@@ -227,7 +228,7 @@ jobs:
           else
             echo "| Distributed builders | ⚠️ not configured |" >> $GITHUB_STEP_SUMMARY
           fi
-          RUNNER_HOST=$(hostname 2>/dev/null || echo "unknown")
+          RUNNER_HOST=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "$RUNNER_NAME")
           NIX_VER=$(nix --version 2>/dev/null || echo "unknown")
           echo "| Runner | \`${RUNNER_HOST}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Nix | \`${NIX_VER}\` |" >> $GITHUB_STEP_SUMMARY
