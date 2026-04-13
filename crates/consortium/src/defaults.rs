@@ -444,22 +444,27 @@ mod tests {
         assert_eq!(paths[0], PathBuf::from("/etc/clustershell/defaults.conf"));
     }
 
+    // These tests mutate environment variables which is inherently racy
+    // in a multi-threaded test runner. They pass reliably with nextest
+    // (one process per test) but can flake with cargo test.
     #[test]
     fn test_config_paths_with_cfgdir() {
-        std::env::set_var("CLUSTERSHELL_CFGDIR", "/tmp/test_cfg");
+        // SAFETY: env mutation — nextest isolates this in its own process
+        unsafe { std::env::set_var("CLUSTERSHELL_CFGDIR", "/tmp/test_cfg") };
         let paths = config_paths("defaults.conf");
         let last = paths.last().unwrap();
         assert_eq!(*last, PathBuf::from("/tmp/test_cfg/defaults.conf"));
-        std::env::remove_var("CLUSTERSHELL_CFGDIR");
+        unsafe { std::env::remove_var("CLUSTERSHELL_CFGDIR") };
     }
 
     #[test]
     fn test_config_paths_with_xdg() {
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg_test");
-        std::env::remove_var("CLUSTERSHELL_CFGDIR");
+        // SAFETY: env mutation — nextest isolates this in its own process
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg_test") };
+        unsafe { std::env::remove_var("CLUSTERSHELL_CFGDIR") };
         let paths = config_paths("defaults.conf");
         assert!(paths.contains(&PathBuf::from("/tmp/xdg_test/clustershell/defaults.conf")));
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     #[test]

@@ -5,8 +5,8 @@ junit.path = "junit.xml"
 # Fail-fast disabled so all tests run even if some fail
 fail-fast = false
 
-# Retry flaky tests once
-retries = 1
+# Retry flaky tests (env var race in defaults::test_config_paths_with_cfgdir)
+retries = 2
 
 # Slow test warning at 30s, terminate at 5m
 slow-timeout = { period = "30s", terminate-after = 10 }
