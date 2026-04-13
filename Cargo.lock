@@ -183,25 +183,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "consortium"
-version = "0.1.0"
-dependencies = [
- "configparser",
- "consortium-nix",
- "consortium-test-harness",
- "dirs-next",
- "hostname",
- "libc",
- "slotmap",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "consortium-ansible"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "consortium-nix",
  "serde",
  "serde_json",
@@ -217,8 +202,8 @@ dependencies = [
  "assert_cmd",
  "clap",
  "console",
- "consortium",
  "consortium-ansible",
+ "consortium-crate",
  "consortium-nix",
  "consortium-ray",
  "consortium-skypilot",
@@ -230,10 +215,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "consortium-crate"
+version = "0.1.0"
+dependencies = [
+ "configparser",
+ "consortium-nix",
+ "consortium-test-harness",
+ "dirs-next",
+ "hostname",
+ "libc",
+ "slotmap",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "consortium-nix"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "serde",
  "serde_json",
  "tempfile",
@@ -244,7 +244,7 @@ dependencies = [
 name = "consortium-py"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "pyo3",
 ]
 
@@ -252,7 +252,7 @@ dependencies = [
 name = "consortium-ray"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "consortium-nix",
  "serde",
  "serde_json",
@@ -263,7 +263,7 @@ dependencies = [
 name = "consortium-skypilot"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "consortium-nix",
  "serde",
  "serde_json",
@@ -274,7 +274,7 @@ dependencies = [
 name = "consortium-slurm"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "consortium-nix",
  "serde",
  "serde_json",
@@ -286,7 +286,7 @@ dependencies = [
 name = "consortium-test-harness"
 version = "0.1.0"
 dependencies = [
- "consortium",
+ "consortium-crate",
  "consortium-nix",
  "serde",
  "serde_json",

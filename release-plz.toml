@@ -4,7 +4,7 @@ changelog_config = "cliff.toml"
 
 # Crates to publish (exclude test harness and py bindings)
 [[package]]
-name = "consortium"
+name = "consortium-crate"
 
 [[package]]
 name = "consortium-nix"
