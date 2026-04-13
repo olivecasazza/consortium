@@ -3,9 +3,9 @@ name: Docs
 on:
   push:
     branches: [master]
-  release:
-    types: [published]
   workflow_dispatch:
+  # Note: release docs are deployed by the release workflow directly
+  # (GITHUB_TOKEN events don't trigger other workflows)
 
 permissions:
   contents: write

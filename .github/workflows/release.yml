@@ -98,6 +98,35 @@ jobs:
           echo "Publishing consortium-cli..."
           cargo publish -p consortium-cli --no-verify || true
 
+      - name: Build and deploy versioned docs
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Building docs for $LATEST_TAG..."
+            cargo doc --workspace --no-deps
+            echo '<meta http-equiv="refresh" content="0; url=consortium/index.html">' > target/doc/index.html
+            echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+        id: docs
+
+      - name: Deploy docs to /${{ steps.docs.outputs.tag }}/
+        if: steps.docs.outputs.tag != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
+          destination_dir: ${{ steps.docs.outputs.tag }}
+          keep_files: true
+
+      - name: Deploy docs to /latest/
+        if: steps.docs.outputs.tag != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
+          destination_dir: latest
+          keep_files: true
+
       - name: Generate release summary
         if: always()
         run: |
