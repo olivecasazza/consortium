@@ -7,7 +7,7 @@
 //! The TreeWorker uses:
 //! - [`PropagationTreeRouter`] to determine next-hop gateways
 //! - [`PropagationChannel`] to communicate with gateway processes
-//! - Direct [`SshWorker`]/[`ExecWorker`] for leaf nodes reachable without gateways
+//! - Direct `SshWorker`/`ExecWorker` for leaf nodes reachable without gateways
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

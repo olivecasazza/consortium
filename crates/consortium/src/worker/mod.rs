@@ -77,7 +77,7 @@ pub trait EventHandler: Send {
     }
 
     /// Extract buffered stdout/stderr data from this handler.
-    /// Returns (stdout, stderr, timeouts) where stdout/stderr are node -> Vec<chunks>.
+    /// Returns (stdout, stderr, timeouts) where stdout/stderr are node -> `Vec<chunks>`.
     /// Default returns empty maps. Used by Task to collect results after execution.
     fn take_buffers(
         &mut self,

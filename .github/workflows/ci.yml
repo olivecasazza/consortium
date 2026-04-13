@@ -56,6 +56,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check docs build
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps
+
   # ── Layer 2: Docker Integration Tests (GitHub-hosted) ─────────────
   docker-integration:
     name: Docker Integration Tests

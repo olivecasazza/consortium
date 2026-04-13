@@ -373,7 +373,7 @@ impl Default for GroupResolver {
 /// Loads group sources from INI configuration files.
 ///
 /// Supports the groups.conf format with:
-/// - [Main] section for groupsdir, confdir, autodir, default
+/// - `[Main]` section for groupsdir, confdir, autodir, default
 /// - Other sections as UpcallGroupSource definitions
 pub struct GroupResolverConfig {
     filenames: Vec<PathBuf>,

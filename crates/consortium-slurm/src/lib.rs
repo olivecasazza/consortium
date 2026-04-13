@@ -11,7 +11,7 @@ pub mod tasks;
 
 pub use error::{Result, SlurmError};
 
-use consortium::dag::{DagBuilder, DagContext, DagReport, ErrorPolicy, TaskId};
+use consortium::dag::{DagBuilder, DagContext, DagReport, ErrorPolicy};
 use consortium_nix::FleetConfig;
 
 /// Submit a single slurm job with a nix-built environment.

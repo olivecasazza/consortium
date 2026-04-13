@@ -50,7 +50,7 @@ impl DagTask for NixEvalTask {
 /// Build the system closure for a single host.
 ///
 /// Reads: `eval:{host}` → toplevel path (to verify eval completed)
-/// Reads state: `machines_file` → Option<String> (path to machines file for distributed builds)
+/// Reads state: `machines_file` → `Option<String>` (path to machines file for distributed builds)
 /// Writes output: `build:{host}` → `String` (built store path)
 pub struct NixBuildTask {
     pub host: String,
