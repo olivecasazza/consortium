@@ -122,11 +122,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust and cargo-nextest
+      - name: Setup Rust toolchain
         run: |
-          # On NixOS, use nix-shell for rust toolchain + nextest
-          nix-env -iA nixpkgs.rustup nixpkgs.cargo-nextest 2>/dev/null || true
+          # Rust and cargo-nextest are in the runner's extraPackages (NixOS module).
+          # Just ensure rustup has a default toolchain.
           rustup default stable 2>/dev/null || true
+          cargo --version
+          cargo nextest --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -225,5 +227,7 @@ jobs:
           else
             echo "| Distributed builders | ⚠️ not configured |" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "| Runner | \`$(hostname)\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Nix | \`$(nix --version)\` |" >> $GITHUB_STEP_SUMMARY
+          RUNNER_HOST=$(hostname 2>/dev/null || echo "unknown")
+          NIX_VER=$(nix --version 2>/dev/null || echo "unknown")
+          echo "| Runner | \`${RUNNER_HOST}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nix | \`${NIX_VER}\` |" >> $GITHUB_STEP_SUMMARY
