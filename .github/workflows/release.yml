@@ -21,14 +21,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          cache: 'npm'
-
-      - name: Install commitlint
-        run: npm ci --ignore-scripts 2>/dev/null || npm install --save-dev @commitlint/config-conventional @commitlint/cli
+          node-version: '20'
 
       - name: Lint commit messages
-        run: npx commitlint --from HEAD~1 --to HEAD --config commitlint.config.cjs
+        run: |
+          npm install --save-dev @commitlint/config-conventional@19 @commitlint/cli@19
+          npx commitlint --from HEAD~1 --to HEAD --config commitlint.config.cjs
 
   # ── Run all tests ─────────────────────────────────────────────────
   test:
@@ -64,11 +62,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          cache: 'npm'
+          node-version: '20'
 
       - name: Install semantic-release
-        run: npm ci --ignore-scripts 2>/dev/null || npm install --save-dev semantic-release @semantic-release/github @semantic-release/exec
+        run: npm install --save-dev semantic-release @semantic-release/github
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
