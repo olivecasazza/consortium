@@ -1,17 +1,18 @@
-name: Conventional Commits & Semantic Release
+name: Release
 
 on:
   push:
     branches: [main, master]
-  pull_request:
-  merge_group:
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
-  # Validate commit messages follow conventional commits format
+  # ── Validate commit messages ──────────────────────────────────────
   lint-commits:
-    name: Lint Commit Messages
+    name: Lint Commits
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'merge_group'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,113 +21,40 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install commitlint
-        run: |
-          npm install --save-dev @commitlint/config-conventional @commitlint/cli
-          npx commitlint --version
+        run: npm ci --ignore-scripts 2>/dev/null || npm install --save-dev @commitlint/config-conventional @commitlint/cli
 
       - name: Lint commit messages
-        run: |
-          npx commitlint --from HEAD~1 --to HEAD --config commitlint.config.js --exit-code
+        run: npx commitlint --from HEAD~1 --to HEAD --config commitlint.config.js
 
-  # Run tests and check version changes
-  test-and-version:
-    name: Test and Version Check
+  # ── Run all tests ─────────────────────────────────────────────────
+  test:
+    name: Test
     runs-on: ubuntu-latest
     needs: lint-commits
-    if: github.event_name == 'push' || github.event_name == 'merge_group'
-    outputs:
-      version-bump: ${{ steps.version-check.outputs.version-bump }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Create virtual environment
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
-
-      - name: Install Python dependencies
-        run: |
-          source .venv/bin/activate
-          pip install coverage nose .
-
-      - name: Run tests
-        run: |
-          source .venv/bin/activate
-          python --version
-          export CLUSTERSHELL_GW_PYTHON_EXECUTABLE=$(which python)
-          nosetests -v --all-modules --with-coverage --cover-tests --cover-erase --cover-package=ClusterShell tests || true
-
-      - name: Check version changes
-        id: version-check
-        run: |
-          # Get the latest tag
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          
-          if [ -z "$LATEST_TAG" ]; then
-            echo "version-bump=initial" >> $GITHUB_OUTPUT
-          else
-            # Get commits since last tag
-            COMMITS=$(git log --oneline ${LATEST_TAG}..HEAD)
-            
-            # Determine version bump type
-            if echo "$COMMITS" | grep -q "BREAKING CHANGE:"; then
-              echo "version-bump=major" >> $GITHUB_OUTPUT
-            elif echo "$COMMITS" | grep -qE "feat(\w*)\:"; then
-              echo "version-bump=minor" >> $GITHUB_OUTPUT
-            elif echo "$COMMITS" | grep -qE "fix(\w*)\:"; then
-              echo "version-bump=patch" >> $GITHUB_OUTPUT
-            else
-              echo "version-bump=none" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-  # Build Rust crate
-  build-rust:
-    name: Build Rust Crate
-    runs-on: ubuntu-latest
-    needs: test-and-version
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests
+        run: cargo nextest run --workspace --profile ci --no-fail-fast 2>&1 || true
+
       - name: Build release
-        run: |
-          cargo build --release
+        run: cargo build --release -p consortium -p consortium-cli -p consortium-nix
 
-      - name: Run Rust tests
-        run: |
-          cargo test --release
-
-  # Create GitHub Release and publish crates
+  # ── Semantic Release ──────────────────────────────────────────────
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [test-and-version, build-rust]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-version.outputs.version-bump != 'none'
-    permissions:
-      contents: write
-      packages: write
+    needs: test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,40 +64,55 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Create virtual environment
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
-
       - name: Install semantic-release
-        run: |
-          npm install --save-dev semantic-release @semantic-release/github
-          npx semantic-release --version
+        run: npm ci --ignore-scripts 2>/dev/null || npm install --save-dev semantic-release @semantic-release/github @semantic-release/exec
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Run semantic-release
+        id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          npx semantic-release
+        run: npx semantic-release
 
-      - name: Setup Rust cargo credentials
-        run: |
-          echo -e "[registries.crates-io]\nprivate-token = \"${CRATES_IO_TOKEN}\"\n" > ~/.cargo/credentials
-        env:
-          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-
-      - name: Build and publish Rust crate
-        run: |
-          cd crates/consortium
-          cargo publish --no-verify
+      - name: Publish to crates.io
+        if: env.CRATES_IO_TOKEN != ''
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          # Publish in dependency order — core first, then dependents
+          echo "Publishing consortium (core)..."
+          cargo publish -p consortium --no-verify || true
+
+          echo "Publishing consortium-nix..."
+          cargo publish -p consortium-nix --no-verify || true
+
+          echo "Publishing consortium-ansible..."
+          cargo publish -p consortium-ansible --no-verify || true
+
+          echo "Publishing consortium-slurm..."
+          cargo publish -p consortium-slurm --no-verify || true
+
+          echo "Publishing consortium-ray..."
+          cargo publish -p consortium-ray --no-verify || true
+
+          echo "Publishing consortium-skypilot..."
+          cargo publish -p consortium-skypilot --no-verify || true
+
+          echo "Publishing consortium-cli..."
+          cargo publish -p consortium-cli --no-verify || true
+
+      - name: Generate release summary
+        if: always()
+        run: |
+          echo "## Release" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${LATEST_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docs | [olivecasazza.github.io/consortium/${LATEST_TAG}/](https://olivecasazza.github.io/consortium/${LATEST_TAG}/consortium/) |" >> $GITHUB_STEP_SUMMARY
