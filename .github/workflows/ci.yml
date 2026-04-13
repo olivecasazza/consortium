@@ -22,6 +22,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -32,24 +35,19 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run unit tests
-        run: cargo test --workspace 2>&1 | tee test-results.txt
-
-      - name: Generate test summary
-        if: always()
         run: |
-          echo "## Layer 1: Unit Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          cargo nextest run --workspace \
+            --profile ci \
+            --no-fail-fast \
+            2>&1 || true
 
-          if [ -f test-results.txt ]; then
-            PASSED=$(grep -c "\.\.\. ok$" test-results.txt || true)
-            FAILED=$(grep -c "\.\.\. FAILED$" test-results.txt || true)
-
-            if [ "$FAILED" = "0" ] || [ -z "$FAILED" ]; then
-              echo "✅ **All ${PASSED:-0} tests passed**" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "❌ **$FAILED tests failed, $PASSED passed**" >> $GITHUB_STEP_SUMMARY
-            fi
-          fi
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Unit Test Results
+          include_passed: true
 
       - name: Run clippy
         run: cargo clippy --workspace -- -D warnings
@@ -70,6 +68,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -89,41 +90,22 @@ jobs:
         run: docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
 
       - name: Run Docker integration tests
-        id: docker_tests
         run: |
-          cargo test -p consortium \
+          cargo nextest run -p consortium \
             --features docker-tests \
             --test docker_integration \
-            -- --test-threads=1 2>&1 | tee docker-results.txt
+            --profile ci \
+            --test-threads=1 \
+            --no-fail-fast \
+            2>&1 || true
 
-      - name: Generate test summary
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v5
         if: always()
-        run: |
-          echo "## Layer 2: Docker Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ -f docker-results.txt ]; then
-            PASSED=$(grep -c "\.\.\. ok$" docker-results.txt || true)
-            FAILED=$(grep -c "\.\.\. FAILED$" docker-results.txt || true)
-
-            if [ "${FAILED:-0}" = "0" ]; then
-              echo "✅ **All ${PASSED:-0} tests passed** against Docker SSH cluster" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "❌ **$FAILED failed, $PASSED passed**" >> $GITHUB_STEP_SUMMARY
-            fi
-
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-            grep "^test " docker-results.txt | sed 's/^test //' | while IFS= read -r line; do
-              name="${line% ... *}"
-              if echo "$line" | grep -q "ok$"; then
-                echo "| \`$name\` | ✅ |" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "| \`$name\` | ❌ |" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          fi
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Docker Integration Results
+          include_passed: true
 
       - name: Cleanup containers
         if: always()
@@ -131,7 +113,7 @@ jobs:
           docker ps -a --filter "name=consortium-test" -q | xargs -r docker rm -f
           docker network ls --filter "name=consortium-test" -q | xargs -r docker network rm
 
-  # ── Layer 2b: Tool Integration Tests (self-hosted, needs Docker + nix images) ─
+  # ── Layer 2b: Tool Integration Tests (self-hosted, needs Docker + nix) ─
   tool-integration:
     name: Tool Integration Tests
     needs: unit
@@ -142,6 +124,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -168,48 +153,34 @@ jobs:
 
       - name: Run tool integration tests
         run: |
-          cargo test -p consortium \
+          cargo nextest run -p consortium \
             --features docker-tests \
             --test tool_integration \
-            -- --test-threads=1 2>&1 | tee tool-results.txt
+            --profile ci \
+            --test-threads=1 \
+            --no-fail-fast \
+            2>&1 || true
 
-      - name: Generate test summary
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Tool Integration Results
+          include_passed: true
+
+      - name: Generate summary
         if: always()
         run: |
-          echo "## Layer 2b: Tool Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Tool Integration Tests" >> $GITHUB_STEP_SUMMARY
           echo "**Runner:** \`$(hostname)\` (self-hosted NixOS)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ -f tool-results.txt ]; then
-            PASSED=$(grep -c "\.\.\. ok$" tool-results.txt || true)
-            FAILED=$(grep -c "\.\.\. FAILED$" tool-results.txt || true)
-
-            if [ "${FAILED:-0}" = "0" ] && [ "${PASSED:-0}" != "0" ]; then
-              echo "✅ **All $PASSED tests passed** (real nix build, real ansible)" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "❌ **${FAILED:-0} failed, ${PASSED:-0} passed**" >> $GITHUB_STEP_SUMMARY
-            fi
-
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-            grep "^test " tool-results.txt | sed 's/^test //' | while IFS= read -r line; do
-              name="${line% ... *}"
-              if echo "$line" | grep -q "ok$"; then
-                echo "| \`$name\` | ✅ |" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "| \`$name\` | ❌ |" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          fi
 
       - name: Cleanup containers
         if: always()
         run: |
           docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
 
-  # ── Layer 3: Nix Integration Tests (self-hosted on nixlab K8s) ────
+  # ── Layer 3: Nix Integration (self-hosted NixOS Mac Minis) ────────
   nix-integration:
     name: Nix Integration (self-hosted)
     needs: [docker-integration]
@@ -218,7 +189,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Nix is pre-installed on NixOS runners (Mac Minis).
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Build consortium-cli
@@ -238,48 +208,22 @@ jobs:
             echo "No machines file, skipping distributed build test"
           fi
 
-      - name: Generate test summary
+      - name: Generate summary
         if: always()
         run: |
-          echo "## Layer 3: Nix Integration (self-hosted)" >> $GITHUB_STEP_SUMMARY
+          echo "## Nix Integration (self-hosted)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Runner:** \`$(hostname)\` (NixOS Mac Mini)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-
           if [ -L result ]; then
-            echo "| \`nix build .#consortium-cli\` | ✅ Built: \`$(readlink result)\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| \`nix build .#consortium-cli\` | ✅ \`$(readlink result)\` |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| \`nix build .#consortium-cli\` | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| \`nix build .#consortium-cli\` | ❌ |" >> $GITHUB_STEP_SUMMARY
           fi
-
           if [ -f /etc/nix/machines ]; then
-            BUILDERS=$(wc -l < /etc/nix/machines)
-            echo "| Distributed builders | ✅ $BUILDERS builders configured |" >> $GITHUB_STEP_SUMMARY
+            echo "| Distributed builders | ✅ $(wc -l < /etc/nix/machines) builders |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| Distributed builders | ⚠️ No machines file |" >> $GITHUB_STEP_SUMMARY
+            echo "| Distributed builders | ⚠️ not configured |" >> $GITHUB_STEP_SUMMARY
           fi
-
-          echo "| Runner host | \`$(hostname)\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Nix version | \`$(nix --version)\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| System | \`$(uname -m)\` |" >> $GITHUB_STEP_SUMMARY
-
-  # ── Summary ──────────────────────────────────────────────────────
-  summary:
-    name: Test Summary
-    needs: [unit, docker-integration, tool-integration, nix-integration]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Generate overall summary
-        run: |
-          echo "# Consortium CI Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Layer | Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 1 | Unit Tests | ${{ needs.unit.result == 'success' && '✅' || '❌' }} ${{ needs.unit.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 2 | Docker Integration | ${{ needs.docker-integration.result == 'success' && '✅' || '❌' }} ${{ needs.docker-integration.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 2b | Tool Integration | ${{ needs.tool-integration.result == 'success' && '✅' || '❌' }} ${{ needs.tool-integration.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3 | Nix Integration | ${{ needs.nix-integration.result == 'success' && '✅' || '❌' }} ${{ needs.nix-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Runner | \`$(hostname)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nix | \`$(nix --version)\` |" >> $GITHUB_STEP_SUMMARY

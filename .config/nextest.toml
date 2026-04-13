@@ -1,3 +1,12 @@
 [profile.ci]
-# Fail-fast off so we get all results
+# Produce JUnit XML for GitHub Actions test reporting
+junit.path = "junit.xml"
+
+# Fail-fast disabled so all tests run even if some fail
 fail-fast = false
+
+# Retry flaky tests once
+retries = 1
+
+# Slow test warning at 30s, terminate at 5m
+slow-timeout = { period = "30s", terminate-after = 10 }
