@@ -1,0 +1,15 @@
+# Changelog
+
+## Bug Fixes
+
+- multi-dim pattern expansion, drain process output, group resolver, configparser 3.x
+
+## Features
+
+- complete library + CLI migration (14.4k LOC, 348 tests)
+- add nh-inspired progress bars to claw
+- add NixOS deployment (cast) with generic DAG executor
+- add tool integrations (ansible, slurm, ray, skypilot) and test improvements
+- add --flake flag to cast for cross-repo deployments
+- add docs.rs metadata, fix semantic-release success comments
+
