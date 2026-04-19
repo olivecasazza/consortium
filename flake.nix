@@ -92,11 +92,11 @@
             commonArgs
             // {
               inherit cargoArtifacts;
-              cargoExtraArgs = "-p consortium";
+              cargoExtraArgs = "-p consortium-crate";
             }
           );
 
-          # ── CLI binaries (claw, molt, pinch) ─────────────────────────
+          # ── CLI binaries (claw, molt, pinch, cast) ─────────────────────────
           consortium-cli = craneLib.buildPackage (
             commonArgs
             // {
@@ -175,7 +175,7 @@
           # ── Packages ───────────────────────────────────────────────────
           packages = {
             inherit consortium consortium-cli consortium-nix;
-            default = consortium;
+            default = consortium-cli;
           };
 
           # ── Dev shell ──────────────────────────────────────────────────
