@@ -1,0 +1,5 @@
+type = "port-python-fixme"
+target_file = "lib/ClusterShell/Task.py"
+target_line = 1342
+description = "timeout = None # FIXME: handle timeout for gateway channels"
+created = "2026-04-25T02:58:38Z"

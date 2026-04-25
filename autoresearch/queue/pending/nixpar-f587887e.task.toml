@@ -1,0 +1,5 @@
+type = "nix-parallelize"
+target_file = "crates/consortium-nix/src/eval.rs"
+target_line = 107
+description = "parallelize with consortium's Task/Worker infrastructure"
+created = "2026-04-25T02:58:38Z"

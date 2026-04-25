@@ -1,0 +1,5 @@
+type = "nix-parallelize"
+target_file = "crates/consortium-nix/src/activate.rs"
+target_line = 31
+description = "support rolling activation (sequential with health checks)"
+created = "2026-04-25T02:58:38Z"

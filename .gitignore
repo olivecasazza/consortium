@@ -47,3 +47,9 @@ results/
 tests/docker/ssh/
 tests/docker/docker-compose.generated.yml
 .pre-commit-config.yaml
+
+# autoresearch local config
+autoresearch/.env
+autoresearch/logs/
+autoresearch/queue/in-progress/*.task.toml
+autoresearch/queue/abandoned/*.task.toml

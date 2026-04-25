@@ -1,0 +1,5 @@
+type = "port-python-fixme"
+target_file = "lib/ClusterShell/Propagation.py"
+target_line = 296
+description = "'invoke_gateway': gw_invoke_cmd, # XXX"
+created = "2026-04-25T02:58:38Z"

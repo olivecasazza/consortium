@@ -1,0 +1,5 @@
+type = "port-python-fixme"
+target_file = "lib/ClusterShell/Propagation.py"
+target_line = 172
+description = "FIXME"
+created = "2026-04-25T02:58:38Z"

@@ -1,0 +1,5 @@
+type = "nix-parallelize"
+target_file = "crates/consortium-nix/src/build.rs"
+target_line = 38
+description = "parallelize builds with consortium's Task/Worker infrastructure"
+created = "2026-04-25T02:58:38Z"

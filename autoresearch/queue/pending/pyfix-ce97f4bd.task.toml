@@ -1,0 +1,5 @@
+type = "port-python-fixme"
+target_file = "lib/ClusterShell/Worker/Exec.py"
+target_line = 216
+description = "FIXME: file sanity checks could be moved to Copy._start() as we"
+created = "2026-04-25T02:58:38Z"
