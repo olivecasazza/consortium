@@ -19,30 +19,45 @@ is `$AR_WORKTREE` (also your CWD). The branch you are on is
 
 ## Hard rules — non-negotiable
 
-1. **Stay in your worktree.** Never `cd` out of `$AR_WORKTREE`. Never
+1. **Consult the architect before any structural decision.** The
+   architect's source of truth is `autoresearch/agents/architect/atlas.toml`
+   in this repo (one entry per repo we operate on, with `layout`,
+   `build_system`, `test_runner`, `docs_home`, `deploy_chain`,
+   `conventions`, `gotchas`). Read the row for `consortium-autoresearch`
+   (and `consortium` for upstream context) BEFORE deciding where new
+   files go, what build commands to run, what the deploy chain looks
+   like, or what conventions apply. If the atlas does not cover your
+   question, abandon the task with `needs-architect: <question>` rather
+   than guessing.
+2. **Run `cargo fmt --all` immediately after editing Rust files**, then
+   re-read what you changed. The score gate runs `cargo fmt --all -- --check`
+   strictly — unformatted code is an automatic abandon even if tests pass
+   and clippy is clean. Format the file yourself; do not rely on the score
+   gate to format for you.
+3. **Stay in your worktree.** Never `cd` out of `$AR_WORKTREE`. Never
    touch `.claude/worktrees/agent-*` directories belonging to other ids.
-2. **Never `--no-verify`, `--no-gpg-sign`, or skip pre-commit hooks.** If
+4. **Never `--no-verify`, `--no-gpg-sign`, or skip pre-commit hooks.** If
    a hook fails, fix the underlying issue. Failing that, abandon the
    task — don't bypass the hook.
-3. **Never `git push --force` to anything but your own branch, and only
+5. **Never `git push --force` to anything but your own branch, and only
    with `--force-with-lease`.** Never push to `master` directly.
-4. **Never modify `modules/k8s/`** — those changes auto-deploy via Flux
+6. **Never modify `modules/k8s/`** — those changes auto-deploy via Flux
    and must be serialized manually. If your task touches that path,
    abandon it and write `out-of-scope: k8s` to the task file.
-5. **Never edit files outside the scope of your task.** No drive-by
+7. **Never edit files outside the scope of your task.** No drive-by
    refactors, no "while I'm here" cleanups, no formatting passes on
    unrelated files. The diff `git diff master..HEAD` should look like a
    minimal change a human reviewer can scan in a minute.
-6. **Never commit secrets, `.env`, large binaries, or generated
+8. **Never commit secrets, `.env`, large binaries, or generated
    artefacts.** Stage individual files by name; do not `git add -A`
    anything outside `crates/`, `lib/`, `tests/`, or `doc/`.
-7. **Conventional commits.** First line `<type>(<scope>): <subject>`,
+9. **Conventional commits.** First line `<type>(<scope>): <subject>`,
    ≤72 chars. Types: feat, fix, refactor, test, docs, chore, perf.
    Scope is the crate or module touched (`consortium-nix`, `core`,
    `lib`, `tests`).
-8. **No new dependencies** unless the task file says so. If you think
-   you need one, abandon the task and note "needs-dep: <crate>" in the
-   task file.
+10. **No new dependencies** unless the task file says so. If you think
+    you need one, abandon the task and note "needs-dep: <crate>" in the
+    task file.
 
 ## Loop
 
@@ -86,9 +101,10 @@ choice, but you do not have choice — you got the task you got.
 ### `nix-parallelize`
 The 6 TODOs in `crates/consortium-nix/src/{copy,health,activate,build,eval}.rs`
 ask for fanout via core's `Task`/`Worker` primitives. Reuse:
-- `crates/consortium-crate/src/task.rs` and `worker.rs` — do not
-  reimplement.
-- The DAG executor in `crates/consortium-crate/src/dag.rs` — threads +
+- `crates/consortium/src/task.rs` and `worker.rs` — do not reimplement.
+  (The crate is named `consortium`, NOT `consortium-crate` or `core`.
+  Check `Cargo.toml` package name if unsure.)
+- The DAG executor in `crates/consortium/src/dag.rs` — threads +
   channels, no tokio.
 Add at least one test in `crates/consortium-nix/tests/` that exercises
 the new fanout against a 3-node mock target.

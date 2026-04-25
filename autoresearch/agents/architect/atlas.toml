@@ -1,0 +1,165 @@
+# Atlas — architect's source of truth on repo structure.
+#
+# Read by the architect agent (and injected by reference into other agents'
+# prompts) when answering "where does X go in repo Y?". One [[repo]] entry
+# per project we operate on. Refresh in `mol-architect-patrol` formula —
+# detect drift by re-walking each path and bump conventions/gotchas if
+# changed.
+#
+# Schema (each [[repo]]):
+#   path           absolute path on this machine
+#   language       primary language(s)
+#   layout         table of {dirname = "what it holds, one line"}
+#   build_system   how it builds
+#   test_runner    how tests run (or "none")
+#   docs_home      where docs live
+#   deploy_chain   how a change reaches prod (or "n/a — library")
+#   conventions    list of non-obvious naming/placement rules
+#   gotchas        list of things a new contributor would trip over
+
+# ────────────────────────────────────────────────────────────────────────
+[[repo]]
+name = "consortium"
+path = "/home/olive/Repositories/consortium"
+language = "rust + python (PyO3 bindings)"
+build_system = "Cargo workspace, flake-parts/crane for Nix, maturin for Python bindings"
+test_runner = "cargo nextest (.config/nextest.toml) + pytest (ClusterShell regression)"
+docs_home = "doc/sphinx/, doc/man/, README.md"
+deploy_chain = "n/a — library/CLI; published via cargo + Nix flake"
+
+[repo.layout]
+crates = "9 member crates, exact dirnames: consortium (core, holds Task/Worker/DAG primitives at src/{task,worker,dag}.rs), consortium-cli, consortium-nix, consortium-ansible, consortium-slurm, consortium-ray, consortium-skypilot, consortium-py, consortium-test-harness"
+lib = "legacy ClusterShell Python library — kept for backwards compat / regression"
+doc = "sphinx + man pages + examples"
+tests = "Python regression tests pinning ClusterShell-compatible behavior"
+nix = "build helpers, pre-commit config"
+
+conventions = [
+  "Conventional commits enforced via commitlint pre-commit hook",
+  "Workspace deps pinned in root Cargo.toml (not per-crate)",
+  "Python bindings via PyO3; `maturin develop` runs in devShell",
+  "release-plz drives semantic versioning",
+]
+gotchas = [
+  "PyO3 build needs Python at build time — flake.nix exports PYO3_PYTHON",
+  "Tests require SSH localhost access (ClusterShell regression suite)",
+  "maturin develop creates .venv/ in devShell; pre-commit must be sourced after",
+]
+
+# ────────────────────────────────────────────────────────────────────────
+[[repo]]
+name = "consortium-autoresearch"
+path = "/home/olive/Repositories/consortium-autoresearch"
+language = "rust + python (consortium fork + agent overlay)"
+build_system = "Cargo workspace (mirrored from consortium upstream)"
+test_runner = "cargo nextest + pytest"
+docs_home = "README.md, autoresearch/AGENTS.md, autoresearch/program.md"
+deploy_chain = "overnight agent loop — gc supervisor → drain-queue order → run-once.sh → opencode → score → finalize → PR"
+
+[repo.layout]
+crates = "same 9 crates as consortium upstream (NOT consortium-crate or core — those names appear nowhere in this fork)"
+autoresearch = "agent loop: program.md, scripts/, queue/, tasks/, logs/, results.tsv; gascity city (city.toml + pack.toml + orders/ + agents/)"
+".claude" = "agent worktrees under .claude/worktrees/agent-<id>/"
+lib = "ClusterShell legacy (inherited)"
+doc = "inherited from upstream"
+
+conventions = [
+  "Conventional commits (inherited from consortium)",
+  "bd (beads) issue tracking under autoresearch/.beads/, prefix=au",
+  "Per-agent worktrees in .claude/worktrees/agent-<id>/ on branch agent/<id>/<topic>",
+  "Each task lives in autoresearch/queue/{pending,in-progress,done,abandoned}/<id>.task.toml",
+  "Score gate: cargo nextest + clippy + fmt vs baseline in autoresearch/.baseline.json",
+]
+gotchas = [
+  "Fork; periodically rebase from upstream consortium",
+  "Autoresearch agents may leave detached worktrees on crash — check .claude/worktrees/ before restart",
+  "bd commands need --force flags in non-interactive contexts (cp/mv/rm)",
+]
+
+# ────────────────────────────────────────────────────────────────────────
+[[repo]]
+name = "nixlab"
+path = "/home/olive/Repositories/nixlab"
+language = "nix (Snowfall Lib + NixOS + nix-darwin + Kubenix)"
+build_system = "Nix flake (Snowfall auto-import) + terranix→OpenTofu for GCP + Kubenix for K8s manifests"
+test_runner = "nix flake check"
+docs_home = "CLAUDE.md (global rules), docs/{apps,issues,...}, AGENTS.md, inline comments"
+deploy_chain = "K8s: push → Flux reconciles modules/k8s/manifests.yaml; NixOS: manual `just cast-on <host>` (Consortium); Infra: manual `nix run .#deploy-gcp` / `.#deploy-access`"
+
+[repo.layout]
+"systems/x86_64-linux" = "per-host NixOS configs: contra, seir, hp01-03, mm01-05, gcp-cp"
+"modules/nixos" = "shared NixOS modules (k8s control planes, game servers, monitoring)"
+"modules/k8s" = "Kubernetes manifests via Kubenix; manifests.yaml is GENERATED — do not hand-edit"
+homes = "Home Manager profiles (multi-user)"
+packages = "custom derivations"
+lib = "hosts.nix (IP source of truth), wireguard-peers.nix, consortium.nix"
+infra = "GCP infrastructure (terranix → OpenTofu), Cloudflare config"
+secrets = "SOPS+age encrypted; rotated via `just rotate-keys`"
+
+conventions = [
+  "Snowfall auto-imports from systems/ and modules/ — never hardcode paths",
+  "lib/hosts.nix is THE source of truth for IPs, users, builder configs",
+  "lib/wireguard-peers.nix is THE source of truth for WG mesh (10.99.0.0/24)",
+  "SOPS secrets edited via `just edit-secret <file>`",
+  "Pre-commit: nixfmt-rfc-style, deadnix, statix, generate-k8s-manifests, commitizen",
+  "All K8s changes auto-deploy on push (no manual kubectl apply/edit/patch)",
+]
+gotchas = [
+  "Never edit modules/k8s/manifests.yaml by hand — pre-commit regenerates it",
+  "K8s changes serialize through one PR at a time (Flux conflicts otherwise)",
+  "IPs hardcoded outside lib/hosts.nix break gitops; use the helper functions",
+  "Cloudflare Tunnel + Flux + CoreDNS HA are load-bearing — check kustomizations after touching them",
+]
+
+# ────────────────────────────────────────────────────────────────────────
+[[repo]]
+name = "skypilot-env"
+path = "/home/olive/Repositories/skypilot-env"
+language = "python (SkyPilot client) + nix (devshell)"
+build_system = "Nix flake devshell (python venv + patches/) + direnv auto-activate"
+test_runner = "none (client-side)"
+docs_home = "README.md (comprehensive — node table + burst patterns)"
+deploy_chain = "`sky launch <task.yaml>` → kubernetes (on-prem) or GCP (cloud) or hybrid"
+
+[repo.layout]
+"flake.nix" = "devshell: kubectl, gcloud-sdk, SkyPilot via pip"
+examples = "task YAMLs: cpu, gpu, hybrid, on-prem, gcp, burst"
+patches = "local patches to SkyPilot, applied on shell entry (autodown-fallback, readonly-ssh-config)"
+workspace = "per-project task workspaces (e.g. consortium-autoresearch)"
+datasets = "sample data for examples"
+
+conventions = [
+  "direnv activates shell, creates .venv, applies patches/ on entry",
+  "GCP via Workload Identity Federation (no SA keys)",
+  "Hybrid burst: on-prem first, GCP fallback — order matters in YAML resources.ordered",
+]
+gotchas = [
+  "Patches auto-apply on shell entry; updating SkyPilot may require patch refresh",
+  "GCP GPU quota must be pre-requested in Console",
+  "K8s changes in nixlab.io/pool=gpu-pool nodes have a CDI hook that injects nvidia.com/gpu — always pin cpu-pool for non-GPU work",
+  "`~/.ssh/config` is a Nix store symlink (read-only); the readonly-ssh-config patch makes sky tolerate it",
+]
+
+# ────────────────────────────────────────────────────────────────────────
+[[repo]]
+name = "gascity-env"
+path = "/home/olive/Repositories/gascity-env"
+language = "bash + nix (binary pinning)"
+build_system = "direnv + nix profile (tmux/jq/git/flock/lsof) + vendored binaries in bin/"
+test_runner = "none"
+docs_home = "README.md"
+deploy_chain = "direnv auto-activates; gc/bd/dolt available on PATH"
+
+[repo.layout]
+bin = "vendored binaries: gc (1.0.0), bd (1.0.3), dolt (1.86.5 — newer than nixpkgs)"
+".envrc" = "PATH_add bin"
+
+conventions = [
+  "Mirrors skypilot-env pattern (lightweight env)",
+  "Vendored binaries — no flake input pinning yet",
+]
+gotchas = [
+  "dolt 1.86.1+ required by gc; nixpkgs ships 1.59 — that's why we vendor",
+  "Updating gc/bd/dolt is manual (re-tarball into bin/) — no version bump automation",
+  "`gc` shell alias (`git commit --verbose` from oh-my-zsh git plugin) shadows the binary; use `command gc` or full path in shell",
+]

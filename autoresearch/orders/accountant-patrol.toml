@@ -1,0 +1,11 @@
+[order]
+description = "Accountant patrol — refresh OpenRouter catalog + key usage + LiteLLM spend snapshot every 6h"
+trigger = "cooldown"
+interval = "6h"
+exec = """bash -c '
+  set -euo pipefail
+  if [ -f "$PACK_DIR/.env" ]; then
+    set -a; . "$PACK_DIR/.env"; set +a
+  fi
+  exec bash "$PACK_DIR/agents/accountant/scripts/patrol.sh"
+'"""

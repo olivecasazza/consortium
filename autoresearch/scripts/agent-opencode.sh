@@ -45,7 +45,36 @@ export OPENAI_BASE_URL="$LITELLM_BASE_URL"
 export OPENAI_API_KEY="$LITELLM_API_KEY"
 
 # Headless run: read the prompt, exit when the agent stops.
-opencode run \
-    --model "$AR_MODEL" \
-    --prompt-file "$PROMPT" \
-    --cwd "$AR_WORKTREE"
+# opencode 1.14+ takes the prompt as a positional message and uses --dir
+# (renamed from --cwd). --dangerously-skip-permissions is required so the
+# agent can edit files unattended.
+#
+# Use an isolated XDG_CONFIG_HOME so we don't pick up the user's personal
+# opencode hooks/plugins. Declare a "litellm" custom provider that proxies
+# our OpenAI-compatible LiteLLM endpoint, then ask opencode to use it.
+OC_CFG=$(mktemp -d)
+trap 'rm -f "$PROMPT"; rm -rf "$OC_CFG"' EXIT
+mkdir -p "$OC_CFG/opencode"
+cat > "$OC_CFG/opencode/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM",
+      "options": {
+        "baseURL": "$LITELLM_BASE_URL",
+        "apiKey": "$LITELLM_API_KEY"
+      },
+      "models": {
+        "$AR_MODEL": {}
+      }
+    }
+  }
+}
+JSON
+XDG_CONFIG_HOME="$OC_CFG" opencode run \
+    --model "litellm/$AR_MODEL" \
+    --dir "$AR_WORKTREE" \
+    --dangerously-skip-permissions \
+    "$(cat "$PROMPT")"

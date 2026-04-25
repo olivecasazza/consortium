@@ -1,0 +1,3 @@
+timestamp	task_type	model	outcome	agent_id	score	reason
+2026-04-25T16:54:20Z	nix-parallelize	gpt-oss-120b-free	abandoned-no-diff	testbed01		agent narrated edits but git diff empty
+2026-04-25T16:56:51Z	nix-parallelize	gpt-oss-120b-free	abandoned-no-diff	f1ea86c7		no-diff: agent did not modify any files

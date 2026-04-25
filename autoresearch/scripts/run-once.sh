@@ -37,6 +37,31 @@ TASK_ID=$(basename "$TASK_FILE" .task.toml)
 TASK_TYPE=$(awk -F'"' '/^type[[:space:]]*=/{print $2; exit}' "$TASK_FILE")
 TARGET_FILE=$(awk -F'"' '/^target_file[[:space:]]*=/{print $2; exit}' "$TASK_FILE")
 
+# Accountant-driven model selection: read current-recommendations.toml,
+# look up [TASK_TYPE] then [default]. Falls through to whatever AR_MODEL
+# is already in the environment (set via .env). The accountant agent
+# rewrites this file based on bd decision-log + ledger.toml; we just
+# obey it here.
+RECS="$REPO_ROOT/autoresearch/agents/accountant/current-recommendations.toml"
+if [[ -f "$RECS" ]]; then
+    pick_model_for() {
+        local tt="$1"
+        awk -v tt="[$tt]" '
+            $0 == tt { inb = 1; next }
+            /^\[/    { inb = 0 }
+            inb && /^model = "/ {
+                sub(/^model = "/, ""); sub(/"$/, ""); print; exit
+            }
+        ' "$RECS"
+    }
+    chosen=$(pick_model_for "$TASK_TYPE")
+    [[ -z "$chosen" ]] && chosen=$(pick_model_for "default")
+    if [[ -n "$chosen" ]]; then
+        echo "accountant chose model: $chosen (task_type=$TASK_TYPE)" | tee -a /dev/stderr
+        export AR_MODEL="$chosen"
+    fi
+fi
+
 AGENT_ID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
 TOPIC=$(echo "$TASK_ID" | tr '_' '-')
 LOGFILE="$LOGS/$AGENT_ID-$TASK_ID.log"
@@ -48,8 +73,24 @@ eval "$(bash "$SCRIPTS/new-worktree.sh" "$AGENT_ID" "$TOPIC")"
 echo "WORKTREE=$WORKTREE BRANCH=$BRANCH" | tee -a "$LOGFILE"
 
 # 3. agent
+notify_accountant() {
+    # Args: outcome (finalized|abandoned-no-diff|abandoned-score-fail|needs-architect) [reason]
+    local outcome="$1"
+    local reason="${2:-}"
+    local model="${AR_MODEL:-unknown}"
+    bash "$REPO_ROOT/autoresearch/agents/accountant/scripts/notify.sh" \
+        "$TASK_TYPE" "$model" "$outcome" "$AGENT_ID" "" "$reason" \
+        2>&1 | tee -a "$LOGFILE" || true
+}
+
 abandon() {
     local reason="$1"
+    local outcome="abandoned-other"
+    case "$reason" in
+        no-diff*) outcome="abandoned-no-diff" ;;
+        score-fail*) outcome="abandoned-score-fail" ;;
+        needs-architect*) outcome="needs-architect" ;;
+    esac
     echo "ABANDON: $reason" | tee -a "$LOGFILE"
     {
         printf '\n# abandoned %s\n# reason: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason"
@@ -59,6 +100,7 @@ abandon() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$TASK_ID" "$BRANCH" "abandoned" "" "" "" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         >> "$RESULTS"
+    notify_accountant "$outcome" "$reason"
     exit 1
 }
 
@@ -97,6 +139,7 @@ if [[ "$SCORE" == "pass" ]]; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$TASK_ID" "$BRANCH" "done" "$SCORE" "" "" "" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         >> "$RESULTS"
+    notify_accountant "finalized" ""
 else
     abandon "score-fail"
 fi

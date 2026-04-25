@@ -1,0 +1,11 @@
+[order]
+description = "Drain one autoresearch task: pick → worktree → agent → score → finalize"
+trigger = "cooldown"
+interval = "30m"
+exec = """bash -c '
+  set -euo pipefail
+  if [ -f "$PACK_DIR/.env" ]; then
+    set -a; . "$PACK_DIR/.env"; set +a
+  fi
+  exec bash "$PACK_DIR/scripts/run-once.sh" --agent "$PACK_DIR/scripts/agent-opencode.sh"
+'"""

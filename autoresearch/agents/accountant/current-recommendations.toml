@@ -1,0 +1,52 @@
+# Current model recommendations — written by the accountant agent.
+#
+# Read by drain-queue and other orders to set AR_MODEL per task type.
+# Format:
+#   [<task-type>]
+#   model = "<id from ledger.toml>"
+#   tier = "<tier from ledger.toml>"
+#   reason = "<short justification>"
+#   chosen_at = "<UTC timestamp>"
+#   bead = "<au-... id from bd create>"
+#
+# Task types that have no entry fall back to the [default] block.
+#
+# This file is mutable — the accountant updates it on every consultation.
+# Do not hand-edit unless bootstrapping (initial seed below) — the
+# accountant will overwrite based on bd decision-log + ledger.toml.
+
+[default]
+model = "gpt-oss-120b-free"
+tier = "free"
+reason = "Bootstrap default: gpt-oss-120b-free works under load (qwen3-coder-free is rate-limited 2026-04-25). Watch for embedded OpenInference 502s."
+chosen_at = "2026-04-25T16:00:00Z"
+bead = ""
+
+[nix-parallelize]
+model = "claude-haiku-4-5"
+tier = "paid-cheap"
+reason = "Auto-escalated by patrol 2026-04-25T16:57:53Z: 2 abandons on prior model (last seen 2026-04-25T16:56:51Z)."
+chosen_at = "2026-04-25T16:57:53Z"
+bead = ""
+escalation_blocked = "openrouter-credit"
+
+[pyfix]
+model = "gpt-oss-120b-free"
+tier = "free"
+reason = "No prior attempts on free tier — try cheap first. Escalate after 2 abandons."
+chosen_at = "2026-04-25T16:00:00Z"
+bead = ""
+
+[architect-query]
+model = "claude-sonnet-4-6"
+tier = "paid"
+reason = "Architect needs broad senior judgment + long context. Cheaper tiers are inadequate for structural questions."
+chosen_at = "2026-04-25T16:00:00Z"
+bead = ""
+
+[accountant-query]
+model = "claude-haiku-4.5"
+tier = "paid-cheap"
+reason = "Accountant reasoning is bounded (lookups + simple rules). Haiku is cheap enough and reliable."
+chosen_at = "2026-04-25T16:00:00Z"
+bead = ""

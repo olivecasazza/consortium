@@ -1,0 +1,12 @@
+[order]
+description = "Top up the autoresearch queue from new TODOs/FIXMEs and upstream commits"
+trigger = "cron"
+schedule = "0 * * * *"
+exec = """bash -c '
+  set -euo pipefail
+  if [ -f "$PACK_DIR/.env" ]; then
+    set -a; . "$PACK_DIR/.env"; set +a
+  fi
+  bash "$PACK_DIR/scripts/seed-queue.sh"
+  bash "$PACK_DIR/scripts/upstream-diff.sh" --limit 5
+'"""

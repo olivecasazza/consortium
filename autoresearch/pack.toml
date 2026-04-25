@@ -1,0 +1,25 @@
+[pack]
+name = "autoresearch"
+schema = 2
+
+# This city's job is to fire `[order]` exec scripts (drain-queue,
+# refill-queue) under the supervisor. The actual coding work happens inside
+# scripts/run-once.sh, which spawns opencode itself.
+#
+# Agents: knowledge-keeper personas that other agents (and the autoresearch
+# coding agent) consult. Both hold their facts in TOML files alongside their
+# prompts; the LLM persona reasons over those files.
+
+[[agent]]
+name = "architect"
+prompt_template = "agents/architect/prompt.template.md"
+# Source of truth on repo layout, build pipelines, docs, deploy chains, D2
+# diagrams. Atlas at agents/architect/atlas.toml. Other agents must consult
+# before any structural decision. Wants a top-tier model (see ledger).
+
+[[agent]]
+name = "accountant"
+prompt_template = "agents/accountant/prompt.template.md"
+# Allocates models per task. Ledger at agents/accountant/ledger.toml,
+# current picks at agents/accountant/current-recommendations.toml.
+# Memorializes each allocation as a `bd create --type decision` bead.
