@@ -21,6 +21,19 @@ set -uo pipefail
 WORKTREE="${1:-$PWD}"
 cd "$WORKTREE" || { echo "score: cannot cd to $WORKTREE" >&2; exit 2; }
 
+# Self-activate the consortium-autoresearch nix devshell so cargo / nextest /
+# clippy / fmt are on PATH regardless of caller. Without this, callers like
+# gc-supervisor (whose unit PATH lacks the rust toolchain) hit
+# `cargo: command not found` and run-once misclassifies the abandon as
+# score-fail. nix develop is cached after the first run.
+if ! command -v cargo >/dev/null 2>&1; then
+    FLAKE_DIR="$WORKTREE"
+    if [[ ! -f "$FLAKE_DIR/flake.nix" ]]; then
+        FLAKE_DIR="$(git -C "$WORKTREE" worktree list --porcelain | head -1 | awk '{print $2}')"
+    fi
+    exec nix develop "$FLAKE_DIR" --command bash "$0" "$@"
+fi
+
 # Find the main repo (worktrees share one .git dir; the baseline file
 # lives in the main checkout).
 MAIN_REPO="$(git worktree list --porcelain | head -1 | awk '{print $2}')"
