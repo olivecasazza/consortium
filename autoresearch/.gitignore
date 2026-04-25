@@ -26,3 +26,10 @@ agents/accountant/patrol.log
 # D2 render artifacts — keep .d2 source, drop the SVG/PNG outputs.
 agents/architect/diagrams/*.svg
 agents/architect/diagrams/*.png
+
+# Per-tool runtime state inside the city dir.
+.claude/
+.opencode/
+
+# Local secrets file (never commit).
+.env
