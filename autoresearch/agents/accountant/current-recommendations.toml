@@ -25,10 +25,9 @@ bead = ""
 [nix-parallelize]
 model = "claude-haiku-4-5"
 tier = "paid-cheap"
-reason = "Auto-escalated by patrol 2026-04-25T16:57:53Z: 2 abandons on prior model (last seen 2026-04-25T16:56:51Z)."
-chosen_at = "2026-04-25T16:57:53Z"
+reason = "Restored from accountant auto-escalation. PR #7 deployed claude-haiku-4-5 in litellm; gpt-oss attempts kept failing on duplicate-import compile errors. Haiku probed clean 2026-04-25T19:16Z."
+chosen_at = "2026-04-25T19:16:00Z"
 bead = ""
-escalation_blocked = "openrouter-credit"
 
 [pyfix]
 model = "gpt-oss-120b-free"

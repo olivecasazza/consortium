@@ -127,8 +127,14 @@ fi
 
 # 5. finalize or abandon
 if [[ "$SCORE" == "pass" ]]; then
-    if git diff --quiet HEAD~0 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
-        # Score passed but no diff means the agent did nothing — abandon.
+    # "no-diff" means: nothing in this branch differs from master, after
+    # the agent has run. Per program.md the agent commits its own work
+    # before exiting, so the right comparison is master..HEAD (committed
+    # diff) plus the working-tree/staged areas (anything the agent left
+    # uncommitted). All three empty → agent really did nothing.
+    if git diff --quiet master..HEAD 2>/dev/null \
+        && git diff --quiet 2>/dev/null \
+        && git diff --cached --quiet 2>/dev/null; then
         abandon "no-diff: agent did not modify any files"
     fi
     SUBJECT="$(printf '%s(%s): resolve %s' \
