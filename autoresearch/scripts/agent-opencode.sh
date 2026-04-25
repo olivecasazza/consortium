@@ -19,13 +19,20 @@ LITELLM_BASE_URL="${LITELLM_BASE_URL:-http://localhost:4000}"
 LITELLM_API_KEY="${LITELLM_API_KEY:-}"
 AR_MODEL="${AR_MODEL:-local/qwen3-8b}"
 
+# Prefer the newer downloaded binary over nixpkgs's older system one — system
+# opencode 1.1.14 doesn't have --dir / --dangerously-skip-permissions and uses
+# a prompt-file rather than positional message, so a PATH lookup that resolves
+# to /run/current-system/sw/bin/opencode silently no-ops every drain-queue.
+# Override with OPENCODE_BIN if you need a different binary.
+OPENCODE_BIN="${OPENCODE_BIN:-$HOME/.local/bin/opencode}"
+
 if [[ -z "$LITELLM_API_KEY" ]]; then
     echo "agent-opencode: LITELLM_API_KEY not set" >&2
     exit 7
 fi
 
-if ! command -v opencode >/dev/null 2>&1; then
-    echo "agent-opencode: opencode CLI not in PATH — install from https://github.com/sst/opencode" >&2
+if [[ ! -x "$OPENCODE_BIN" ]]; then
+    echo "agent-opencode: $OPENCODE_BIN not executable" >&2
     exit 8
 fi
 
@@ -73,7 +80,7 @@ cat > "$OC_CFG/opencode/opencode.json" <<JSON
   }
 }
 JSON
-XDG_CONFIG_HOME="$OC_CFG" opencode run \
+XDG_CONFIG_HOME="$OC_CFG" "$OPENCODE_BIN" run \
     --model "litellm/$AR_MODEL" \
     --dir "$AR_WORKTREE" \
     --dangerously-skip-permissions \
