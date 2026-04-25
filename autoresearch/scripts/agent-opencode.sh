@@ -6,7 +6,7 @@
 # the task file, and runs opencode in headless mode pointed at LiteLLM.
 #
 # Env vars expected from .env or shell:
-#   LITELLM_BASE_URL   default http://localhost:8000  (port-forward target)
+#   LITELLM_BASE_URL   default http://localhost:4000  (port-forward target)
 #   LITELLM_API_KEY    LiteLLM master key (treat as secret)
 #   AR_MODEL           default local/qwen3-8b
 set -euo pipefail
@@ -15,7 +15,7 @@ set -euo pipefail
 : "${AR_WORKTREE:?required}"
 : "${AR_PROGRAM:?required}"
 
-LITELLM_BASE_URL="${LITELLM_BASE_URL:-http://localhost:8000}"
+LITELLM_BASE_URL="${LITELLM_BASE_URL:-http://localhost:4000}"
 LITELLM_API_KEY="${LITELLM_API_KEY:-}"
 AR_MODEL="${AR_MODEL:-local/qwen3-8b}"
 

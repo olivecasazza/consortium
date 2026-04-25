@@ -40,7 +40,7 @@ cp autoresearch/.env.example autoresearch/.env
 $EDITOR autoresearch/.env                       # fill LITELLM_API_KEY
 
 # Get LiteLLM reachable. Either port-forward or use the tunnel hostname.
-kubectl port-forward -n apps svc/litellm 8000:8000 &
+kubectl port-forward -n apps svc/litellm 4000:4000 &
 
 # Install opencode (coding agent). Once available in nixlab's overlay we
 # pull from there; for now use the upstream installer.
