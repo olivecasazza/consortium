@@ -44,12 +44,17 @@ fi
 if git remote get-url origin >/dev/null 2>&1; then
     git push -u origin "$BRANCH" --force-with-lease >&2
     if command -v gh >/dev/null 2>&1; then
-        # Open PR with task file as description body.
-        gh pr create \
-            --base master \
-            --head "$BRANCH" \
-            --title "$COMMIT_MSG" \
-            --body-file "$TASK_FILE" >&2 || true
+        # Use gh api directly — `gh pr create` has a known bug that
+        # races on freshly-pushed branches with slashes in the name.
+        REPO_FULL=$(git remote get-url origin \
+            | sed -E 's|.*[:/]([^/]+/[^/]+)(\.git)?$|\1|; s|\.git$||')
+        BODY_JSON=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$TASK_FILE" 2>/dev/null \
+            || printf '"%s"' "$(tr -d '\n' < "$TASK_FILE" | sed 's/"/\\"/g')")
+        gh api -X POST "/repos/$REPO_FULL/pulls" \
+            -f base=master \
+            -f head="$BRANCH" \
+            -f title="$COMMIT_MSG" \
+            -f body="$(cat "$TASK_FILE")" >&2 || true
     fi
 fi
 

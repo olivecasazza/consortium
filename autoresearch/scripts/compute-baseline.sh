@@ -21,11 +21,10 @@ OUT="$REPO_ROOT/autoresearch/.baseline.json"
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
-# Use the consortium remote's master if it exists (so we measure against
-# the upstream-of-fork, not whatever master is locally). Falls back to
-# local master.
-BASE_REMOTE=consortium
-git remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=origin
+# Measure against this fork's origin/master — the same ref agents fork
+# from. Falls back to consortium/master then local master.
+BASE_REMOTE=origin
+git remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=consortium
 BASE_REF="$BASE_REMOTE/master"
 git rev-parse --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF=master
 BASE_SHA=$(git rev-parse "$BASE_REF")

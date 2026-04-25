@@ -77,8 +77,8 @@ else
 fi
 
 # Gate 4 (absolute, conditional): pytest if Python paths touched.
-BASE_REMOTE=consortium
-git -C "$WORKTREE" remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=origin
+BASE_REMOTE=origin
+git -C "$WORKTREE" remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=consortium
 BASE_REF="$BASE_REMOTE/master"
 git -C "$WORKTREE" rev-parse --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF=master
 

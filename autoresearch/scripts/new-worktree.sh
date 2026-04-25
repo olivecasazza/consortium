@@ -30,10 +30,11 @@ if [[ -e "$WORKTREE" ]]; then
     exit 3
 fi
 
-# Refresh master so the branch starts from a current point.
-# Use the consortium remote (the upstream-of-fork) if it exists, else origin.
-BASE_REMOTE=consortium
-git remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=origin
+# Fork from origin/master (this fork's master), not consortium/master, so
+# the worktree has the autoresearch/ harness in it and PR diffs only
+# contain the agent's changes — not the entire harness as an addition.
+BASE_REMOTE=origin
+git remote get-url "$BASE_REMOTE" >/dev/null 2>&1 || BASE_REMOTE=consortium
 git fetch "$BASE_REMOTE" master --quiet 2>/dev/null || true
 BASE_REF="$BASE_REMOTE/master"
 git rev-parse --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF=master
