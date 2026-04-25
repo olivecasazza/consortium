@@ -61,7 +61,41 @@ This claims a task, creates a worktree, runs `score.sh` against an
 unmodified worktree (which should pass — no diff), and abandons because
 the agent didn't change anything. Confirms the dispatch wiring works.
 
-## Real run
+## Canonical run: SkyPilot
+
+The k8s-native, on-prem-first, burst-to-cloud entry point lives in
+[skypilot-env/workspace/consortium-autoresearch/](https://github.com/olivecasazza/skypilot-env/tree/master/workspace/consortium-autoresearch)
+(your local copy at `~/Repositories/skypilot-env/`).
+
+```sh
+cd ~/Repositories/skypilot-env
+
+LITELLM_API_KEY=$(sops -d ~/Repositories/nixlab/modules/k8s/apps/litellm/litellm-secrets.yaml \
+    | yq -r '.stringData.LITELLM_MASTER_KEY')
+
+sky launch workspace/consortium-autoresearch/task.yaml \
+    -c consortium-autoresearch \
+    --env LITELLM_API_KEY="$LITELLM_API_KEY" \
+    --env GH_TOKEN="$(gh auth token)" \
+    --down
+```
+
+The SkyPilot task is just a thin wrapper: it clones this repo, runs
+`compute-baseline.sh`, `seed-queue.sh`, `run-loop.sh` — same scripts
+as the local path below.
+
+In the morning:
+
+```sh
+sky logs consortium-autoresearch
+gh pr list --repo olivecasazza/consortium-autoresearch \
+    --state open --search 'head:agent/'
+column -t -s $'\t' autoresearch/results.tsv | less
+```
+
+## Local run (debugging path)
+
+When you need fast iteration on the harness itself:
 
 ```sh
 set -a; source autoresearch/.env; set +a
@@ -73,25 +107,6 @@ Tail the logs:
 ```sh
 tail -f autoresearch/logs/*.log
 ```
-
-In the morning:
-
-```sh
-column -t -s $'\t' autoresearch/results.tsv | less
-gh pr list --state open --search 'head:agent/'
-```
-
-## Multi-agent run with gascity (later)
-
-When gascity is set up:
-
-```sh
-gc init .
-gc start
-```
-
-`city.toml` declares two formulas: `drain-queue` (run-once.sh, parallelism
-2) and `refill-queue` (seed + upstream-diff hourly).
 
 ## Hard rules (mirrored in program.md)
 
