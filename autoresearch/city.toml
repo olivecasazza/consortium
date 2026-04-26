@@ -1,3 +1,0 @@
-[workspace]
-provider = "opencode"
-install_agent_hooks = ["opencode"]
