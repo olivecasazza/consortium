@@ -65,7 +65,10 @@ export OPENAI_API_KEY="$LITELLM_API_KEY"
 OC_CFG=$(mktemp -d)
 trap 'rm -f "$PROMPT"; rm -rf "$OC_CFG"' EXIT
 mkdir -p "$OC_CFG/opencode"
-cat > "$OC_CFG/opencode/opencode.json" <<JSON
+# opencode 1.14+ reads $XDG_CONFIG_HOME/opencode/config.json (not opencode.json).
+# Writing the wrong filename causes opencode to fall back to the global
+# ~/.config/opencode/config.json — which targets a different provider.
+cat > "$OC_CFG/opencode/config.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
   "provider": {
