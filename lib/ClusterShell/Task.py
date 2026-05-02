@@ -1338,8 +1338,10 @@ class Task(object):
             chan = PropagationChannel(self, gateway)
             logger = logging.getLogger(__name__)
             logger.debug("pchannel: creating new channel %s", chan)
-            # invoke gateway
-            timeout = None # FIXME: handle timeout for gateway channels
+            # invoke gateway with connect_timeout as safety net;
+            # the timeout is invalidated once the channel is established
+            # (see PropagationChannel.recv handling of StartMessage)
+            timeout = self._info.get("connect_timeout") or None
             wrkcls = self.default('distant_worker')
             chanworker = wrkcls(gateway, command=metaworker.invoke_gateway,
                                 handler=chan, stderr=True, timeout=timeout)
