@@ -1,0 +1,8 @@
+type = "port-python-fixme"
+target_file = "lib/ClusterShell/Gateway.py"
+target_line = 287
+description = "FIXME ev_start-not-called workaround"
+created = "2026-04-25T02:58:38Z"
+status = "stale"
+stale_reason = "target-moved"
+notes = "lib/ClusterShell/Gateway.py does not exist in this repo. No lib/ directory present. Target file was never ported or has been removed."
