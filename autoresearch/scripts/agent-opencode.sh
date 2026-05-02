@@ -83,6 +83,14 @@ cat > "$OC_CFG/opencode/config.json" <<JSON
         "$AR_MODEL": {}
       }
     }
+  },
+  "small_model": "litellm/$AR_MODEL",
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "tail_turns": 2,
+    "preserve_recent_tokens": 6000,
+    "reserved": 2000
   }
 }
 JSON
