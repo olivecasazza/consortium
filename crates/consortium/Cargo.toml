@@ -1,7 +1,5 @@
 [package]
 name = "consortium-crate"
-# Internal crates and code still use `consortium` as the lib name
-lib.name = "consortium"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +13,14 @@ configparser = "3"
 dirs-next = "2"
 hostname = "0.4"
 libc = "0.2"
+
+# The library is published as `consortium-crate` for crates.io but exposed
+# as `consortium` to internal callers (tests, sibling crates, the CLI).
+# Cargo silently ignores `package.lib.name` (no warning until 1.85+), so
+# this MUST be a proper [lib] table — without it `use consortium::*` in
+# tests fails with E0432.
+[lib]
+name = "consortium"
 
 [features]
 docker-tests = []
