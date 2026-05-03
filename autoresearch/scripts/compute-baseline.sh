@@ -63,12 +63,42 @@ CLIPPY_ERRORS=$(grep -cE '^error(\[|: )' "$CLIPPY_LOG" 2>/dev/null || true)
 CLIPPY_ERRORS=${CLIPPY_ERRORS:-0}
 rm -f "$CLIPPY_LOG"
 
+# Optional perf baseline: dag_executor microbench means for flat/33 + chain/33.
+# Only present once upstream consortium PR #4 (the criterion bench file) syncs
+# in. Until then we emit "perf": null and score-perf.sh skips the gate.
+PERF_JSON=null
+if [[ -f "$WORKDIR/crates/consortium/benches/dag_executor.rs" ]]; then
+    echo "computing perf baseline (cargo bench --quick)..."
+    BENCH_LOG=$(mktemp)
+    if timeout 120 cargo bench -p consortium-crate --bench dag_executor -- \
+            '^dag_executor/(flat|chain)/33$' --quick >"$BENCH_LOG" 2>&1; then
+        FLAT_EST="$WORKDIR/target/criterion/dag_executor/flat/33/new/estimates.json"
+        CHAIN_EST="$WORKDIR/target/criterion/dag_executor/chain/33/new/estimates.json"
+        if [[ -f "$FLAT_EST" && -f "$CHAIN_EST" ]] && command -v jq >/dev/null 2>&1; then
+            FLAT_NS=$(jq -r '.mean.point_estimate' "$FLAT_EST")
+            CHAIN_NS=$(jq -r '.mean.point_estimate' "$CHAIN_EST")
+            PERF_JSON=$(printf '{ "flat_33_ns": %.0f, "chain_33_ns": %.0f }' "$FLAT_NS" "$CHAIN_NS")
+            echo "perf baseline: flat=${FLAT_NS}ns chain=${CHAIN_NS}ns"
+        else
+            echo "WARN: bench ran but estimates.json/jq missing — perf baseline left null" >&2
+            tail -n 20 "$BENCH_LOG" >&2
+        fi
+    else
+        echo "WARN: cargo bench failed — perf baseline left null" >&2
+        tail -n 20 "$BENCH_LOG" >&2
+    fi
+    rm -f "$BENCH_LOG"
+else
+    echo "perf baseline: bench file not present in this fork — leaving perf=null"
+fi
+
 cd "$REPO_ROOT"
 {
     printf '{\n'
     printf '  "master_sha": "%s",\n' "$BASE_SHA"
     printf '  "tests_passing": %d,\n' "$TESTS_PASSING"
     printf '  "clippy_errors": %d,\n' "$CLIPPY_ERRORS"
+    printf '  "perf": %s,\n' "$PERF_JSON"
     printf '  "measured_at": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '}\n'
 } > "$OUT"
