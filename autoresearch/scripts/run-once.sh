@@ -36,6 +36,10 @@ TASK_FILE=$(bash "$SCRIPTS/pick-task.sh") || {
 TASK_ID=$(basename "$TASK_FILE" .task.toml)
 TASK_TYPE=$(awk -F'"' '/^type[[:space:]]*=/{print $2; exit}' "$TASK_FILE")
 TARGET_FILE=$(awk -F'"' '/^target_file[[:space:]]*=/{print $2; exit}' "$TASK_FILE")
+# Export AR_TASK_TYPE once, here. Both the agent invocation (--no-agent
+# flag may skip it) and the score.sh call below need it visible; setting
+# it once at task-pick time guarantees the env propagates to every child.
+export AR_TASK_TYPE="$TASK_TYPE"
 
 # Accountant-driven model selection: read current-recommendations.toml,
 # look up [TASK_TYPE] then [default]. Falls through to whatever AR_MODEL
@@ -110,6 +114,7 @@ if [[ $NO_AGENT -eq 0 ]]; then
         abandon "agent-cmd-missing: $AGENT_CMD"
     fi
     export AR_TASK_FILE="$TASK_FILE"
+    export AR_TASK_TYPE="$TASK_TYPE"
     export AR_WORKTREE="$WORKTREE"
     export AR_BRANCH="$BRANCH"
     export AR_SCORE="$SCRIPTS/score.sh"
@@ -117,8 +122,10 @@ if [[ $NO_AGENT -eq 0 ]]; then
     timeout 30m bash "$AGENT_CMD" 2>&1 | tee -a "$LOGFILE" || true
 fi
 
-# 4. score
+# 4. score (AR_TASK_TYPE export persists into the score.sh subshell so
+#    Gate 5 dispatches when the task type calls for it)
 cd "$WORKTREE"
+export AR_TASK_TYPE="$TASK_TYPE"
 if bash "$SCRIPTS/score.sh" "$WORKTREE" 2>&1 | tee -a "$LOGFILE"; then
     SCORE=pass
 else

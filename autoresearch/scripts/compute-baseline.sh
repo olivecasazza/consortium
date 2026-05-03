@@ -63,12 +63,94 @@ CLIPPY_ERRORS=$(grep -cE '^error(\[|: )' "$CLIPPY_LOG" 2>/dev/null || true)
 CLIPPY_ERRORS=${CLIPPY_ERRORS:-0}
 rm -f "$CLIPPY_LOG"
 
+# Optional perf baselines:
+#  - perf.{flat_33_ns,chain_33_ns}                    — dag_executor microbench
+#  - perf_cascade.{uniform,bimodal}_256.<strategy_ns> — cascade strategies bench
+# Each is conditional on its bench file being present. When absent we emit
+# null and the corresponding score gate refuses to PASS (avoids no-signal
+# false-positives).
+PERF_JSON=null
+PERF_CASCADE_JSON=null
+
+if [[ -f "$WORKDIR/crates/consortium/benches/dag_executor.rs" ]]; then
+    echo "computing dag_executor baseline (cargo bench --quick)..."
+    BENCH_LOG=$(mktemp)
+    if timeout 120 cargo bench -p consortium-crate --bench dag_executor -- \
+            '^dag_executor/(flat|chain)/33$' --quick >"$BENCH_LOG" 2>&1; then
+        FLAT_EST="$WORKDIR/target/criterion/dag_executor/flat/33/new/estimates.json"
+        CHAIN_EST="$WORKDIR/target/criterion/dag_executor/chain/33/new/estimates.json"
+        if [[ -f "$FLAT_EST" && -f "$CHAIN_EST" ]] && command -v jq >/dev/null 2>&1; then
+            FLAT_NS=$(jq -r '.mean.point_estimate' "$FLAT_EST")
+            CHAIN_NS=$(jq -r '.mean.point_estimate' "$CHAIN_EST")
+            PERF_JSON=$(printf '{ "flat_33_ns": %.0f, "chain_33_ns": %.0f }' "$FLAT_NS" "$CHAIN_NS")
+            echo "perf baseline: flat=${FLAT_NS}ns chain=${CHAIN_NS}ns"
+        else
+            echo "WARN: bench ran but estimates.json/jq missing — perf baseline left null" >&2
+            tail -n 20 "$BENCH_LOG" >&2
+        fi
+    else
+        echo "WARN: cargo bench (dag_executor) failed — perf baseline left null" >&2
+        tail -n 20 "$BENCH_LOG" >&2
+    fi
+    rm -f "$BENCH_LOG"
+else
+    echo "perf baseline: dag_executor bench file not present — leaving perf=null"
+fi
+
+if [[ -f "$WORKDIR/crates/consortium-fanout-sim/benches/cascade_strategies.rs" ]]; then
+    echo "computing cascade_strategies baseline (cargo bench --quick)..."
+    BENCH_LOG=$(mktemp)
+    if timeout 240 cargo bench -p consortium-fanout-sim --bench cascade_strategies -- \
+            '^cascade_strategies/(uniform|bimodal)/256/' --quick >"$BENCH_LOG" 2>&1; then
+        if command -v jq >/dev/null 2>&1; then
+            # Collect per-(topo, strategy) means.
+            tmp_json=$(mktemp)
+            printf '{ "uniform_256": {' > "$tmp_json"
+            first=1
+            for strat in log2-fanout max-bottleneck-spanning steiner-greedy; do
+                est="$WORKDIR/target/criterion/cascade_strategies/uniform/256/$strat/new/estimates.json"
+                if [[ -f "$est" ]]; then
+                    val=$(jq -r '.mean.point_estimate' "$est")
+                    [[ $first -eq 0 ]] && printf ', ' >> "$tmp_json"
+                    printf '"%s": %.0f' "$strat" "$val" >> "$tmp_json"
+                    first=0
+                fi
+            done
+            printf '}, "bimodal_256": {' >> "$tmp_json"
+            first=1
+            for strat in log2-fanout max-bottleneck-spanning steiner-greedy; do
+                est="$WORKDIR/target/criterion/cascade_strategies/bimodal/256/$strat/new/estimates.json"
+                if [[ -f "$est" ]]; then
+                    val=$(jq -r '.mean.point_estimate' "$est")
+                    [[ $first -eq 0 ]] && printf ', ' >> "$tmp_json"
+                    printf '"%s": %.0f' "$strat" "$val" >> "$tmp_json"
+                    first=0
+                fi
+            done
+            printf '} }' >> "$tmp_json"
+            PERF_CASCADE_JSON=$(cat "$tmp_json")
+            rm -f "$tmp_json"
+            echo "perf_cascade baseline: $PERF_CASCADE_JSON"
+        else
+            echo "WARN: jq missing — perf_cascade baseline left null" >&2
+        fi
+    else
+        echo "WARN: cargo bench (cascade_strategies) failed — perf_cascade baseline left null" >&2
+        tail -n 20 "$BENCH_LOG" >&2
+    fi
+    rm -f "$BENCH_LOG"
+else
+    echo "perf_cascade baseline: cascade_strategies bench file not present — leaving null"
+fi
+
 cd "$REPO_ROOT"
 {
     printf '{\n'
     printf '  "master_sha": "%s",\n' "$BASE_SHA"
     printf '  "tests_passing": %d,\n' "$TESTS_PASSING"
     printf '  "clippy_errors": %d,\n' "$CLIPPY_ERRORS"
+    printf '  "perf": %s,\n' "$PERF_JSON"
+    printf '  "perf_cascade": %s,\n' "$PERF_CASCADE_JSON"
     printf '  "measured_at": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '}\n'
 } > "$OUT"
