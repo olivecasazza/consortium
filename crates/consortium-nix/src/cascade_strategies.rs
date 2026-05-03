@@ -251,6 +251,47 @@ impl LevelTreeFanOut {
             })
             .collect()
     }
+
+    /// Heap-style parent: parent of `i` (i >= 1) is `(i-1) / fanout`.
+    /// Returns `None` for the root (id 0) or invalid math.
+    fn tree_parent(&self, id: NodeId) -> Option<NodeId> {
+        if id.0 == 0 {
+            return None;
+        }
+        Some(NodeId((id.0 - 1) / self.fanout))
+    }
+
+    /// Walk up the heap from `id` looking for an ancestor that has the
+    /// closure AND is not in the failed set. Returns:
+    ///
+    /// - `Some(parent)` when the tree-parent is alive with closure
+    ///   (the canonical level-by-level case)
+    /// - `Some(grandparent)` when the parent is in `failed_nodes` and
+    ///   the grandparent is alive (orphan re-routing)
+    /// - `None` when the parent is just "not ready yet" (no closure
+    ///   but also not failed — wait for them)
+    /// - `None` for the root (id 0, no parent)
+    ///
+    /// Critical: only walks PAST a parent that's in `failed_nodes`.
+    /// A parent that's just not-yet-served is waited on, not skipped
+    /// — otherwise round 0 would short-circuit every target directly
+    /// to the seed and break the level-by-level reveal.
+    fn alive_ancestor<'a>(&self, id: NodeId, state: &CascadeState<'a>) -> Option<NodeId> {
+        let mut cur = id;
+        while let Some(parent) = self.tree_parent(cur) {
+            if state.has_closure.contains(&parent) && !state.failed_nodes.contains(&parent) {
+                return Some(parent);
+            }
+            // Parent isn't usable yet. If it's not failed either,
+            // wait for next round — don't skip ahead.
+            if !state.failed_nodes.contains(&parent) {
+                return None;
+            }
+            // Parent is permanently failed — try grandparent.
+            cur = parent;
+        }
+        None
+    }
 }
 
 impl CascadeStrategy for LevelTreeFanOut {
@@ -261,34 +302,41 @@ impl CascadeStrategy for LevelTreeFanOut {
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
         let n_nodes = state.nodes.len() as u32;
         let mut assignments = Vec::new();
+        let mut used_targets: HashSet<NodeId> = HashSet::new();
 
-        // For every node that already has the closure, plan edges to
-        // its predetermined tree children that don't yet have it.
-        // Skip failed nodes, partitioned edges, and edges already
-        // attempted — the strategy is otherwise topology-blind so it
-        // always picks the same tree shape.
-        for node in state.nodes {
-            if !state.has_closure.contains(&node.id) {
+        // Iterate over every TARGET that doesn't yet have the closure.
+        // For each, find the best alive source: prefer the heap tree-
+        // parent (matches the canonical level-by-level shape), but if
+        // that parent is dead/failed, walk UP the heap to find an
+        // alive ancestor (the orphan re-routing mechanism). This keeps
+        // failures localized — one failed node only stalls its OWN
+        // serving attempts, not its entire subtree.
+        for tgt_id in 0..n_nodes {
+            let tgt = NodeId(tgt_id);
+            if state.has_closure.contains(&tgt) {
                 continue;
             }
-            if state.failed_nodes.contains(&node.id) {
+            if state.failed_nodes.contains(&tgt) {
                 continue;
             }
-            for child in self.tree_children(node.id, n_nodes) {
-                if state.has_closure.contains(&child) {
-                    continue;
-                }
-                if state.failed_nodes.contains(&child) {
-                    continue;
-                }
-                if state.attempted.contains(&(node.id, child)) {
-                    continue;
-                }
-                if net.is_partitioned(node.id, child) {
-                    continue;
-                }
-                assignments.push((node.id, child));
+            // Find an alive ancestor — tree-parent first, then walk up.
+            let Some(src) = self.alive_ancestor(tgt, state) else {
+                continue;
+            };
+            if state.attempted.contains(&(src, tgt)) {
+                continue;
             }
+            if net.is_partitioned(src, tgt) {
+                continue;
+            }
+            // Avoid duplicates if multiple orphans pick the same src
+            // — the coordinator dedups on (src, tgt) anyway, but
+            // skipping here keeps the plan tidy.
+            if used_targets.contains(&tgt) {
+                continue;
+            }
+            assignments.push((src, tgt));
+            used_targets.insert(tgt);
         }
 
         CascadePlan {
@@ -342,6 +390,158 @@ mod tests {
                 CascadeNode::new(id, format!("user@host-{}", id.0))
             })
             .collect()
+    }
+
+    /// Test executor: edges whose tgt is in the `dead` set fail with
+    /// CascadeError::Copy. All others succeed in fixed time.
+    struct TargetFailExecutor {
+        dead: HashSet<NodeId>,
+    }
+
+    impl RoundExecutor for TargetFailExecutor {
+        fn dispatch(
+            &self,
+            _nodes: &[CascadeNode],
+            edges: &[(NodeId, NodeId)],
+            _net: &NetworkProfile,
+        ) -> HashMap<(NodeId, NodeId), Result<Duration, crate::cascade::CascadeError>> {
+            edges
+                .iter()
+                .map(|(src, tgt)| {
+                    let outcome = if self.dead.contains(tgt) {
+                        Err(crate::cascade::CascadeError::Copy {
+                            node: *tgt,
+                            stderr: format!("simulated dead target {tgt} from {src}"),
+                        })
+                    } else {
+                        Ok(Duration::from_millis(1))
+                    };
+                    ((*src, *tgt), outcome)
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn level_tree_walks_up_to_alive_ancestor_for_orphans() {
+        // 15-node binary tree:
+        //       0
+        //     1   2
+        //    3 4 5 6
+        //   7 8 9 10 11 12 13 14
+        //
+        // Kill node 1 (left subtree's whole intermediate level): its
+        // pre-assigned children (3, 4) become orphans. The walk-up
+        // should cause node 0 (root) to adopt them in a later round.
+        // Without re-routing, 7..10 (grandchildren) would never get
+        // served because their tree-parents 3, 4 never receive the
+        // closure.
+        //
+        // With re-routing: round 0 plans (0→1) (0→2). Round 0 outcomes:
+        // (0→1) FAILS (1 is dead), (0→2) succeeds.
+        // Round 1: 1 is failed_node, so heap-walk-up finds 0 alive.
+        // Plan: (0→3), (0→4) (re-routed orphans), (2→5), (2→6).
+        // Round 2: (0→7..14)? No — heap-walk-up for 7 finds parent 3
+        // also failed (never got closure → in_progress check). Walk
+        // up to 1: also failed. Walk to 0: alive → plan (0→7).
+        //
+        // Test: verify >= 13 nodes converge (everyone except 1 + maybe
+        // 7..10 if they couldn't reach root). Actually with re-routing
+        // 0 can serve all of them eventually, so converged should be
+        // 14 (n_nodes - killed_node).
+        let nodes = make_nodes(15);
+        let mut seeded = std::collections::HashSet::new();
+        seeded.insert(NodeId(0));
+        let mut dead = HashSet::new();
+        dead.insert(NodeId(1));
+        let exec = TargetFailExecutor { dead };
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &LevelTreeFanOut::new(2),
+            &exec,
+            32,
+            None,
+        );
+        // Node 1 + maybe its descendants 3, 4, 7, 8, 9, 10 are at risk.
+        // With orphan re-routing, only node 1 itself should fail.
+        // Tightened: assert exactly 14 converge (only n1 fails).
+        assert_eq!(
+            result.converged.len(),
+            14,
+            "orphan re-routing should serve every node except the dead one; got {} converged (failed_nodes={:?})",
+            result.converged.len(),
+            result.failed.as_ref().map(|e| e.affected_nodes()),
+        );
+        assert!(!result.is_success(), "n1 should still appear as failed");
+    }
+
+    #[test]
+    fn level_tree_alive_ancestor_only_walks_past_failed_nodes() {
+        // Verifies the critical "wait for not-ready parents, walk past
+        // failed parents" semantic.
+        let lt = LevelTreeFanOut::new(2);
+        let nodes = make_nodes(15);
+        let attempted = HashSet::new();
+
+        // Case 1: only n0 has closure, no failures.
+        // alive_ancestor(7): parent is 3, not failed, not ready → wait.
+        // Returns None. (Without this, round 0 would short-circuit
+        // every node to the seed.)
+        let mut has_closure = std::collections::HashSet::new();
+        has_closure.insert(NodeId(0));
+        let failed_nodes = HashSet::new();
+        let state = crate::cascade::CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 0,
+            attempted: &attempted,
+            failed_nodes: &failed_nodes,
+        };
+        assert_eq!(
+            lt.alive_ancestor(NodeId(7), &state),
+            None,
+            "should wait for parent (3) to be ready, not skip to root"
+        );
+        // For n1: parent is n0, alive with closure → returns 0.
+        assert_eq!(lt.alive_ancestor(NodeId(1), &state), Some(NodeId(0)));
+        assert_eq!(lt.alive_ancestor(NodeId(0), &state), None); // root
+
+        // Case 2: n0 alive, n1 failed, n3 not ready. tgt=7.
+        // Walk: 7→3 (not failed, not ready → return None).
+        let mut failed_nodes2 = HashSet::new();
+        failed_nodes2.insert(NodeId(1));
+        let state2 = crate::cascade::CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 0,
+            attempted: &attempted,
+            failed_nodes: &failed_nodes2,
+        };
+        assert_eq!(
+            lt.alive_ancestor(NodeId(7), &state2),
+            None,
+            "n3 isn't failed (yet), should wait — only walk past actually-failed parents"
+        );
+
+        // Case 3: n3 IS failed (along with n1), and n0 alive. tgt=7.
+        // Walk: 7→3 (failed)→1 (failed)→0 (alive) → returns 0.
+        let mut failed_nodes3 = HashSet::new();
+        failed_nodes3.insert(NodeId(1));
+        failed_nodes3.insert(NodeId(3));
+        let state3 = crate::cascade::CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 0,
+            attempted: &attempted,
+            failed_nodes: &failed_nodes3,
+        };
+        assert_eq!(
+            lt.alive_ancestor(NodeId(7), &state3),
+            Some(NodeId(0)),
+            "should walk past two failed ancestors to reach the alive root"
+        );
     }
 
     /// Skewed network: half the edges are slow (1 MB/s), half are fast (1 GB/s).

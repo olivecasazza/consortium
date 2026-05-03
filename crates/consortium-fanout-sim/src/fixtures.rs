@@ -225,6 +225,12 @@ pub enum FailureSchedule {
         tgt: NodeId,
         round: u32,
     },
+    /// Fail each edge with probability `fraction` (0.0 to 1.0). The
+    /// outcome is deterministic — same `seed`, `round`, `src`, `tgt`
+    /// produce the same fail/succeed decision via a hash of all four,
+    /// so reproducing a "weird" failure pattern is just a matter of
+    /// re-running with the same seed.
+    Random { fraction: f64, seed: u64 },
     /// Fail edges per a hand-built table: `(round, src, tgt) -> Error`.
     Explicit(HashMap<(u32, NodeId, NodeId), CascadeError>),
     /// Multiple failure schedules composed (any one matching = fail).
@@ -252,6 +258,39 @@ impl FailureSchedule {
             } => {
                 if round >= *r && src == *s && tgt == *t {
                     Some(CascadeError::Partitioned { src, tgt })
+                } else {
+                    None
+                }
+            }
+            FailureSchedule::Random { fraction, seed } => {
+                // Deterministic per-edge decision: hash (seed, round, src, tgt)
+                // and compare against fraction. Same inputs → same outcome,
+                // so a "weird" failure pattern is reproducible from the seed.
+                // Different rounds for the same edge get different hashes,
+                // so a retry from a different src has a fresh chance (which
+                // is what gives orphan re-routing a chance to succeed).
+                use std::hash::{BuildHasher, Hasher};
+                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+                // Use a deterministic hasher seeded from `seed` rather than
+                // RandomState (which is process-random). RandomState above
+                // is thrown away — it's the import we need; below we use
+                // FxHash-like XOR mixing for determinism.
+                let mut state: u64 = *seed;
+                state ^= (round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                state ^= (src.0 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                state ^= (tgt.0 as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
+                state = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+                state ^= state >> 33;
+                let _ = h; // suppress unused
+                           // Map to [0.0, 1.0): take low 53 bits, divide by 2^53.
+                let p = ((state >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
+                if p < fraction.clamp(0.0, 1.0) {
+                    Some(CascadeError::Copy {
+                        node: tgt,
+                        stderr: format!(
+                            "random failure (seed={seed} round={round} src={src} tgt={tgt})"
+                        ),
+                    })
                 } else {
                     None
                 }
@@ -316,6 +355,83 @@ mod tests {
         let s1 = dist.sample(&mut rng_from_seed(42), 100);
         let s2 = dist.sample(&mut rng_from_seed(42), 100);
         assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn random_failure_schedule_is_deterministic_per_edge() {
+        let s = FailureSchedule::Random {
+            fraction: 0.5,
+            seed: 42,
+        };
+        // Same (round, src, tgt) → same outcome on repeated calls.
+        let a = s.failure_for(3, NodeId(7), NodeId(11));
+        let b = s.failure_for(3, NodeId(7), NodeId(11));
+        assert_eq!(
+            a.is_some(),
+            b.is_some(),
+            "deterministic per-edge: same query → same outcome"
+        );
+    }
+
+    #[test]
+    fn random_failure_schedule_respects_fraction_at_scale() {
+        // Sample 10000 edges at fraction=0.3; expect ~3000 failures.
+        let s = FailureSchedule::Random {
+            fraction: 0.3,
+            seed: 0xc0ffee,
+        };
+        let mut fails = 0;
+        let n_samples = 10_000u32;
+        for i in 0..n_samples {
+            // Use varied (round, src, tgt) so the hash mixes properly.
+            let round = i / 100;
+            let src = NodeId(i % 50);
+            let tgt = NodeId(i % 47);
+            if s.failure_for(round, src, tgt).is_some() {
+                fails += 1;
+            }
+        }
+        let observed = fails as f64 / n_samples as f64;
+        assert!(
+            (observed - 0.3).abs() < 0.03,
+            "expected ~30% failure rate; got {observed:.2}% over {n_samples} samples"
+        );
+    }
+
+    #[test]
+    fn random_failure_schedule_at_zero_never_fails() {
+        let s = FailureSchedule::Random {
+            fraction: 0.0,
+            seed: 1,
+        };
+        for round in 0..10 {
+            for i in 0..50 {
+                let src = NodeId(i);
+                let tgt = NodeId(i + 1);
+                assert!(
+                    s.failure_for(round, src, tgt).is_none(),
+                    "fraction=0.0 should never fail"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn random_failure_schedule_at_one_always_fails() {
+        let s = FailureSchedule::Random {
+            fraction: 1.0,
+            seed: 1,
+        };
+        for round in 0..3 {
+            for i in 0..20 {
+                let src = NodeId(i);
+                let tgt = NodeId(i + 1);
+                assert!(
+                    s.failure_for(round, src, tgt).is_some(),
+                    "fraction=1.0 should always fail"
+                );
+            }
+        }
     }
 
     #[test]

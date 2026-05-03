@@ -116,6 +116,20 @@ struct LiveArgs {
     #[arg(long = "seed", default_value_t = 0)]
     seed: u64,
 
+    /// Random per-edge failure rate (0.0 to 1.0). Each edge fails with
+    /// this probability; the outcome is deterministic from
+    /// (--failure-seed, round, src, tgt) so a given seed reproduces
+    /// the exact same failure pattern. Use to demo the cascade's
+    /// orphan re-routing — when a tree-parent fails, level-tree walks
+    /// up the heap to find an alive ancestor.
+    #[arg(long = "failure-rate", default_value_t = 0.0)]
+    failure_rate: f64,
+
+    /// Seed for the random failure RNG. Same seed + same scenario
+    /// reproduces the exact same fail/succeed sequence.
+    #[arg(long = "failure-seed", default_value_t = 0)]
+    failure_seed: u64,
+
     /// Disable live re-rendering (collect all events first, render once
     /// at end). Live mode is the default when stdout is a TTY + tree
     /// format; pipes always batch since ANSI cursor codes don't make
@@ -282,8 +296,15 @@ fn run_scenario<S: EventSink>(
         profile
     };
 
-    let base_exec =
-        consortium_fanout_sim::DeterministicExecutor::new(closure_bytes, FailureSchedule::None);
+    let failures = if args.failure_rate > 0.0 {
+        FailureSchedule::Random {
+            fraction: args.failure_rate,
+            seed: args.failure_seed,
+        }
+    } else {
+        FailureSchedule::None
+    };
+    let base_exec = consortium_fanout_sim::DeterministicExecutor::new(closure_bytes, failures);
 
     // If --per-round-delay set, wrap the deterministic executor in a
     // DelayingExecutor so each dispatch() sleeps for the configured
