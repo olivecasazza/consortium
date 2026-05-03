@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use is_terminal::IsTerminal;
 
-use consortium_cli::event_render::{render_events, EventCollector, JsonlWriter};
+use consortium_cli::event_render::{render_events, EventCollector, JsonlWriter, LiveTreeRenderer};
 use consortium_cli::tree::OutputFormat;
 use consortium_fanout_sim::fixtures::{
     rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution,
@@ -98,6 +98,13 @@ struct LiveArgs {
     /// RNG seed (default 0)
     #[arg(long = "seed", default_value_t = 0)]
     seed: u64,
+
+    /// Disable live re-rendering (collect all events first, render once
+    /// at end). Live mode is the default when stdout is a TTY + tree
+    /// format; pipes always batch since ANSI cursor codes don't make
+    /// sense in a captured stream.
+    #[arg(long = "no-watch")]
+    no_watch: bool,
 }
 
 // ============================================================================
@@ -180,8 +187,22 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    // All other formats need the full event vec to render — accumulate
-    // first, then delegate to print_events.
+    // Live tree re-render is the default when:
+    // - format is `tree` (the only format that has a tree to redraw)
+    // - stdout is a TTY (ANSI escapes need a real terminal)
+    // - --no-watch wasn't passed
+    // Otherwise fall through to batch: collect all events, render once.
+    let live_eligible = cli.format == "tree" && io::stdout().is_terminal() && !args.no_watch;
+    if live_eligible {
+        let color = !cli.no_color;
+        let renderer = LiveTreeRenderer::new(color, cli.max_depth);
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer);
+        // The renderer prints the final frame on `Finished`; nothing more
+        // for us to flush.
+        return Ok(());
+    }
+
+    // Batch path: accumulate, then delegate to print_events.
     let collector = EventCollector::new();
     run_scenario(args, closure_bytes, bandwidth, uplinks, &collector);
     let events = collector.events();

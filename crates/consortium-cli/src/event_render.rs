@@ -391,6 +391,122 @@ impl TreeNode for OwnedTreeNode {
 }
 
 // ============================================================================
+// LiveTreeRenderer — re-renders the tree in place on each RoundCompleted
+// ============================================================================
+
+/// EventSink that re-renders the cascade tree to stdout in place every
+/// `RoundCompleted` (and `Finished`). Uses ANSI cursor positioning so
+/// the tree fills in line-by-line as the cascade unfolds — same idiom
+/// nix-output-monitor (nom) uses.
+///
+/// Usage: hand to `Cascade::new()...events(&renderer).run()` for default
+/// "watch the cascade unfold" behavior in any TTY-attached cli bin.
+///
+/// Caller is responsible for not wiring this when stdout is a pipe — it
+/// would emit ANSI escapes into the captured output. [`crate::output`]
+/// handles the TTY check.
+pub struct LiveTreeRenderer {
+    accumulator: SnapshotAccumulator,
+    last_frame_lines: Mutex<usize>,
+    color: bool,
+    max_depth: Option<usize>,
+    /// Optional Mutex<Vec<u8>> for testing — when Some, frames go here
+    /// instead of stdout. Production passes None.
+    capture: Option<Mutex<Vec<u8>>>,
+}
+
+impl LiveTreeRenderer {
+    pub fn new(color: bool, max_depth: Option<usize>) -> Self {
+        Self {
+            accumulator: SnapshotAccumulator::new(),
+            last_frame_lines: Mutex::new(0),
+            color,
+            max_depth,
+            capture: None,
+        }
+    }
+
+    /// Test-only constructor that captures frames into an internal buffer
+    /// instead of writing to stdout.
+    #[doc(hidden)]
+    pub fn with_capture(color: bool, max_depth: Option<usize>) -> Self {
+        Self {
+            accumulator: SnapshotAccumulator::new(),
+            last_frame_lines: Mutex::new(0),
+            color,
+            max_depth,
+            capture: Some(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Test-only: read out captured frames as a String.
+    #[doc(hidden)]
+    pub fn captured(&self) -> String {
+        self.capture
+            .as_ref()
+            .map(|m| String::from_utf8_lossy(&m.lock().unwrap()).to_string())
+            .unwrap_or_default()
+    }
+
+    fn repaint(&self) {
+        let tree = self.accumulator.to_tree();
+        let frame = crate::tree::render(
+            &tree,
+            &OutputFormat::Tree {
+                max_depth: self.max_depth,
+                color: self.color,
+            },
+        );
+        let line_count = frame.lines().count();
+        let mut last = self.last_frame_lines.lock().unwrap();
+
+        // Build the on-wire bytes once. iTerm2 synchronized-update markers
+        // (DECRQSS-like) avoid mid-frame flicker on terminals that support
+        // them; older terminals ignore them silently.
+        let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 64);
+        if *last > 0 {
+            // begin synchronized update
+            bytes.extend_from_slice(b"\x1b[?2026h");
+            // cursor up N lines
+            bytes.extend_from_slice(format!("\x1b[{}A", *last).as_bytes());
+            // clear from cursor to end of screen
+            bytes.extend_from_slice(b"\x1b[J");
+        }
+        bytes.extend_from_slice(frame.as_bytes());
+        if *last > 0 {
+            // end synchronized update
+            bytes.extend_from_slice(b"\x1b[?2026l");
+        }
+
+        if let Some(cap) = &self.capture {
+            cap.lock().unwrap().extend_from_slice(&bytes);
+        } else {
+            let mut stdout = io::stdout().lock();
+            let _ = stdout.write_all(&bytes);
+            let _ = stdout.flush();
+        }
+
+        *last = line_count;
+    }
+}
+
+impl EventSink for LiveTreeRenderer {
+    fn emit(&self, event: &CascadeEvent) {
+        // Always update the in-memory tree.
+        self.accumulator.emit(event);
+        // Repaint on round boundaries + final tick. Per-edge events are
+        // accumulated silently — keeps the redraw rate manageable at
+        // high N (1024 nodes × log₂ rounds → ~10k edge events).
+        match event {
+            CascadeEvent::RoundCompleted { .. } | CascadeEvent::Finished { .. } => {
+                self.repaint();
+            }
+            _ => {}
+        }
+    }
+}
+
+// ============================================================================
 // render_events
 // ============================================================================
 
@@ -663,6 +779,76 @@ mod tests {
         assert!(out.contains("✔"), "missing ✔ (Ok glyph): {out}");
         assert!(out.contains("⚠"), "missing ⚠ (Failed glyph): {out}");
         assert!(out.contains("⏸"), "missing ⏸ (Pending glyph): {out}");
+    }
+
+    /// 7. LiveTreeRenderer emits a frame on each RoundCompleted + Finished,
+    /// uses ANSI cursor-up escapes between frames, and captures multiple
+    /// distinct frames over the cascade lifetime.
+    #[test]
+    fn live_tree_renderer_emits_multiple_frames_with_ansi_redraw() {
+        // Drive a 4-event sequence: Started, RoundCompleted, RoundCompleted, Finished.
+        // Expect 3 frames captured (one per RoundCompleted, one per Finished).
+        let renderer = LiveTreeRenderer::with_capture(false, None);
+
+        renderer.emit(&CascadeEvent::Started {
+            n_nodes: 4,
+            seeded: vec![NodeId(0)],
+            strategy: "log2-fanout".into(),
+            at: SystemTime::UNIX_EPOCH,
+        });
+        renderer.emit(&CascadeEvent::PlanComputed {
+            round: 0,
+            assignments: vec![Edge {
+                src: NodeId(0),
+                tgt: NodeId(1),
+            }],
+        });
+        renderer.emit(&edge_completed(0, 0, 1, 5));
+        renderer.emit(&CascadeEvent::RoundCompleted {
+            round: 0,
+            duration: Duration::from_millis(5),
+            has_closure: vec![NodeId(0), NodeId(1)],
+        });
+        renderer.emit(&edge_completed(1, 1, 2, 5));
+        renderer.emit(&CascadeEvent::RoundCompleted {
+            round: 1,
+            duration: Duration::from_millis(5),
+            has_closure: vec![NodeId(0), NodeId(1), NodeId(2)],
+        });
+        renderer.emit(&CascadeEvent::Finished {
+            converged: 3,
+            failed: 0,
+            rounds: 2,
+        });
+
+        let captured = renderer.captured();
+
+        // First frame has no preceding cursor-up escape (last_frame_lines was 0).
+        // Subsequent frames must include both the cursor-up escape AND the
+        // synchronized-update markers, otherwise the tree would just keep
+        // appending instead of redrawing in place.
+        assert!(
+            captured.contains("\x1b["),
+            "expected ANSI escape sequences in captured output: {captured:?}"
+        );
+        // Cursor-up escape \x1b[NA appears for the 2nd and 3rd frames
+        // (after first repaint set last_frame_lines > 0).
+        let cursor_up_count = captured.matches("\x1b[").count();
+        assert!(
+            cursor_up_count >= 2,
+            "expected >=2 ANSI escape sequences (one per repaint after the first), got {cursor_up_count}"
+        );
+        // Synchronized-update begin marker fires on every repaint after the
+        // first. Three repaints (2 RoundCompleted + 1 Finished) → 2 begin markers.
+        let sync_begin_count = captured.matches("\x1b[?2026h").count();
+        assert_eq!(
+            sync_begin_count, 2,
+            "expected exactly 2 synchronized-update begin markers (one per non-first repaint); got {sync_begin_count}\n{captured:?}"
+        );
+        // n0, n1, n2 should all eventually appear in the captured output.
+        assert!(captured.contains("n0"));
+        assert!(captured.contains("n1"));
+        assert!(captured.contains("n2"));
     }
 
     /// 6. JSONL round-trip: serialize events via JsonlWriter → parse back.
