@@ -74,6 +74,7 @@ proptest! {
             seed_fraction,
             closure_bytes: closure_mb * 1024 * 1024,
             bandwidth,
+            uplinks: None,
             failures: FailureSchedule::None,
             max_rounds: 64,
         };
@@ -155,6 +156,7 @@ proptest! {
             seed_fraction: 0.0,
             closure_bytes: 10 * 1024 * 1024,
             bandwidth,
+            uplinks: None,
             failures,
             max_rounds: 64,
         };
@@ -210,6 +212,7 @@ proptest! {
                 fast: 500 * 1024 * 1024,
                 fast_fraction: 0.4,
             },
+            uplinks: None,
             failures: FailureSchedule::None,
             max_rounds: 32,
         };

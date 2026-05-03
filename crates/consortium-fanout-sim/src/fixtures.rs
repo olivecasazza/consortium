@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use consortium_nix::cascade::{CascadeError, NetworkProfile, NodeId};
+use consortium_nix::cascade::{CascadeError, NetworkProfile, NodeId, NodeSpec};
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -133,6 +133,72 @@ impl BandwidthDistribution {
                         net.bandwidth.insert((NodeId(src), NodeId(tgt)), bw);
                     }
                 }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Uplink distribution — per-node link capacities
+// ============================================================================
+
+/// How to assign per-node link capacities. Generators populate the
+/// [`NetworkProfile::nodes`] map, which engages contention modeling in
+/// [`NetworkProfile::effective_bandwidth`].
+///
+/// Nodes absent from the map are treated as having infinite uplink/downlink
+/// (degenerate to per-edge bandwidth only — same as the simple model).
+#[derive(Debug, Clone)]
+pub enum UplinkDistribution {
+    /// Every node gets the same uplink. Downlink = 4 × uplink, matching
+    /// the asymmetric-link assumption in `NetworkBuilder::uplinks_uniform`.
+    Uniform(u64),
+    /// Bimodal: data-center nodes (fast) and residential nodes (slow).
+    /// `fast_fraction` of nodes get the fast uplink; the rest get slow.
+    /// Downlink = 4 × uplink for each tier.
+    Bimodal {
+        slow: u64,
+        fast: u64,
+        fast_fraction: f64,
+    },
+    /// Caller-specified per-node specs (escape hatch for hand-crafted scenarios).
+    Explicit(HashMap<NodeId, NodeSpec>),
+}
+
+impl UplinkDistribution {
+    /// Populate `net.nodes` with per-node specs for `0..n_nodes`.
+    pub fn populate(&self, rng: &mut ChaCha8Rng, net: &mut NetworkProfile, n_nodes: u32) {
+        match self {
+            UplinkDistribution::Uniform(uplink) => {
+                for i in 0..n_nodes {
+                    net.nodes.insert(
+                        NodeId(i),
+                        NodeSpec {
+                            uplink: *uplink,
+                            downlink: uplink.saturating_mul(4),
+                        },
+                    );
+                }
+            }
+            UplinkDistribution::Bimodal {
+                slow,
+                fast,
+                fast_fraction,
+            } => {
+                let f = fast_fraction.clamp(0.0, 1.0);
+                for i in 0..n_nodes {
+                    let uplink = if rng.gen::<f64>() < f { *fast } else { *slow };
+                    net.nodes.insert(
+                        NodeId(i),
+                        NodeSpec {
+                            uplink,
+                            downlink: uplink.saturating_mul(4),
+                        },
+                    );
+                }
+            }
+            UplinkDistribution::Explicit(specs) => {
+                net.nodes.extend(specs.iter().map(|(k, v)| (*k, *v)));
             }
         }
     }
@@ -270,6 +336,41 @@ mod tests {
         let total = net.bandwidth.len();
         let frac = fast_count as f64 / total as f64;
         assert!((frac - 0.5).abs() < 0.05, "expected ~0.5, got {frac}");
+    }
+
+    #[test]
+    fn uniform_uplink_sets_all_nodes() {
+        let mut net = NetworkProfile::default();
+        let dist = UplinkDistribution::Uniform(1_000_000);
+        let mut rng = rng_from_seed(1);
+        dist.populate(&mut rng, &mut net, 10);
+        assert_eq!(net.nodes.len(), 10, "all 10 nodes should have specs");
+        for i in 0..10u32 {
+            let spec = net.nodes.get(&NodeId(i)).expect("node should have spec");
+            assert_eq!(spec.uplink, 1_000_000);
+            assert_eq!(spec.downlink, 4_000_000);
+        }
+    }
+
+    #[test]
+    fn bimodal_uplink_respects_fraction() {
+        let mut net = NetworkProfile::default();
+        let dist = UplinkDistribution::Bimodal {
+            slow: 1_000_000,
+            fast: 1_000_000_000,
+            fast_fraction: 0.5,
+        };
+        let mut rng = rng_from_seed(1);
+        dist.populate(&mut rng, &mut net, 50);
+        let fast_count = net
+            .nodes
+            .values()
+            .filter(|s| s.uplink == 1_000_000_000)
+            .count();
+        let total = net.nodes.len();
+        assert_eq!(total, 50, "all 50 nodes should have specs");
+        let frac = fast_count as f64 / total as f64;
+        assert!((frac - 0.5).abs() < 0.15, "expected ~0.5, got {frac}");
     }
 
     #[test]

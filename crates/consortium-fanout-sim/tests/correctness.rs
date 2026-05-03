@@ -79,6 +79,7 @@ fn invariants_uniform_no_failures() {
         seed_fraction: 0.0,
         closure_bytes: 50 * 1024 * 1024,
         bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+        uplinks: None,
         failures: FailureSchedule::None,
         max_rounds: 32,
     };
@@ -100,6 +101,7 @@ fn invariants_skewed_no_failures() {
             fast: 1024 * 1024 * 1024, // 1 GB/s
             fast_fraction: 0.3,
         },
+        uplinks: None,
         failures: FailureSchedule::None,
         max_rounds: 32,
     };
@@ -117,6 +119,7 @@ fn invariants_with_pre_seeded_subset() {
         seed_fraction: 0.2,
         closure_bytes: 50 * 1024 * 1024,
         bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+        uplinks: None,
         failures: FailureSchedule::None,
         max_rounds: 16,
     };
@@ -138,6 +141,7 @@ fn error_tree_shape_under_killed_node() {
         seed_fraction: 0.0,
         closure_bytes: 10 * 1024 * 1024,
         bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+        uplinks: None,
         failures: FailureSchedule::KillNodeAtRound {
             node: NodeId(15),
             round: 0,
@@ -184,6 +188,7 @@ fn error_walk_yields_leaves_in_depth_order() {
         seed_fraction: 0.0,
         closure_bytes: 10 * 1024 * 1024,
         bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+        uplinks: None,
         failures: FailureSchedule::KillNodeAtRound {
             node: NodeId(7),
             round: 1,

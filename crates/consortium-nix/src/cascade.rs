@@ -104,9 +104,35 @@ impl CascadeNode {
 // Network profile
 // ============================================================================
 
-/// Per-edge network properties. Empty entries fall back to caller-
-/// supplied defaults at lookup time. Strategies that don't care about
-/// the network simply ignore this struct.
+/// Per-node link capacity. Absent → unbounded (degenerates to per-edge
+/// bandwidth only, matching the simple model). Present → contention
+/// math kicks in: a source serving N targets in one round shares its
+/// uplink N ways.
+///
+/// Users opt into realism by *describing more of the network*, not by
+/// flipping a "mode" — the executor reads `effective_bandwidth` which
+/// always returns the right number whether contention is modeled or not.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeSpec {
+    /// Outbound capacity in bytes/sec.
+    pub uplink: u64,
+    /// Inbound capacity in bytes/sec.
+    pub downlink: u64,
+}
+
+impl NodeSpec {
+    pub fn symmetric(bytes_sec: u64) -> Self {
+        Self {
+            uplink: bytes_sec,
+            downlink: bytes_sec,
+        }
+    }
+}
+
+/// Network properties: per-edge specs + optional per-node link
+/// capacities. Empty fields fall back to caller-supplied defaults at
+/// lookup time. Strategies that don't care about the network simply
+/// ignore this struct.
 #[derive(Debug, Default, Clone)]
 pub struct NetworkProfile {
     /// bytes/second per directed edge
@@ -115,6 +141,9 @@ pub struct NetworkProfile {
     pub latency: HashMap<(NodeId, NodeId), Duration>,
     /// edges that cannot pass traffic at all
     pub partitions: HashSet<(NodeId, NodeId)>,
+    /// per-node link capacities. Absent → no contention modeling for
+    /// that node (treated as having infinite uplink/downlink).
+    pub nodes: HashMap<NodeId, NodeSpec>,
 }
 
 impl NetworkProfile {
@@ -128,6 +157,40 @@ impl NetworkProfile {
 
     pub fn is_partitioned(&self, src: NodeId, tgt: NodeId) -> bool {
         self.partitions.contains(&(src, tgt))
+    }
+
+    /// Compute the effective bandwidth available on `(src, tgt)` given
+    /// how many edges are simultaneously fanning out from `src` and
+    /// fanning in to `tgt` this round.
+    ///
+    /// Returns `min(edge_bw, src.uplink/src_out_count, tgt.downlink/tgt_in_count)`.
+    /// If a node has no `NodeSpec`, its term is `u64::MAX` (effectively
+    /// no constraint), so the math degenerates to `edge_bw` — same as
+    /// the pre-contention behavior.
+    ///
+    /// Counts are clamped to `>=1` to avoid divide-by-zero (a count of 0
+    /// would mean this edge isn't actually scheduled, but defensively
+    /// we don't trust the caller).
+    pub fn effective_bandwidth(
+        &self,
+        src: NodeId,
+        tgt: NodeId,
+        src_out_count: u64,
+        tgt_in_count: u64,
+        default_edge_bw: u64,
+    ) -> u64 {
+        let edge_bw = self.bandwidth_of(src, tgt, default_edge_bw);
+        let src_share = self
+            .nodes
+            .get(&src)
+            .map(|s| s.uplink / src_out_count.max(1))
+            .unwrap_or(u64::MAX);
+        let tgt_share = self
+            .nodes
+            .get(&tgt)
+            .map(|t| t.downlink / tgt_in_count.max(1))
+            .unwrap_or(u64::MAX);
+        edge_bw.min(src_share).min(tgt_share)
     }
 }
 
@@ -285,6 +348,251 @@ impl CascadeResult {
 }
 
 // ============================================================================
+// Tracing
+// ============================================================================
+
+/// One round's worth of state, captured for inspection / replay / UI.
+///
+/// The cascade emits one of these per round to whatever [`TraceSink`]
+/// is wired in. Production passes `None` (zero overhead — the sink is
+/// never even constructed). Sim/tests/UI pass a collector.
+#[derive(Debug, Clone)]
+pub struct RoundSnapshot {
+    pub round: u32,
+    /// `has_closure` set BEFORE the strategy planned this round.
+    pub has_closure_before: HashSet<NodeId>,
+    /// What the strategy chose for this round.
+    pub plan: CascadePlan,
+    /// Outcomes per edge (success → duration, failure → error).
+    pub outcomes: HashMap<(NodeId, NodeId), Result<Duration, CascadeError>>,
+    /// `has_closure` set AFTER outcomes were applied.
+    pub has_closure_after: HashSet<NodeId>,
+    /// Parent linkage accumulated so far (cascade tree shape).
+    pub parent_chain: HashMap<NodeId, NodeId>,
+    /// Round wall-time = max successful edge duration this round.
+    pub round_duration: Duration,
+}
+
+/// Receives [`RoundSnapshot`]s as the cascade runs. Default impls in
+/// [`crate::cascade_trace`] include a `Vec`-collecting recorder + JSON
+/// / DOT / ASCII exporters.
+///
+/// Implementations are called from inside the cascade coordinator loop
+/// so they should be cheap. Heavy work (rendering, network IO) belongs
+/// downstream — collect snapshots, render after the run completes.
+pub trait TraceSink: Send + Sync {
+    fn record(&self, snapshot: &RoundSnapshot);
+}
+
+// ============================================================================
+// Cascade builder — the user-facing entry point
+// ============================================================================
+
+/// Builder for a cascade run. Required fields (`nodes`, `seeded`,
+/// `network`, `strategy`, `executor`) panic at `.run()` if missing,
+/// with a clear message naming the missing field.
+///
+/// Optional fields:
+/// - `.trace(sink)` — engages snapshot recording
+/// - `.max_rounds(n)` — sanity bound, default 64
+///
+/// Realism is opt-in by *describing more of the network* via
+/// [`NetworkBuilder::uplinks`] / [`NetworkBuilder::downlinks`], not by
+/// flipping a mode flag here.
+///
+/// # Example
+///
+/// ```ignore
+/// let result = Cascade::new()
+///     .nodes(nodes)
+///     .seeded(seeded)
+///     .network(net)
+///     .strategy(&MaxBottleneckSpanning)
+///     .executor(&exec)
+///     .run();
+/// ```
+pub struct Cascade<'a> {
+    nodes: Option<Vec<CascadeNode>>,
+    seeded: Option<HashSet<NodeId>>,
+    network: Option<NetworkProfile>,
+    strategy: Option<&'a dyn CascadeStrategy>,
+    executor: Option<&'a dyn RoundExecutor>,
+    trace: Option<&'a dyn TraceSink>,
+    events: Option<&'a dyn crate::cascade_events::EventSink>,
+    max_rounds: u32,
+}
+
+impl<'a> Default for Cascade<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a> Cascade<'a> {
+    pub fn new() -> Self {
+        Self {
+            nodes: None,
+            seeded: None,
+            network: None,
+            strategy: None,
+            executor: None,
+            trace: None,
+            events: None,
+            max_rounds: 64,
+        }
+    }
+
+    pub fn nodes(mut self, n: Vec<CascadeNode>) -> Self {
+        self.nodes = Some(n);
+        self
+    }
+
+    pub fn seeded(mut self, s: HashSet<NodeId>) -> Self {
+        self.seeded = Some(s);
+        self
+    }
+
+    pub fn network(mut self, n: NetworkProfile) -> Self {
+        self.network = Some(n);
+        self
+    }
+
+    pub fn strategy(mut self, s: &'a dyn CascadeStrategy) -> Self {
+        self.strategy = Some(s);
+        self
+    }
+
+    pub fn executor(mut self, e: &'a dyn RoundExecutor) -> Self {
+        self.executor = Some(e);
+        self
+    }
+
+    pub fn trace(mut self, t: &'a dyn TraceSink) -> Self {
+        self.trace = Some(t);
+        self
+    }
+
+    /// Wire in a streaming event sink (preferred over `.trace()` for
+    /// new code — emits per-edge lifecycle events instead of per-round
+    /// snapshots).
+    pub fn events(mut self, e: &'a dyn crate::cascade_events::EventSink) -> Self {
+        self.events = Some(e);
+        self
+    }
+
+    pub fn max_rounds(mut self, n: u32) -> Self {
+        self.max_rounds = n;
+        self
+    }
+
+    pub fn run(self) -> CascadeResult {
+        let nodes = self.nodes.expect("Cascade::run: missing .nodes(...)");
+        let seeded = self.seeded.expect("Cascade::run: missing .seeded(...)");
+        let net = self.network.expect("Cascade::run: missing .network(...)");
+        let strategy = self.strategy.expect("Cascade::run: missing .strategy(...)");
+        let executor = self.executor.expect("Cascade::run: missing .executor(...)");
+        run_cascade_with_events(
+            nodes,
+            seeded,
+            net,
+            strategy,
+            executor,
+            self.max_rounds,
+            self.trace,
+            self.events,
+        )
+    }
+}
+
+// ============================================================================
+// NetworkBuilder — describe the network conversationally
+// ============================================================================
+
+/// Builder for [`NetworkProfile`]. Each method describes one facet of
+/// the network's physics; calling more methods adds more realism.
+///
+/// Realism is fully opt-in: a `NetworkBuilder::new().build()` produces
+/// an empty profile (no contention, no partitions, no per-edge specs)
+/// — same as today's default. Adding `.uplinks(...)` engages contention
+/// math automatically.
+///
+/// # Example
+///
+/// ```ignore
+/// let net = NetworkBuilder::new()
+///     .partitions([(NodeId(0), NodeId(7))])
+///     .uplinks_uniform(1024 * 1024 * 1024)  // 1 Gbps each
+///     .build();
+/// ```
+#[derive(Debug, Default)]
+pub struct NetworkBuilder {
+    profile: NetworkProfile,
+}
+
+impl NetworkBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set per-edge bandwidth from an arbitrary iterator.
+    pub fn bandwidth<I>(mut self, edges: I) -> Self
+    where
+        I: IntoIterator<Item = ((NodeId, NodeId), u64)>,
+    {
+        self.profile.bandwidth.extend(edges);
+        self
+    }
+
+    /// Set per-edge latency from an arbitrary iterator.
+    pub fn latency<I>(mut self, edges: I) -> Self
+    where
+        I: IntoIterator<Item = ((NodeId, NodeId), Duration)>,
+    {
+        self.profile.latency.extend(edges);
+        self
+    }
+
+    /// Mark specific `(src, tgt)` edges as unreachable.
+    pub fn partitions<I>(mut self, edges: I) -> Self
+    where
+        I: IntoIterator<Item = (NodeId, NodeId)>,
+    {
+        self.profile.partitions.extend(edges);
+        self
+    }
+
+    /// Set per-node link capacity from an arbitrary iterator.
+    /// **Engages contention modeling** for the listed nodes.
+    pub fn nodes<I>(mut self, specs: I) -> Self
+    where
+        I: IntoIterator<Item = (NodeId, NodeSpec)>,
+    {
+        self.profile.nodes.extend(specs);
+        self
+    }
+
+    /// Convenience: every node `0..n_nodes` gets the same uplink
+    /// (and `downlink = uplink * 4` — typical asymmetric link).
+    /// **Engages contention modeling.**
+    pub fn uplinks_uniform(mut self, n_nodes: u32, uplink: u64) -> Self {
+        for i in 0..n_nodes {
+            self.profile.nodes.insert(
+                NodeId(i),
+                NodeSpec {
+                    uplink,
+                    downlink: uplink.saturating_mul(4),
+                },
+            );
+        }
+        self
+    }
+
+    pub fn build(self) -> NetworkProfile {
+        self.profile
+    }
+}
+
+// ============================================================================
 // Coordinator loop
 // ============================================================================
 
@@ -297,6 +605,10 @@ impl CascadeResult {
 ///
 /// `seeded` is the set of nodes that already hold the closure at start.
 /// Must be non-empty unless `nodes` is also empty.
+///
+/// Prefer the [`Cascade`] builder for new call sites — this raw fn is
+/// kept for backwards compatibility and for the builder's `.run()` to
+/// delegate to.
 pub fn run_cascade(
     mut nodes: Vec<CascadeNode>,
     seeded: HashSet<NodeId>,
@@ -304,7 +616,49 @@ pub fn run_cascade(
     strategy: &dyn CascadeStrategy,
     executor: &dyn RoundExecutor,
     max_rounds: u32,
+    trace: Option<&dyn TraceSink>,
 ) -> CascadeResult {
+    run_cascade_with_events(
+        nodes, seeded, net, strategy, executor, max_rounds, trace, None,
+    )
+}
+
+/// Like [`run_cascade`] but also emits fine-grained
+/// [`CascadeEvent`](crate::cascade_events::CascadeEvent)s through
+/// `events`. Use this for live tracing, JSONL persistence, or any
+/// consumer that wants per-edge timing rather than per-round
+/// aggregates.
+///
+/// `trace` and `events` are independent — passing both is fine, useful
+/// for migrating from the snapshot model to the event model
+/// incrementally.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cascade_with_events(
+    mut nodes: Vec<CascadeNode>,
+    seeded: HashSet<NodeId>,
+    net: NetworkProfile,
+    strategy: &dyn CascadeStrategy,
+    executor: &dyn RoundExecutor,
+    max_rounds: u32,
+    trace: Option<&dyn TraceSink>,
+    events: Option<&dyn crate::cascade_events::EventSink>,
+) -> CascadeResult {
+    use crate::cascade_events::{CascadeEvent, Edge};
+    use std::time::SystemTime;
+
+    let strategy_name = strategy.name().to_string();
+
+    if let Some(sink) = events {
+        let mut seeded_vec: Vec<NodeId> = seeded.iter().copied().collect();
+        seeded_vec.sort();
+        sink.emit(&CascadeEvent::Started {
+            n_nodes: nodes.len() as u32,
+            seeded: seeded_vec,
+            strategy: strategy_name.clone(),
+            at: SystemTime::now(),
+        });
+    }
+
     let mut has_closure = seeded.clone();
     let mut attempted: HashSet<(NodeId, NodeId)> = HashSet::new();
     let mut failed_nodes: HashSet<NodeId> = HashSet::new();
@@ -333,6 +687,28 @@ pub fn run_cascade(
             break;
         }
 
+        // Snapshot has_closure BEFORE dispatching, for the trace sink.
+        let has_closure_before = if trace.is_some() {
+            has_closure.clone()
+        } else {
+            HashSet::new()
+        };
+
+        if let Some(sink) = events {
+            sink.emit(&CascadeEvent::PlanComputed {
+                round,
+                assignments: plan.assignments.iter().copied().map(Edge::from).collect(),
+            });
+            for (src, tgt) in &plan.assignments {
+                sink.emit(&CascadeEvent::EdgeStarted {
+                    round,
+                    src: *src,
+                    tgt: *tgt,
+                    at: SystemTime::now(),
+                });
+            }
+        }
+
         // Mark attempted *before* dispatch so a strategy that's called
         // again sees the in-flight edges as already-tried.
         for edge in &plan.assignments {
@@ -340,6 +716,34 @@ pub fn run_cascade(
         }
 
         let outcomes = executor.dispatch(&nodes, &plan.assignments, &net);
+
+        if let Some(sink) = events {
+            for (src, tgt) in &plan.assignments {
+                match outcomes.get(&(*src, *tgt)) {
+                    Some(Ok(d)) => sink.emit(&CascadeEvent::EdgeCompleted {
+                        round,
+                        src: *src,
+                        tgt: *tgt,
+                        duration: *d,
+                    }),
+                    Some(Err(e)) => sink.emit(&CascadeEvent::EdgeFailed {
+                        round,
+                        src: *src,
+                        tgt: *tgt,
+                        error: e.clone(),
+                    }),
+                    None => sink.emit(&CascadeEvent::EdgeFailed {
+                        round,
+                        src: *src,
+                        tgt: *tgt,
+                        error: CascadeError::Copy {
+                            node: *tgt,
+                            stderr: format!("executor returned no result for edge {src} -> {tgt}"),
+                        },
+                    }),
+                }
+            }
+        }
 
         // Round wall-time = max edge duration.
         let round_wall = outcomes
@@ -405,6 +809,34 @@ pub fn run_cascade(
         }
         pending_errors = next_pending;
 
+        // Emit trace snapshot for this round (if a sink is wired in).
+        if let Some(sink) = trace {
+            let parent_chain: HashMap<NodeId, NodeId> = nodes
+                .iter()
+                .filter_map(|n| n.parent.map(|p| (n.id, p)))
+                .collect();
+            let snapshot = RoundSnapshot {
+                round,
+                has_closure_before,
+                plan: plan.clone(),
+                outcomes: outcomes.clone(),
+                has_closure_after: has_closure.clone(),
+                parent_chain,
+                round_duration: round_wall,
+            };
+            sink.record(&snapshot);
+        }
+
+        if let Some(sink) = events {
+            let mut has_closure_vec: Vec<NodeId> = has_closure.iter().copied().collect();
+            has_closure_vec.sort();
+            sink.emit(&CascadeEvent::RoundCompleted {
+                round,
+                duration: round_wall,
+                has_closure: has_closure_vec,
+            });
+        }
+
         round += 1;
 
         // Halt early if everyone converged.
@@ -449,6 +881,18 @@ pub fn run_cascade(
             errors: root_errors,
         }),
     };
+
+    if let Some(sink) = events {
+        let failed_count = nodes
+            .iter()
+            .filter(|n| !has_closure.contains(&n.id))
+            .count();
+        sink.emit(&CascadeEvent::Finished {
+            converged: converged.len(),
+            failed: failed_count,
+            rounds: round,
+        });
+    }
 
     CascadeResult {
         converged,
@@ -608,6 +1052,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             32,
+            None,
         );
         assert!(result.is_success(), "failed: {:?}", result.failed);
         assert_eq!(result.converged.len(), 16);
@@ -629,6 +1074,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             32,
+            None,
         );
         assert!(result.is_success());
         assert_eq!(result.converged.len(), 17);
@@ -676,6 +1122,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             32,
+            None,
         );
         assert!(result.is_success());
         assert_eq!(result.converged.len(), 64);
@@ -704,6 +1151,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             32,
+            None,
         );
         assert!(!result.is_success(), "expected failure");
         let failed = result.failed.expect("failed should be Some");
@@ -728,7 +1176,7 @@ mod tests {
         let exec = AllSuccessExecutor {
             edge_duration: Duration::from_millis(1),
         };
-        let result = run_cascade(nodes, seeded, net, &Log2FanOut, &exec, 16);
+        let result = run_cascade(nodes, seeded, net, &Log2FanOut, &exec, 16, None);
         // Node 0 can't reach anyone → strategy returns empty plan immediately.
         assert_eq!(result.converged.len(), 1);
         assert_eq!(result.rounds, 0);
@@ -746,6 +1194,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             16,
+            None,
         );
         assert!(result.is_success());
         assert_eq!(result.rounds, 0);

@@ -9,9 +9,27 @@ use consortium_nix::cascade::{
 };
 
 use crate::executor::DeterministicExecutor;
-use crate::fixtures::{rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution};
+use crate::fixtures::{
+    rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution,
+};
 
 /// Everything needed to build a reproducible cascade run.
+///
+/// # Example
+///
+/// ```ignore
+/// let cfg = ScenarioConfig {
+///     seed: 42,
+///     n_nodes: 32,
+///     bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+///     uplinks: Some(UplinkDistribution::Bimodal {
+///         slow: 10 * 1024 * 1024,
+///         fast: 1024 * 1024 * 1024,
+///         fast_fraction: 0.3,
+///     }),
+///     ..ScenarioConfig::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct ScenarioConfig {
     pub seed: u64,
@@ -19,6 +37,11 @@ pub struct ScenarioConfig {
     pub seed_fraction: f64,
     pub closure_bytes: u64,
     pub bandwidth: BandwidthDistribution,
+    /// Optional per-node link capacities. When `Some`, contention math is
+    /// engaged via [`NetworkProfile::effective_bandwidth`]. When `None`,
+    /// the executor falls back to plain per-edge bandwidth (same as Phase 1
+    /// behavior).
+    pub uplinks: Option<UplinkDistribution>,
     pub failures: FailureSchedule,
     pub max_rounds: u32,
 }
@@ -31,6 +54,7 @@ impl Default for ScenarioConfig {
             seed_fraction: 0.0,
             closure_bytes: 100 * 1024 * 1024,
             bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+            uplinks: None,
             failures: FailureSchedule::None,
             max_rounds: 64,
         }
@@ -71,10 +95,21 @@ impl Scenario {
         self.cfg
             .bandwidth
             .populate(&mut rng, &mut net, self.cfg.n_nodes);
+        if let Some(uplinks) = &self.cfg.uplinks {
+            uplinks.populate(&mut rng, &mut net, self.cfg.n_nodes);
+        }
 
         let exec = DeterministicExecutor::new(self.cfg.closure_bytes, self.cfg.failures.clone());
 
-        run_cascade(nodes, seeded, net, strategy, &exec, self.cfg.max_rounds)
+        run_cascade(
+            nodes,
+            seeded,
+            net,
+            strategy,
+            &exec,
+            self.cfg.max_rounds,
+            None,
+        )
     }
 
     pub fn config(&self) -> &ScenarioConfig {
@@ -112,6 +147,7 @@ mod tests {
                 fast: 1024 * 1024 * 1024,
                 fast_fraction: 0.3,
             },
+            uplinks: None,
             failures: FailureSchedule::None,
             max_rounds: 32,
         };
@@ -134,6 +170,7 @@ mod tests {
                 fast: 1024 * 1024 * 1024,
                 fast_fraction: 0.5,
             },
+            uplinks: None,
             failures: FailureSchedule::None,
             max_rounds: 32,
         };

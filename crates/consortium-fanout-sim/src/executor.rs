@@ -60,6 +60,15 @@ impl RoundExecutor for DeterministicExecutor {
             r
         };
 
+        // Pre-compute fan-out counts for contention math: one pass over edges
+        // before mapping to avoid O(E²) recomputation per edge.
+        let mut src_out_counts: HashMap<NodeId, u64> = HashMap::new();
+        let mut tgt_in_counts: HashMap<NodeId, u64> = HashMap::new();
+        for (src, tgt) in edges {
+            *src_out_counts.entry(*src).or_insert(0) += 1;
+            *tgt_in_counts.entry(*tgt).or_insert(0) += 1;
+        }
+
         edges
             .iter()
             .map(|(src, tgt)| {
@@ -71,7 +80,15 @@ impl RoundExecutor for DeterministicExecutor {
                         tgt: *tgt,
                     })
                 } else {
-                    let bw = net.bandwidth_of(*src, *tgt, self.default_bandwidth);
+                    let src_out = *src_out_counts.get(src).unwrap_or(&1);
+                    let tgt_in = *tgt_in_counts.get(tgt).unwrap_or(&1);
+                    let bw = net.effective_bandwidth(
+                        *src,
+                        *tgt,
+                        src_out,
+                        tgt_in,
+                        self.default_bandwidth,
+                    );
                     let lat = net.latency_of(*src, *tgt, Duration::ZERO);
                     let secs = self.closure_bytes as f64 / bw as f64;
                     Ok(Duration::from_secs_f64(secs) + lat)

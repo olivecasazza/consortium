@@ -279,6 +279,7 @@ mod tests {
             &MaxBottleneckSpanning,
             &exec,
             32,
+            None,
         );
         assert!(result.is_success(), "failed: {:?}", result.failed);
         assert_eq!(result.converged.len(), 16);
@@ -301,6 +302,7 @@ mod tests {
             &SteinerGreedy,
             &exec,
             32,
+            None,
         );
         assert!(result.is_success(), "failed: {:?}", result.failed);
         assert_eq!(result.converged.len(), 16);
@@ -325,6 +327,7 @@ mod tests {
             &Log2FanOut,
             &exec,
             32,
+            None,
         );
         let mb = run_cascade(
             make_nodes(n),
@@ -333,6 +336,7 @@ mod tests {
             &MaxBottleneckSpanning,
             &exec,
             32,
+            None,
         );
 
         let log2_total: Duration = log2.round_durations.iter().sum();

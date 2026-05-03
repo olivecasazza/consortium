@@ -33,6 +33,7 @@
 //!     seed_fraction: 0.0,
 //!     closure_bytes: 100 * 1024 * 1024,
 //!     bandwidth: BandwidthDistribution::Uniform(100 * 1024 * 1024),
+//!     uplinks: None,
 //!     failures: Default::default(),
 //!     max_rounds: 32,
 //! };
@@ -46,5 +47,5 @@ pub mod fixtures;
 pub mod scenario;
 
 pub use executor::DeterministicExecutor;
-pub use fixtures::{BandwidthDistribution, FailureSchedule, SeedDistribution};
+pub use fixtures::{BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution};
 pub use scenario::{Scenario, ScenarioConfig};
