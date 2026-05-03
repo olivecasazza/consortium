@@ -150,6 +150,14 @@ struct Args {
     #[arg(long = "tb-nodes", default_value_t = 32)]
     tb_nodes: u32,
 
+    /// (testbed) Number of pre-seeded nodes (multiple build hosts).
+    /// Round 0 will have this many parallel deploys instead of just one.
+    /// E.g. --tb-seeds 8 with 64 nodes = 8 parallel spinners in round 0,
+    /// 16 in round 1, etc — much more visible parallelism than the
+    /// default single-seed log2 climb.
+    #[arg(long = "tb-seeds", default_value_t = 1)]
+    tb_seeds: u32,
+
     /// (testbed) Strategy: log2-fanout, max-bottleneck, steiner.
     #[arg(long = "tb-strategy", default_value = "max-bottleneck")]
     tb_strategy: String,
@@ -336,11 +344,11 @@ fn run_testbed(args: &Args) -> anyhow::Result<i32> {
         })
         .collect();
 
-    // Single seed at NodeId(0) — keeps the demo readable.
-    let mut seeded = HashSet::new();
-    if n_nodes > 0 {
-        seeded.insert(NodeId(0));
-    }
+    // Multi-seed: NodeId(0..tb_seeds). Round 0 has `tb_seeds` parallel
+    // deploys, then doubles each round (with max-bottleneck) or
+    // explodes (with steiner).
+    let seed_count = args.tb_seeds.min(n_nodes).max(1);
+    let seeded: HashSet<NodeId> = (0..seed_count).map(NodeId).collect();
 
     // Network: uniform 100 MB/s edges. If --tb-uplinks is set, also
     // populate per-node specs to engage the contention model.
