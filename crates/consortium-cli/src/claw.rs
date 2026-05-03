@@ -21,14 +21,7 @@ use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
 use consortium_cli::display;
-use consortium_cli::event_render::{DelayingExecutor, LiveTreeRenderer};
 use consortium_cli::output::{CliOutput, OutputArgs};
-use consortium_fanout_sim::fixtures::{FailureSchedule, UplinkDistribution};
-use consortium_fanout_sim::DeterministicExecutor;
-use consortium_nix::cascade::{
-    Cascade, CascadeNode, Log2FanOut, NetworkProfile, NodeId, NodeIdAlloc,
-};
-use consortium_nix::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
 
 /// claw — execute commands in parallel across cluster nodes.
 ///
@@ -136,56 +129,6 @@ struct Args {
     #[arg(long = "dest")]
     dest: Option<String>,
 
-    // ── Testbed (cascade simulator) ────────────────────────────────────
-    /// Run against the in-process cascade testbed instead of real SSH.
-    /// Drives a deterministic simulation of N nodes through the chosen
-    /// cascade strategy, with live tree visualization. Skips all the
-    /// node-resolution / ssh / command-exec machinery — useful for
-    /// demoing fan-out behavior or experimenting with strategies
-    /// without touching real hosts.
-    #[arg(long = "testbed")]
-    testbed: bool,
-
-    /// (testbed) Number of simulated nodes.
-    #[arg(long = "tb-nodes", default_value_t = 32)]
-    tb_nodes: u32,
-
-    /// (testbed) Number of pre-seeded nodes (multiple build hosts).
-    /// Round 0 will have this many parallel deploys instead of just one.
-    /// E.g. --tb-seeds 8 with 64 nodes = 8 parallel spinners in round 0,
-    /// 16 in round 1, etc — much more visible parallelism than the
-    /// default single-seed log2 climb.
-    #[arg(long = "tb-seeds", default_value_t = 1)]
-    tb_seeds: u32,
-
-    /// (testbed) Strategy: level-tree (default — pre-shaped F-ary tree,
-    /// each round populates one tree level), log2-fanout, max-bottleneck,
-    /// or steiner.
-    #[arg(long = "tb-strategy", default_value = "level-tree")]
-    tb_strategy: String,
-
-    /// (testbed) Fanout for level-tree strategy (children per node in
-    /// the deployment tree). 2 → balanced binary tree.
-    #[arg(long = "tb-fanout", default_value_t = 2)]
-    tb_fanout: u32,
-
-    /// (testbed) Wall-time delay between rounds in ms — makes the live
-    /// re-render visible (sim is otherwise microseconds per round).
-    #[arg(long = "tb-delay-ms", default_value_t = 400)]
-    tb_delay_ms: u64,
-
-    /// (testbed) Per-node uplink in bytes/sec — engages contention math.
-    #[arg(long = "tb-uplinks")]
-    tb_uplinks: Option<u64>,
-
-    /// (testbed) Closure size in MB.
-    #[arg(long = "tb-closure-mb", default_value_t = 50)]
-    tb_closure_mb: u64,
-
-    /// (testbed) Limit tree depth in the rendered output.
-    #[arg(long = "tb-max-depth")]
-    tb_max_depth: Option<usize>,
-
     // ── Positional ─────────────────────────────────────────────────────
     /// Command and arguments to execute.
     command: Vec<String>,
@@ -205,13 +148,6 @@ fn main() {
 
 fn run(args: Args) -> anyhow::Result<i32> {
     let cli_out = CliOutput::from_args(&args.output);
-
-    // Testbed short-circuits the entire normal claw flow — no node
-    // resolution, no ssh, no command execution. Just runs a cascade
-    // through the deterministic sim and renders it live.
-    if args.testbed {
-        return run_testbed(&args, &cli_out);
-    }
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -331,117 +267,6 @@ fn run(args: Args) -> anyhow::Result<i32> {
     if args.maxrc {
         Ok(max_rc.unwrap_or(0))
     } else if max_rc.map_or(false, |rc| rc != 0) {
-        Ok(1)
-    } else {
-        Ok(0)
-    }
-}
-
-/// Drive a cascade simulation through the deterministic testbed and
-/// render it live. Used when `claw --testbed` is set; bypasses the
-/// normal node-resolution + ssh + command-exec flow entirely.
-fn run_testbed(args: &Args, out: &CliOutput) -> anyhow::Result<i32> {
-    let n_nodes = args.tb_nodes;
-    let closure_bytes = args.tb_closure_mb * 1024 * 1024;
-
-    // Build nodes — synthetic addresses, deterministic ids.
-    let mut alloc = NodeIdAlloc::new();
-    let nodes: Vec<CascadeNode> = (0..n_nodes)
-        .map(|_| {
-            let id = alloc.alloc();
-            CascadeNode::new(id, format!("user@host-{}", id.0))
-        })
-        .collect();
-
-    // Multi-seed: NodeId(0..tb_seeds). Round 0 has `tb_seeds` parallel
-    // deploys, then doubles each round (with max-bottleneck) or
-    // explodes (with steiner).
-    let seed_count = args.tb_seeds.min(n_nodes).max(1);
-    let seeded: HashSet<NodeId> = (0..seed_count).map(NodeId).collect();
-
-    // Network: uniform 100 MB/s edges. If --tb-uplinks is set, also
-    // populate per-node specs to engage the contention model.
-    let mut net = NetworkProfile::default();
-    for src in 0..n_nodes {
-        for tgt in 0..n_nodes {
-            if src == tgt {
-                continue;
-            }
-            net.bandwidth.insert(
-                (NodeId(src), NodeId(tgt)),
-                100 * 1024 * 1024, // 100 MB/s default
-            );
-        }
-    }
-    if let Some(uplink) = args.tb_uplinks {
-        let dist = UplinkDistribution::Uniform(uplink);
-        // Reuse the sim's ChaCha8 helper so populate is happy.
-        let mut rng = consortium_fanout_sim::fixtures::rng_from_seed(0);
-        dist.populate(&mut rng, &mut net, n_nodes);
-    }
-
-    // Executor: deterministic + delay wrapper for visible spinners.
-    let base_exec = DeterministicExecutor::new(closure_bytes, FailureSchedule::None);
-    let delayed = DelayingExecutor {
-        inner: &base_exec as &dyn consortium_nix::cascade::RoundExecutor,
-        delay: Duration::from_millis(args.tb_delay_ms),
-    };
-
-    // Live renderer — color controlled by --color flag (resolved in CliOutput).
-    let renderer = LiveTreeRenderer::new(out.color, args.tb_max_depth);
-
-    // Run the cascade through the chosen strategy.
-    let level_tree = LevelTreeFanOut::new(args.tb_fanout.max(1));
-    let result = match args.tb_strategy.as_str() {
-        "level-tree" | "level" | "tree" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&level_tree)
-            .executor(&delayed)
-            .events(&renderer)
-            .run(),
-        "log2-fanout" | "log2" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&Log2FanOut)
-            .executor(&delayed)
-            .events(&renderer)
-            .run(),
-        "max-bottleneck" | "max-bottleneck-spanning" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&MaxBottleneckSpanning)
-            .executor(&delayed)
-            .events(&renderer)
-            .run(),
-        "steiner" | "steiner-greedy" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&SteinerGreedy)
-            .executor(&delayed)
-            .events(&renderer)
-            .run(),
-        other => anyhow::bail!(
-            "unknown strategy: {other} (use level-tree, log2-fanout, max-bottleneck, or steiner)"
-        ),
-    };
-
-    // Final summary — printed BELOW the live tree (LiveTreeRenderer
-    // already painted the final frame on Finished).
-    eprintln!();
-    eprintln!(
-        "claw testbed: strategy={} converged={}/{} rounds={} (sim wall-time per round)",
-        args.tb_strategy,
-        result.converged.len(),
-        n_nodes,
-        result.rounds
-    );
-    if let Some(err) = &result.failed {
-        eprintln!("  failures: {err}");
         Ok(1)
     } else {
         Ok(0)

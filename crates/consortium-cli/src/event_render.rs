@@ -159,6 +159,13 @@ struct AccumulatorInner {
     seeds: Vec<NodeId>,
     /// Round totals we track for metadata (round → max edge duration).
     round_durations: HashMap<u32, Duration>,
+    /// Total node count from the `Started` event. Used by
+    /// `status_counts()` to compute pending as
+    /// `total - (ok + in_progress + failed)`. Without this, untouched
+    /// nodes (the majority of the fleet during early rounds) wouldn't
+    /// appear in the summary at all — e.g. a 121-node cascade in
+    /// round 0 would show `1✔ 2⏵ 0⏸ 0⚠` instead of `1✔ 2⏵ 118⏸ 0⚠`.
+    total_nodes: u32,
 }
 
 impl AccumulatorInner {
@@ -198,11 +205,16 @@ impl SnapshotAccumulator {
     /// Aggregate counts per status: `(ok, in_progress, pending, failed)`.
     /// Used by [`LiveTreeRenderer`] to render the nom-style summary
     /// row at the bottom of each frame: `∑ N✔ M⏵ K⏸ J⚠`.
+    ///
+    /// Pending is computed as `total_nodes - (ok + in_progress + failed)`
+    /// so untouched nodes (which never appear in the events map until
+    /// the strategy schedules them) show up correctly in the summary.
+    /// Falls back to `nodes.values().count()` if no `Started` event
+    /// has been seen yet (degenerate case — defensive).
     pub fn status_counts(&self) -> (usize, usize, usize, usize) {
         let acc = self.inner.lock().unwrap();
         let mut ok = 0;
         let mut in_progress = 0;
-        let mut pending = 0;
         let mut failed = 0;
         for state in acc.nodes.values() {
             if state.failed {
@@ -211,10 +223,13 @@ impl SnapshotAccumulator {
                 ok += 1;
             } else if state.in_progress {
                 in_progress += 1;
-            } else {
-                pending += 1;
             }
+            // Touched-but-still-pending nodes are absorbed into the
+            // total_nodes-based pending count below — counting them
+            // both here and there would double-count.
         }
+        let active = ok + in_progress + failed;
+        let pending = (acc.total_nodes as usize).saturating_sub(active);
         (ok, in_progress, pending, failed)
     }
 }
@@ -229,8 +244,11 @@ impl EventSink for SnapshotAccumulator {
     fn emit(&self, event: &CascadeEvent) {
         let mut acc = self.inner.lock().unwrap();
         match event {
-            CascadeEvent::Started { seeded, .. } => {
+            CascadeEvent::Started {
+                seeded, n_nodes, ..
+            } => {
                 acc.seeds = seeded.clone();
+                acc.total_nodes = *n_nodes;
                 for &id in seeded {
                     let n = acc.node(id);
                     n.has_closure = true;

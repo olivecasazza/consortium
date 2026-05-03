@@ -77,11 +77,26 @@ struct LiveArgs {
     #[arg(short = 'n', long = "nodes", default_value_t = 32)]
     nodes: u32,
 
-    /// Strategy: log2-fanout (default), max-bottleneck, steiner
-    #[arg(short = 's', long = "strategy", default_value = "log2-fanout")]
+    /// Strategy: level-tree (default — pre-shaped F-ary tree, each
+    /// round populates one level, matches nh's level-by-level
+    /// reveal), log2-fanout, max-bottleneck, or steiner.
+    #[arg(short = 's', long = "strategy", default_value = "level-tree")]
     strategy: String,
 
-    /// Fraction of nodes pre-seeded (default 0.0)
+    /// Fanout for the level-tree strategy (children per node).
+    /// 2 → balanced binary tree, 3 → ternary, etc.
+    #[arg(long = "fanout", default_value_t = 2)]
+    fanout: u32,
+
+    /// Number of pre-seeded nodes (multiple build hosts). Round 0
+    /// will have this many parallel deploys instead of just one.
+    /// E.g. `--seeds 8` with 64 nodes = 8 parallel spinners in
+    /// round 0.
+    #[arg(long = "seeds", default_value_t = 1)]
+    seeds: u32,
+
+    /// Fraction of nodes pre-seeded (default 0.0). Overrides --seeds
+    /// when > 0.0.
     #[arg(long = "seed-fraction", default_value_t = 0.0)]
     seed_fraction: f64,
 
@@ -251,11 +266,10 @@ fn run_scenario<S: EventSink>(
         }
         .sample(&mut rng, n_nodes)
     } else {
-        let mut s = HashSet::new();
-        if n_nodes > 0 {
-            s.insert(NodeId(0));
-        }
-        s
+        // Multi-seed: NodeIds 0..seeds. Round 0 has `seeds` parallel
+        // deploys. Capped to n_nodes, minimum 1.
+        let count = args.seeds.min(n_nodes).max(1);
+        (0..count).map(NodeId).collect()
     };
 
     let net: NetworkProfile = {
@@ -285,7 +299,18 @@ fn run_scenario<S: EventSink>(
         .map(|d| d as &dyn consortium_nix::cascade::RoundExecutor)
         .unwrap_or(&base_exec);
 
+    let level_tree = consortium_nix::cascade_strategies::LevelTreeFanOut::new(args.fanout.max(1));
     match args.strategy.as_str() {
+        "level-tree" | "level" | "tree" => {
+            Cascade::new()
+                .nodes(nodes)
+                .seeded(seeded)
+                .network(net)
+                .strategy(&level_tree)
+                .executor(exec)
+                .events(sink)
+                .run();
+        }
         "max-bottleneck" | "max-bottleneck-spanning" => {
             Cascade::new()
                 .nodes(nodes)
