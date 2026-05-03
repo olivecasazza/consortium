@@ -416,35 +416,43 @@ impl TreeNode for OwnedTreeNode {
 /// handles the TTY check.
 pub struct LiveTreeRenderer {
     accumulator: SnapshotAccumulator,
-    last_frame_lines: Mutex<usize>,
     color: bool,
     max_depth: Option<usize>,
     /// Optional Mutex<Vec<u8>> for testing — when Some, frames go here
     /// instead of stdout. Production passes None.
     capture: Option<Mutex<Vec<u8>>>,
+    /// Tracks whether we've entered the alternate screen buffer.
+    /// Mirrors what top/htop/vim/less do: a separate screen with no
+    /// scrollback, so cursor-home + clear works reliably regardless of
+    /// frame size or terminal viewport height. Without this, frames
+    /// larger than the viewport scroll content off the top into
+    /// scrollback, and subsequent redraws can't walk up to clear them
+    /// → user sees multiple "n0" headers piling up as the tree grows.
+    alt_screen_active: Mutex<bool>,
 }
 
 impl LiveTreeRenderer {
     pub fn new(color: bool, max_depth: Option<usize>) -> Self {
         Self {
             accumulator: SnapshotAccumulator::new(),
-            last_frame_lines: Mutex::new(0),
             color,
             max_depth,
             capture: None,
+            alt_screen_active: Mutex::new(false),
         }
     }
 
     /// Test-only constructor that captures frames into an internal buffer
-    /// instead of writing to stdout.
+    /// instead of writing to stdout. Skips alt-screen mode (tests don't
+    /// have a real terminal to swap buffers on).
     #[doc(hidden)]
     pub fn with_capture(color: bool, max_depth: Option<usize>) -> Self {
         Self {
             accumulator: SnapshotAccumulator::new(),
-            last_frame_lines: Mutex::new(0),
             color,
             max_depth,
             capture: Some(Mutex::new(Vec::new())),
+            alt_screen_active: Mutex::new(false),
         }
     }
 
@@ -457,6 +465,46 @@ impl LiveTreeRenderer {
             .unwrap_or_default()
     }
 
+    /// Switch the terminal to its alternate screen buffer + hide the
+    /// cursor. Idempotent; a no-op in capture mode.
+    fn enter_alt_screen(&self) {
+        if self.capture.is_some() {
+            return;
+        }
+        let mut active = self.alt_screen_active.lock().unwrap();
+        if *active {
+            return;
+        }
+        let mut stdout = io::stdout().lock();
+        // \x1b[?1049h: enter alt screen
+        // \x1b[?25l:   hide cursor
+        // \x1b[H:      cursor home
+        let _ = stdout.write_all(b"\x1b[?1049h\x1b[?25l\x1b[H");
+        let _ = stdout.flush();
+        *active = true;
+    }
+
+    /// Restore the main screen buffer + cursor visibility. Called on
+    /// Finished and from Drop (panic safety).
+    fn exit_alt_screen(&self) {
+        if self.capture.is_some() {
+            return;
+        }
+        let mut active = self.alt_screen_active.lock().unwrap();
+        if !*active {
+            return;
+        }
+        let mut stdout = io::stdout().lock();
+        // \x1b[?25h:   show cursor
+        // \x1b[?1049l: leave alt screen (restores prior buffer contents)
+        let _ = stdout.write_all(b"\x1b[?25h\x1b[?1049l");
+        let _ = stdout.flush();
+        *active = false;
+    }
+
+    /// Render the current tree state to the alt screen (or capture
+    /// buffer in tests). Cursor goes to home, screen is cleared, frame
+    /// is written. Simple + reliable regardless of frame size.
     fn repaint(&self) {
         let tree = self.accumulator.to_tree();
         let frame = crate::tree::render(
@@ -466,36 +514,37 @@ impl LiveTreeRenderer {
                 color: self.color,
             },
         );
-        let line_count = frame.lines().count();
-        let mut last = self.last_frame_lines.lock().unwrap();
-
-        // Build the on-wire bytes once. iTerm2 synchronized-update markers
-        // (DECRQSS-like) avoid mid-frame flicker on terminals that support
-        // them; older terminals ignore them silently.
-        let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 64);
-        if *last > 0 {
-            // begin synchronized update
-            bytes.extend_from_slice(b"\x1b[?2026h");
-            // cursor up N lines
-            bytes.extend_from_slice(format!("\x1b[{}A", *last).as_bytes());
-            // clear from cursor to end of screen
-            bytes.extend_from_slice(b"\x1b[J");
-        }
-        bytes.extend_from_slice(frame.as_bytes());
-        if *last > 0 {
-            // end synchronized update
-            bytes.extend_from_slice(b"\x1b[?2026l");
-        }
 
         if let Some(cap) = &self.capture {
+            // Capture mode: prepend the cursor-home + clear escapes so
+            // tests can see frame boundaries, but don't actually mess
+            // with the terminal.
+            let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 8);
+            bytes.extend_from_slice(b"\x1b[H\x1b[2J");
+            bytes.extend_from_slice(frame.as_bytes());
             cap.lock().unwrap().extend_from_slice(&bytes);
-        } else {
-            let mut stdout = io::stdout().lock();
-            let _ = stdout.write_all(&bytes);
-            let _ = stdout.flush();
+            return;
         }
 
-        *last = line_count;
+        // Production: ensure alt screen is active, cursor home, clear,
+        // print frame. iTerm2 synchronized-update markers wrap the
+        // operation to avoid mid-frame flicker on terminals that
+        // support them; older terminals ignore them silently.
+        self.enter_alt_screen();
+        let mut stdout = io::stdout().lock();
+        let _ = stdout.write_all(b"\x1b[?2026h\x1b[H\x1b[2J");
+        let _ = stdout.write_all(frame.as_bytes());
+        let _ = stdout.write_all(b"\x1b[?2026l");
+        let _ = stdout.flush();
+    }
+}
+
+impl Drop for LiveTreeRenderer {
+    /// Restore the terminal on drop in case the cascade panicked
+    /// before Finished fired. Without this, the user is stuck in alt
+    /// screen with the cursor hidden until they reset their terminal.
+    fn drop(&mut self) {
+        self.exit_alt_screen();
     }
 }
 
@@ -506,19 +555,30 @@ impl EventSink for LiveTreeRenderer {
         // Repaint on:
         // - PlanComputed → spinning state for this round's targets
         // - RoundCompleted → done state for this round
-        // - Finished → final state (catches the very last RoundCompleted
-        //   if the cascade halted between rounds for any reason)
-        // Per-edge EdgeStarted/Completed/Failed events update the
-        // in-memory state but don't trigger repaints — the renderer
-        // shows a "before" frame (PlanComputed) and "after" frame
-        // (RoundCompleted) per round, with the wall-time between them
-        // owned by the executor (DelayingExecutor in demo mode, real
-        // network IO in production).
+        // - Finished → final state, then exit alt screen + print final
+        //   frame to main buffer so the user has a permanent record.
         match event {
-            CascadeEvent::PlanComputed { .. }
-            | CascadeEvent::RoundCompleted { .. }
-            | CascadeEvent::Finished { .. } => {
+            CascadeEvent::PlanComputed { .. } | CascadeEvent::RoundCompleted { .. } => {
                 self.repaint();
+            }
+            CascadeEvent::Finished { .. } => {
+                self.repaint();
+                // Render the final frame separately for the main buffer
+                // so the user sees the converged tree after we exit
+                // alt screen.
+                let final_frame = crate::tree::render(
+                    &self.accumulator.to_tree(),
+                    &OutputFormat::Tree {
+                        max_depth: self.max_depth,
+                        color: self.color,
+                    },
+                );
+                self.exit_alt_screen();
+                if self.capture.is_none() {
+                    let mut stdout = io::stdout().lock();
+                    let _ = stdout.write_all(final_frame.as_bytes());
+                    let _ = stdout.flush();
+                }
             }
             _ => {}
         }
@@ -891,9 +951,10 @@ mod tests {
         );
     }
 
-    /// 7. LiveTreeRenderer emits a frame on each RoundCompleted + Finished,
-    /// uses ANSI cursor-up escapes between frames, and captures multiple
-    /// distinct frames over the cascade lifetime.
+    /// 7. LiveTreeRenderer emits a frame on each PlanComputed +
+    /// RoundCompleted + Finished, uses cursor-home + clear-screen
+    /// escapes (alt-screen idiom, like top/htop/vim/less), and
+    /// captures multiple distinct frames over the cascade lifetime.
     #[test]
     fn live_tree_renderer_emits_multiple_frames_with_ansi_redraw() {
         // Drive a 4-event sequence: Started, RoundCompleted, RoundCompleted, Finished.
@@ -933,33 +994,24 @@ mod tests {
 
         let captured = renderer.captured();
 
-        // First frame has no preceding cursor-up escape (last_frame_lines was 0).
-        // Subsequent frames must include both the cursor-up escape AND the
-        // synchronized-update markers, otherwise the tree would just keep
-        // appending instead of redrawing in place.
-        assert!(
-            captured.contains("\x1b["),
-            "expected ANSI escape sequences in captured output: {captured:?}"
-        );
-        // Cursor-up escape \x1b[NA appears for the 2nd and 3rd frames
-        // (after first repaint set last_frame_lines > 0).
-        let cursor_up_count = captured.matches("\x1b[").count();
-        assert!(
-            cursor_up_count >= 2,
-            "expected >=2 ANSI escape sequences (one per repaint after the first), got {cursor_up_count}"
-        );
-        // Synchronized-update begin marker fires on every repaint after
-        // the first. The renderer paints on PlanComputed, RoundCompleted,
-        // and Finished. The test events trigger:
-        //   PlanComputed (round 0) → frame 1 (no markers, first frame)
-        //   RoundCompleted (round 0) → frame 2 (markers)
-        //   RoundCompleted (round 1) → frame 3 (markers)
-        //   Finished → frame 4 (markers)
-        // = 3 non-first frames → 3 sync-update begin markers.
-        let sync_begin_count = captured.matches("\x1b[?2026h").count();
+        // Each frame is prefixed with cursor-home + clear-screen
+        // (\x1b[H\x1b[2J) — the alt-screen redraw idiom. PlanComputed,
+        // RoundCompleted, and Finished each trigger a repaint. With
+        // these test events:
+        //   PlanComputed (round 0) → frame 1
+        //   RoundCompleted (round 0) → frame 2
+        //   RoundCompleted (round 1) → frame 3
+        //   Finished → frame 4
+        // = 4 frames, 4 cursor-home sequences.
+        let cursor_home_count = captured.matches("\x1b[H").count();
         assert_eq!(
-            sync_begin_count, 3,
-            "expected exactly 3 synchronized-update begin markers (PlanComputed first frame + RoundCompleted×2 + Finished); got {sync_begin_count}\n{captured:?}"
+            cursor_home_count, 4,
+            "expected exactly 4 cursor-home sequences (one per repaint); got {cursor_home_count}\n{captured:?}"
+        );
+        let clear_screen_count = captured.matches("\x1b[2J").count();
+        assert_eq!(
+            clear_screen_count, 4,
+            "expected exactly 4 clear-screen sequences (one per repaint); got {clear_screen_count}\n{captured:?}"
         );
         // n0, n1, n2 should all eventually appear in the captured output.
         assert!(captured.contains("n0"));
