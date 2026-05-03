@@ -14,3 +14,7 @@ nixpar-be66cc05	agent/f1ea86c7/nixpar-be66cc05	abandoned				no-diff: agent did n
 nixpar-f587887e	agent/78724997/nixpar-f587887e	abandoned				no-diff: agent did not modify any files	2026-04-25T19:10:01Z
 nixpar-be66cc05	agent/d64835ea/nixpar-be66cc05	abandoned				score-fail	2026-04-25T19:11:38Z
 nixpar-be66cc05	agent/b542b4b8/nixpar-be66cc05	done	pass	445	4		2026-04-25T19:21:41Z
+nixpar-cf7af3ed	agent/53bbcee6/nixpar-cf7af3ed	abandoned				no-diff: agent did not modify any files	2026-04-28T04:37:48Z
+pyfix-df4629b5	agent/307226ef/pyfix-df4629b5	abandoned				no-diff: agent did not modify any files	2026-05-02T16:28:28Z
+pyfix-litellm-test	agent/03e55334/pyfix-litellm-test	abandoned				no-diff: agent did not modify any files	2026-05-02T16:51:22Z
+pyfix-compaction-test	agent/0437320d/pyfix-compaction-test	done	pass				2026-05-02T18:10:19Z

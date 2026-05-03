@@ -3,3 +3,4 @@ issue-prefix: au
 dolt.auto-start: false
 gc.endpoint_origin: managed_city
 gc.endpoint_status: verified
+types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence

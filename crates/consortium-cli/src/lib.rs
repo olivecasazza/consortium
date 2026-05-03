@@ -2,4 +2,5 @@
 
 pub mod display;
 pub mod event_render;
+pub mod output;
 pub mod tree;

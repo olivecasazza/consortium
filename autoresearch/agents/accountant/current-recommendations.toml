@@ -1,51 +1,75 @@
-# Current model recommendations — written by the accountant agent.
+# Tiered model policy 2026-04-27T20:50 PDT (ni-ksx).
 #
-# Read by drain-queue and other orders to set AR_MODEL per task type.
-# Format:
-#   [<task-type>]
-#   model = "<id from ledger.toml>"
-#   tier = "<tier from ledger.toml>"
-#   reason = "<short justification>"
-#   chosen_at = "<UTC timestamp>"
-#   bead = "<au-... id from bd create>"
-#
-# Task types that have no entry fall back to the [default] block.
-#
-# This file is mutable — the accountant updates it on every consultation.
-# Do not hand-edit unless bootstrapping (initial seed below) — the
-# accountant will overwrite based on bd decision-log + ledger.toml.
+# Policy per olive 2026-04-27:
+#   - "AMD GPU == dogs" — anything not explicitly escalated runs on
+#     traitor/qwen3-8b (free, on-prem, RX 7900 XTX).
+#   - Mid-tier (mid-complexity port tasks) — qwen3-coder-free
+#     (free OpenRouter step up before paid).
+#   - Mayor + Accountant — kimi-k2.6 (moonshotai/kimi-k2.6 via
+#     OpenRouter, $0.75/M prompt + $4.65/M completion). Senior judgment
+#     for planning + cost optimization. Added to LiteLLM in PR #23.
+#   - Architect — claude-haiku-4-5 (Anthropic via OpenRouter, cheapest
+#     Anthropic tier). Repo structure / deploy chain / dep analysis.
 
 [default]
-model = "gpt-oss-120b-free"
-tier = "free"
-reason = "Bootstrap default: gpt-oss-120b-free works under load (qwen3-coder-free is rate-limited 2026-04-25). Watch for embedded OpenInference 502s."
-chosen_at = "2026-04-25T16:00:00Z"
-bead = ""
+model = "traitor/qwen3-8b"
+tier = "local"
+reason = "AMD GPU == dogs. Default for all unmarked task types."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
+
+[upstream-sync]
+model = "traitor/qwen3-8b"
+tier = "local"
+reason = "Mechanical port task. Dogs."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
 
 [nix-parallelize]
-model = "claude-haiku-4-5"
-tier = "paid-cheap"
-reason = "Restored from accountant auto-escalation. PR #7 deployed claude-haiku-4-5 in litellm; gpt-oss attempts kept failing on duplicate-import compile errors. Haiku probed clean 2026-04-25T19:16Z."
-chosen_at = "2026-04-25T19:16:00Z"
-bead = ""
+model = "qwen3-coder-free"
+tier = "free"
+reason = "Mid-tier — needs more reasoning than 8B for parallelization patterns; free OpenRouter qwen3-coder is the right step up before paid."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
 
 [pyfix]
-model = "gpt-oss-120b-free"
+model = "traitor/qwen3-8b"
+tier = "local"
+reason = "Small Python fixes. Dogs."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
+
+[port-python-fixme]
+model = "qwen3-coder-free"
 tier = "free"
-reason = "No prior attempts on free tier — try cheap first. Escalate after 2 abandons."
-chosen_at = "2026-04-25T16:00:00Z"
-bead = ""
+reason = "Mid-tier — porting Python idioms to Rust needs more than 8B."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
+
+[port-python-test]
+model = "traitor/qwen3-8b"
+tier = "local"
+reason = "Test scaffolds — dogs are enough."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
 
 [architect-query]
-model = "claude-sonnet-4-6"
+model = "claude-haiku-4-5"
 tier = "paid"
-reason = "Architect needs broad senior judgment + long context. Cheaper tiers are inadequate for structural questions."
-chosen_at = "2026-04-25T16:00:00Z"
+reason = "Senior judgment for repo structure / deploy chains / dep analysis. Anthropic-cheapest via OpenRouter."
+chosen_at = "2026-04-27T20:50:00Z"
 bead = ""
 
+[mayor]
+model = "kimi-k2.6"
+tier = "paid"
+reason = "Coordinator. Long-context multi-step planning. Kimi K2.6 via OpenRouter (added in PR #23)."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"
+
 [accountant-query]
-model = "claude-haiku-4.5"
-tier = "paid-cheap"
-reason = "Accountant reasoning is bounded (lookups + simple rules). Haiku is cheap enough and reliable."
-chosen_at = "2026-04-25T16:00:00Z"
-bead = ""
+model = "kimi-k2.6"
+tier = "paid"
+reason = "Cost optimization across the model fleet — needs to reason across pricing + abandon stats + recommendation history. Kimi K2.6 via OpenRouter (added in PR #23). Decision-grade reasoning beyond what 8B reliably handles."
+chosen_at = "2026-04-27T20:50:00Z"
+bead = "ni-ksx"

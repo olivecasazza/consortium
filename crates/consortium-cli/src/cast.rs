@@ -13,6 +13,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 use consortium::node_set::NodeSet;
+use consortium_cli::output::{CliOutput, OutputArgs};
 use consortium_nix::config::{DeployAction, FleetConfig};
 use consortium_nix::health;
 
@@ -27,6 +28,9 @@ struct Args {
     /// Override the flake URI from fleet config (e.g. /home/user/nixlab or github:user/repo).
     #[arg(long)]
     flake: Option<String>,
+
+    #[command(flatten)]
+    output: OutputArgs,
 
     #[command(subcommand)]
     command: Commands,
@@ -104,11 +108,12 @@ enum Commands {
 
 fn main() {
     let args = Args::parse();
+    let out = CliOutput::from_args(&args.output);
 
     let mut config = match FleetConfig::from_file(&args.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: {}", e);
+            out.error(format!("{}", e));
             eprintln!(
                 "hint: build fleet config first with: nix build .#fleet-config && cp result fleet.json"
             );

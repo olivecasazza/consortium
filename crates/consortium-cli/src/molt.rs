@@ -16,6 +16,7 @@ use clap::Parser;
 use consortium::msg_tree::{MsgTree, MsgTreeMode};
 use consortium::node_set::NodeSet;
 use consortium_cli::display;
+use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// molt — aggregate and display cluster command output.
 ///
@@ -46,10 +47,14 @@ struct Args {
 
     /// Input files (reads stdin if none given).
     files: Vec<String>,
+
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 fn main() {
     let args = Args::parse();
+    let _out = CliOutput::from_args(&args.output);
     if let Err(e) = run(args) {
         eprintln!("molt: {e}");
         process::exit(1);

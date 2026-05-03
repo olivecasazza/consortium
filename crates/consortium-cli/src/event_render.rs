@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use consortium_nix::cascade::NodeId;
 use consortium_nix::cascade_events::{CascadeEvent, EventSink};
@@ -371,10 +371,22 @@ fn build_node(id: NodeId, acc: &AccumulatorInner) -> OwnedTreeNode {
         }
     }
 
-    // Build children, sorted by NodeId for stable ordering.
+    // Build children, sorted by build-state priority (nom/State/Sorting.hs):
+    // Failed > InProgress > Pending > Ok, then NodeId for stable tie-breaking.
+    // This ensures failed/running nodes float to top and survive truncation.
     let mut child_ids: Vec<NodeId> = state.map(|s| s.children.clone()).unwrap_or_default();
     child_ids.sort();
     child_ids.dedup();
+    child_ids.sort_by_key(|cid| {
+        let p = match acc.nodes.get(cid) {
+            None => 2u8,                    // Pending (unknown)
+            Some(s) if s.failed => 0,       // Failed — highest priority
+            Some(s) if s.in_progress => 1,  // InProgress
+            Some(s) if !s.has_closure => 2, // Pending
+            Some(_) => 3,                   // Ok — least interesting
+        };
+        (p, *cid)
+    });
 
     let children: Vec<OwnedTreeNode> = child_ids
         .into_iter()
@@ -452,6 +464,12 @@ pub struct LiveTreeRenderer {
     /// Wrapped in iTerm2 synchronized-update markers to avoid
     /// mid-frame flicker on terminals that support them.
     last_printed_lines: Mutex<usize>,
+    /// Maximum frame height in lines for truncation (NOM/IO.hs `truncateRows`).
+    /// None = auto-detect from terminal on first paint; Some(0) = no cap.
+    max_height: Option<usize>,
+    /// Wall-time of the last repaint. Used to gate repaints at ≥60ms
+    /// intervals (nom `minFrameDuration = 60_000 µs`). None on first paint.
+    last_paint_at: Mutex<Option<Instant>>,
 }
 
 impl LiveTreeRenderer {
@@ -462,6 +480,8 @@ impl LiveTreeRenderer {
             max_depth,
             capture: None,
             last_printed_lines: Mutex::new(0),
+            max_height: None,
+            last_paint_at: Mutex::new(None),
         }
     }
 
@@ -475,7 +495,19 @@ impl LiveTreeRenderer {
             max_depth,
             capture: Some(Mutex::new(Vec::new())),
             last_printed_lines: Mutex::new(0),
+            max_height: None,
+            last_paint_at: Mutex::new(None),
         }
+    }
+
+    /// Builder: set an explicit maximum frame height (lines). Used for tests
+    /// that can't rely on a real terminal. `Some(0)` disables height capping.
+    ///
+    /// In production the height is auto-detected from the terminal on each
+    /// paint via `console::Term::stdout().size()`.
+    pub fn with_max_height(mut self, h: Option<usize>) -> Self {
+        self.max_height = h;
+        self
     }
 
     /// Test-only: read out captured frames as a String.
@@ -490,6 +522,10 @@ impl LiveTreeRenderer {
     /// Render the current tree state, wrapped with HEAVY section
     /// borders (┏━ ┃ ┗━) and a summary row at the bottom — exactly the
     /// frame shape `nom` produces (NOM/Print.hs `printSections`).
+    ///
+    /// When the assembled frame exceeds the terminal height, truncates per
+    /// NOM/IO.hs `truncateRows`: keep the first line, insert ` ⋮ `, then
+    /// keep the last `rows - outputLinesToAlwaysShow` lines (5 per nom).
     fn build_frame(&self) -> String {
         let tree = self.accumulator.to_tree();
         let inner = crate::tree::render(
@@ -514,7 +550,54 @@ impl LiveTreeRenderer {
         }
         // Bottom border: ┗━ + summary row, nom-style: ∑ N✔ M⏵ K⏸ J⚠
         frame.push_str(&format!("┗━ ∑ {ok}✔ {in_progress}⏵ {pending}⏸ {failed}⚠\n"));
-        frame
+
+        // Truncate to terminal height (NOM/IO.hs `truncateRows`).
+        // Resolve effective max from explicit override or terminal query.
+        let max_height = match self.max_height {
+            Some(0) => return frame, // disabled
+            Some(h) => h,
+            None => {
+                // Auto-detect: only applicable when we're painting to a real TTY.
+                // capture mode has no terminal, so skip truncation there.
+                if self.capture.is_some() {
+                    return frame;
+                }
+                let (rows, _cols) = console::Term::stdout().size();
+                if rows == 0 {
+                    return frame; // non-TTY
+                }
+                rows as usize
+            }
+        };
+
+        // nom constant: `outputLinesToAlwaysShow = 5`.
+        // Guard: need at least 8 lines for truncation to make sense
+        // (1 header + 1 ellipsis + 5 tail + 1 footer).
+        const ALWAYS_SHOW: usize = 5;
+        let lines: Vec<&str> = frame.lines().collect();
+        let n = lines.len();
+        if max_height <= ALWAYS_SHOW + 2 || n <= max_height {
+            return frame;
+        }
+
+        // NOM formula (verbatim Haskell logic):
+        //   take 1 <> [" ⋮ "] <> drop (n + outputLinesToAlwaysShow + 2 - rows)
+        // The drop count is: n + 5 + 2 - max_height.
+        let drop_count = n + ALWAYS_SHOW + 2 - max_height;
+        let head = &lines[..1];
+        let tail = &lines[drop_count..];
+
+        let mut truncated = String::with_capacity(frame.len());
+        for l in head {
+            truncated.push_str(l);
+            truncated.push('\n');
+        }
+        truncated.push_str(" ⋮ \n");
+        for l in tail {
+            truncated.push_str(l);
+            truncated.push('\n');
+        }
+        truncated
     }
 
     /// Erase-in-place repaint. Walks the cursor up `last_printed_lines`
@@ -523,7 +606,29 @@ impl LiveTreeRenderer {
     /// synchronized-update markers so terminals that support them
     /// (iTerm2, alacritty, kitty, recent gnome-terminal) display the
     /// frame atomically without flicker.
-    fn repaint(&self) {
+    ///
+    /// `force = true` bypasses the 60ms minimum gate (used for the final
+    /// `Finished` frame). In capture/test mode the gate is also bypassed
+    /// since wall-time pacing is irrelevant in tests.
+    ///
+    /// nom equivalence: `minFrameDuration = 60_000 µs` (NOM/IO.hs `keepPrinting`).
+    fn repaint(&self, force: bool) {
+        // 60ms minimum frame gate (nom `minFrameDuration`). Skip in capture
+        // mode where wall-time pacing is meaningless (tests run in µs).
+        if !force && self.capture.is_none() {
+            let mut last_paint = self.last_paint_at.lock().unwrap();
+            if let Some(t) = *last_paint {
+                if t.elapsed() < Duration::from_millis(60) {
+                    return;
+                }
+            }
+            *last_paint = Some(Instant::now());
+        } else if self.capture.is_none() {
+            // forced paint — update timestamp so next non-forced paint
+            // measures from here.
+            *self.last_paint_at.lock().unwrap() = Some(Instant::now());
+        }
+
         let frame = self.build_frame();
         let new_lines = frame.lines().count();
         let mut last = self.last_printed_lines.lock().unwrap();
@@ -567,11 +672,14 @@ impl EventSink for LiveTreeRenderer {
         // Repaint on round boundaries + final tick. Per-edge events
         // accumulate silently — keeps redraw rate manageable. Following
         // nom's pattern: erase-in-place at frame time, no alt screen.
+        // Finished is forced (final frame must always show).
+        // PlanComputed/RoundCompleted go through the 60ms gate.
         match event {
-            CascadeEvent::PlanComputed { .. }
-            | CascadeEvent::RoundCompleted { .. }
-            | CascadeEvent::Finished { .. } => {
-                self.repaint();
+            CascadeEvent::Finished { .. } => {
+                self.repaint(true); // force — final frame must display
+            }
+            CascadeEvent::PlanComputed { .. } | CascadeEvent::RoundCompleted { .. } => {
+                self.repaint(false);
             }
             _ => {}
         }
@@ -948,10 +1056,17 @@ mod tests {
     /// RoundCompleted + Finished, uses cursor-home + clear-screen
     /// escapes (alt-screen idiom, like top/htop/vim/less), and
     /// captures multiple distinct frames over the cascade lifetime.
+    /// Also verifies priority sorting: Failed nodes appear before Ok
+    /// nodes in the rendered output (nom/State/Sorting.hs order).
     #[test]
     fn live_tree_renderer_emits_multiple_frames_with_ansi_redraw() {
-        // Drive a 4-event sequence: Started, RoundCompleted, RoundCompleted, Finished.
-        // Expect 3 frames captured (one per RoundCompleted, one per Finished).
+        // Drive a sequence: Started, PlanComputed, EdgeCompleted(n1 ok),
+        // EdgeFailed(n2 failed), RoundCompleted, Finished.
+        // n2 (Failed) should appear before n1 (Ok) in the final frame
+        // due to priority sorting (Failed → priority 0, Ok → priority 3).
+        //
+        // Capture mode bypasses the 60ms gate, so all 4 paint-triggering
+        // events (PlanComputed, RoundCompleted, Finished) still produce frames.
         let renderer = LiveTreeRenderer::with_capture(false, None);
 
         renderer.emit(&CascadeEvent::Started {
@@ -962,26 +1077,33 @@ mod tests {
         });
         renderer.emit(&CascadeEvent::PlanComputed {
             round: 0,
-            assignments: vec![Edge {
-                src: NodeId(0),
-                tgt: NodeId(1),
-            }],
+            assignments: vec![
+                Edge {
+                    src: NodeId(0),
+                    tgt: NodeId(1),
+                },
+                Edge {
+                    src: NodeId(0),
+                    tgt: NodeId(2),
+                },
+            ],
         });
-        renderer.emit(&edge_completed(0, 0, 1, 5));
+        renderer.emit(&edge_completed(0, 0, 1, 5)); // n1 → Ok
+        renderer.emit(&edge_failed(0, 0, 2)); // n2 → Failed
         renderer.emit(&CascadeEvent::RoundCompleted {
             round: 0,
             duration: Duration::from_millis(5),
             has_closure: vec![NodeId(0), NodeId(1)],
         });
-        renderer.emit(&edge_completed(1, 1, 2, 5));
+        renderer.emit(&edge_completed(1, 1, 3, 5));
         renderer.emit(&CascadeEvent::RoundCompleted {
             round: 1,
             duration: Duration::from_millis(5),
-            has_closure: vec![NodeId(0), NodeId(1), NodeId(2)],
+            has_closure: vec![NodeId(0), NodeId(1), NodeId(3)],
         });
         renderer.emit(&CascadeEvent::Finished {
             converged: 3,
-            failed: 0,
+            failed: 1,
             rounds: 2,
         });
 
@@ -994,9 +1116,9 @@ mod tests {
         // line: `\x1b[2K` for the bottom line, then `\x1b[1A\x1b[2K`
         // for each line above.
         //
-        // Test events: PlanComputed → frame 1 (no clears),
-        // RoundCompleted×2 → frames 2-3, Finished → frame 4. Total
-        // 4 sync-update begin markers.
+        // Test events: PlanComputed → frame 1, RoundCompleted×2 → frames
+        // 2-3, Finished → frame 4. Total 4 sync-update begin markers.
+        // (Capture mode bypasses the 60ms gate so all 4 paint.)
         let sync_begin = captured.matches("\x1b[?2026h").count();
         assert_eq!(
             sync_begin, 4,
@@ -1031,6 +1153,100 @@ mod tests {
         assert!(captured.contains("n0"));
         assert!(captured.contains("n1"));
         assert!(captured.contains("n2"));
+
+        // Priority sorting assertion (nom/State/Sorting.hs):
+        // n2 is Failed (priority 0), n1 is Ok (priority 3).
+        // In the final frame n2 must appear before n1.
+        // Find positions in the last frame by scanning from the last
+        // sync-begin marker backwards is complex; instead scan the full
+        // captured output for relative positions (n2 always before n1).
+        let pos_n2 = captured
+            .rfind("n2")
+            .expect("n2 should appear in captured output");
+        let pos_n1 = captured
+            .rfind("n1")
+            .expect("n1 should appear in captured output");
+        assert!(
+            pos_n2 < pos_n1,
+            "priority sort: n2 (Failed) should appear before n1 (Ok) in the final frame; \
+             n2 at byte {pos_n2}, n1 at byte {pos_n1}"
+        );
+    }
+
+    /// 8. Truncation: a tall cascade frame is capped at max_height lines
+    /// per NOM/IO.hs `truncateRows`, with ` ⋮ ` ellipsis inserted.
+    #[test]
+    fn live_tree_renderer_truncates_tall_frames() {
+        use consortium_nix::cascade_events::Edge;
+
+        // Build a wide cascade: node 0 seeds 30 children (nodes 1..=30).
+        // Each child is a leaf (Ok). With max_height=20 the frame must be
+        // truncated — 30 body lines + 2 chrome lines (header + footer) = 32
+        // total, which exceeds 20.
+        let renderer = LiveTreeRenderer::with_capture(false, None).with_max_height(Some(20));
+
+        // Start with node 0 as seed.
+        renderer.emit(&CascadeEvent::Started {
+            n_nodes: 31,
+            seeded: vec![NodeId(0)],
+            strategy: "log2-fanout".into(),
+            at: SystemTime::UNIX_EPOCH,
+        });
+
+        // Plan all 30 edges at once.
+        let assignments: Vec<Edge> = (1u32..=30)
+            .map(|i| Edge {
+                src: NodeId(0),
+                tgt: NodeId(i),
+            })
+            .collect();
+        renderer.emit(&CascadeEvent::PlanComputed {
+            round: 0,
+            assignments,
+        });
+
+        // Complete all edges.
+        for i in 1u32..=30 {
+            renderer.emit(&edge_completed(0, 0, i, 5));
+        }
+        renderer.emit(&CascadeEvent::RoundCompleted {
+            round: 0,
+            duration: Duration::from_millis(5),
+            has_closure: (0u32..=30).map(NodeId).collect(),
+        });
+        renderer.emit(&CascadeEvent::Finished {
+            converged: 31,
+            failed: 0,
+            rounds: 1,
+        });
+
+        let captured = renderer.captured();
+
+        // The frame must contain the ellipsis marker.
+        assert!(
+            captured.contains(" ⋮ "),
+            "expected truncation ellipsis ` ⋮ ` in captured output; frame:\n{captured}"
+        );
+
+        // Find the last frame (after the final sync-begin marker) and count its lines.
+        let last_frame_start = captured
+            .rfind("\x1b[?2026h")
+            .expect("no sync-begin marker found");
+        let last_frame_end = captured
+            .rfind("\x1b[?2026l")
+            .expect("no sync-end marker found");
+        let last_frame = &captured[last_frame_start..last_frame_end];
+        // Strip ANSI escape sequences for line counting.
+        let visible: String = last_frame
+            .split('\n')
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let line_count = visible.lines().count();
+        assert!(
+            line_count <= 22,
+            "truncated frame should be roughly max_height lines; got {line_count} lines"
+        );
     }
 
     /// 6. JSONL round-trip: serialize events via JsonlWriter → parse back.

@@ -1,5 +1,0 @@
-type = "nix-parallelize"
-target_file = "crates/consortium-nix/src/health.rs"
-target_line = 24
-description = "parallelize with consortium's SshWorker + fanout"
-created = "2026-04-25T02:58:38Z"

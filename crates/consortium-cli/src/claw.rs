@@ -22,6 +22,7 @@ use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
 use consortium_cli::display;
 use consortium_cli::event_render::{DelayingExecutor, LiveTreeRenderer};
+use consortium_cli::output::{CliOutput, OutputArgs};
 use consortium_fanout_sim::fixtures::{FailureSchedule, UplinkDistribution};
 use consortium_fanout_sim::DeterministicExecutor;
 use consortium_nix::cascade::{
@@ -119,9 +120,8 @@ struct Args {
     #[arg(short = 'S', long = "maxrc")]
     maxrc: bool,
 
-    /// Verbose mode.
-    #[arg(short = 'v', long = "verbose")]
-    verbose: bool,
+    #[command(flatten)]
+    output: OutputArgs,
 
     // ── File transfer ──────────────────────────────────────────────────
     /// Copy a file to all target nodes.
@@ -204,11 +204,13 @@ fn main() {
 }
 
 fn run(args: Args) -> anyhow::Result<i32> {
+    let cli_out = CliOutput::from_args(&args.output);
+
     // Testbed short-circuits the entire normal claw flow — no node
     // resolution, no ssh, no command execution. Just runs a cascade
     // through the deterministic sim and renders it live.
     if args.testbed {
-        return run_testbed(&args);
+        return run_testbed(&args, &cli_out);
     }
 
     let stdout = io::stdout();
@@ -220,12 +222,12 @@ fn run(args: Args) -> anyhow::Result<i32> {
         anyhow::bail!("no target nodes specified (use -w, -a, -g, or --hostfile)");
     }
 
-    if args.verbose {
-        eprintln!(
+    if cli_out.is_verbose() {
+        cli_out.info(format!(
             "claw: targeting {} node(s): {}",
             target_nodes.len(),
             target_nodes
-        );
+        ));
     }
 
     // ── Build the command string ───────────────────────────────────────
@@ -338,7 +340,7 @@ fn run(args: Args) -> anyhow::Result<i32> {
 /// Drive a cascade simulation through the deterministic testbed and
 /// render it live. Used when `claw --testbed` is set; bypasses the
 /// normal node-resolution + ssh + command-exec flow entirely.
-fn run_testbed(args: &Args) -> anyhow::Result<i32> {
+fn run_testbed(args: &Args, out: &CliOutput) -> anyhow::Result<i32> {
     let n_nodes = args.tb_nodes;
     let closure_bytes = args.tb_closure_mb * 1024 * 1024;
 
@@ -385,10 +387,8 @@ fn run_testbed(args: &Args) -> anyhow::Result<i32> {
         delay: Duration::from_millis(args.tb_delay_ms),
     };
 
-    // Live renderer — color iff stdout is a TTY (no point ANSI-escaping
-    // a pipe).
-    let color = is_terminal::is_terminal(io::stdout());
-    let renderer = LiveTreeRenderer::new(color, args.tb_max_depth);
+    // Live renderer — color controlled by --color flag (resolved in CliOutput).
+    let renderer = LiveTreeRenderer::new(out.color, args.tb_max_depth);
 
     // Run the cascade through the chosen strategy.
     let level_tree = LevelTreeFanOut::new(args.tb_fanout.max(1));
