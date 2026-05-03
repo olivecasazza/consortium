@@ -29,6 +29,14 @@ docker-tests = []
 tempfile = "3"
 consortium-test-harness = { path = "../consortium-test-harness" }
 consortium-nix = { path = "../consortium-nix" }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Microbench for the DAG executor — the canonical autoresearch perf signal.
+# See benches/dag_executor.rs for the rationale (replaces a Docker-dominated
+# wall-time metric whose noise floor was ~98% infrastructure).
+[[bench]]
+name = "dag_executor"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = true
