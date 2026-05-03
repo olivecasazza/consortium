@@ -130,10 +130,15 @@ proptest! {
         // proptest's strategy combinators don't compose with our n_nodes
         // dependency cleanly, so we sample manually.
         let failure_kind: u8 = frng.gen_range(0u8..=2);
+        let killed_node: Option<NodeId> = None;
+        let killed_node = match failure_kind {
+            1 => Some(NodeId(frng.gen_range(0..n_nodes))),
+            _ => killed_node,
+        };
         let failures = match failure_kind {
             0 => FailureSchedule::None,
             1 => FailureSchedule::KillNodeAtRound {
-                node: NodeId(frng.gen_range(0..n_nodes)),
+                node: killed_node.unwrap(),
                 round: frng.gen_range(0..6),
             },
             _ => {
@@ -195,6 +200,38 @@ proptest! {
                 );
             }
         }
+
+        // Tightened: when KillNodeAtRound was injected with round=0,
+        // the killed node MUST appear in the failure tree (it can never
+        // receive the closure since every attempt to copy to it fails
+        // from round 0). Older test was silent about this — would have
+        // passed even if the kill schedule was being ignored.
+        if let Some(killed) = killed_node {
+            // Only assert when the kill could actually have fired:
+            // round 0 means it fires on first attempt regardless of
+            // strategy. Round > 0 may not fire if the cascade halts
+            // before then (which is valid for Steiner on uniform).
+            // We check the schedule's round via re-extraction:
+            if let FailureSchedule::KillNodeAtRound { round: 0, .. } = cfg.failures {
+                prop_assert!(
+                    !result.converged.iter().any(|&n| n == killed),
+                    "[{}] killed node {killed:?} still appears in converged set: {:?}",
+                    strategy.name(),
+                    result.converged,
+                );
+                let err = result.failed.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "[{}] killed node injected at round 0 but result.failed is None",
+                        strategy.name()
+                    )
+                });
+                prop_assert!(
+                    err.affected_nodes().contains(&killed),
+                    "[{}] killed node {killed:?} missing from affected set",
+                    strategy.name(),
+                );
+            }
+        }
     }
 
     #[test]
@@ -219,7 +256,13 @@ proptest! {
         let r1 = Scenario::new(cfg.clone()).run(&MaxBottleneckSpanning);
         let r2 = Scenario::new(cfg).run(&MaxBottleneckSpanning);
         prop_assert_eq!(r1.rounds, r2.rounds);
-        prop_assert_eq!(r1.round_durations, r2.round_durations);
-        prop_assert_eq!(r1.converged.len(), r2.converged.len());
+        prop_assert_eq!(r1.round_durations.clone(), r2.round_durations.clone());
+        // Tightened: full set equality, not just len(). Catches the case
+        // where determinism produces the same COUNT of converged nodes
+        // but a different SET — which would mean the cascade is making
+        // non-deterministic edge choices we'd never notice with `len ==`.
+        let s1: HashSet<NodeId> = r1.converged.iter().copied().collect();
+        let s2: HashSet<NodeId> = r2.converged.iter().copied().collect();
+        prop_assert_eq!(s1, s2, "converged sets diverge between identical-seed runs");
     }
 }

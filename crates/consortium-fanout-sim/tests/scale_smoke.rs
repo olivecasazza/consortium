@@ -61,15 +61,18 @@ fn build_run(n_nodes: u32, seed: u64) -> consortium_nix::cascade::CascadeResult 
 // Tests
 // ============================================================================
 
-/// 256-node cascade must converge in <= ceil(log2(256)) + 2 = 10 rounds.
+/// 256-node cascade must converge in EXACTLY ⌈log₂(256)⌉ = 8 rounds.
 ///
-/// ceil(log2(256)) = 8, +2 headroom for bimodal bandwidth heterogeneity.
+/// Empirically measured at exactly 8 rounds with the bimodal bandwidth
+/// + bimodal uplinks scenario at SEED 0xdeadbeef256. Even with 30%/70%
+/// heterogeneity, MaxBottleneckSpanning's greedy max-weight matching
+/// hits the log₂ lower bound. If this drifts up to 9+, the strategy's
+/// matching has degraded — investigate.
 #[test]
-fn cascade_at_256_nodes_converges_under_log2_plus_2_rounds() {
-    // ceil(log2(256)) = 8; +2 = 10
+fn cascade_at_256_nodes_converges_in_exactly_log2_rounds() {
     const N: u32 = 256;
     const SEED: u64 = 0x_dead_beef_256;
-    const MAX_ROUNDS: u32 = 10; // ceil(log2(256)) + 2
+    const EXPECTED_ROUNDS: u32 = 8; // ⌈log₂(256)⌉
 
     let result = build_run(N, SEED);
 
@@ -85,11 +88,10 @@ fn cascade_at_256_nodes_converges_under_log2_plus_2_rounds() {
         N,
         result.converged.len()
     );
-    assert!(
-        result.rounds <= MAX_ROUNDS,
-        "expected convergence in <= {} rounds (ceil(log2(256))+2), but got {} rounds",
-        MAX_ROUNDS,
-        result.rounds
+    assert_eq!(
+        result.rounds, EXPECTED_ROUNDS,
+        "MaxBottleneckSpanning at 256 nodes should converge in exactly {} rounds (⌈log₂(256)⌉) — got {}. Strategy may have regressed.",
+        EXPECTED_ROUNDS, result.rounds
     );
     assert_eq!(
         result.round_durations.len() as u32,
@@ -98,15 +100,16 @@ fn cascade_at_256_nodes_converges_under_log2_plus_2_rounds() {
     );
 }
 
-/// 1024-node cascade must converge in <= ceil(log2(1024)) + 3 = 13 rounds.
+/// 1024-node cascade must converge in EXACTLY ⌈log₂(1024)⌉ = 10 rounds.
 ///
-/// ceil(log2(1024)) = 10, +3 headroom for bimodal bandwidth heterogeneity.
+/// Same rationale as the 256-node test: empirically measured at exactly
+/// 10 rounds. Pinning the lower bound catches any per-round degradation
+/// the looser `<= 13` bound would have masked.
 #[test]
-fn cascade_at_1024_nodes_converges_under_log2_plus_3_rounds() {
-    // ceil(log2(1024)) = 10; +3 = 13
+fn cascade_at_1024_nodes_converges_in_exactly_log2_rounds() {
     const N: u32 = 1024;
     const SEED: u64 = 0x_dead_beef_1024;
-    const MAX_ROUNDS: u32 = 13; // ceil(log2(1024)) + 3
+    const EXPECTED_ROUNDS: u32 = 10; // ⌈log₂(1024)⌉
 
     let result = build_run(N, SEED);
 
@@ -122,11 +125,10 @@ fn cascade_at_1024_nodes_converges_under_log2_plus_3_rounds() {
         N,
         result.converged.len()
     );
-    assert!(
-        result.rounds <= MAX_ROUNDS,
-        "expected convergence in <= {} rounds (ceil(log2(1024))+3), but got {} rounds",
-        MAX_ROUNDS,
-        result.rounds
+    assert_eq!(
+        result.rounds, EXPECTED_ROUNDS,
+        "MaxBottleneckSpanning at 1024 nodes should converge in exactly {} rounds (⌈log₂(1024)⌉) — got {}. Strategy may have regressed.",
+        EXPECTED_ROUNDS, result.rounds
     );
     assert_eq!(
         result.round_durations.len() as u32,

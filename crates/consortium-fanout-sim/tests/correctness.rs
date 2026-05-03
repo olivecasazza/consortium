@@ -151,30 +151,46 @@ fn error_tree_shape_under_killed_node() {
     for s in all_strategies() {
         let result = Scenario::new(cfg.clone()).run(s);
 
-        // 31 of 32 should converge (the killed node doesn't).
-        assert!(
-            result.converged.len() >= 30,
-            "[{}] expected ~31 converged, got {}",
+        // EXACTLY 31 of 32 should converge — the killed node never
+        // receives, every other node has a path through some other
+        // source. `>=30` was too loose and would have hidden a real
+        // regression where 2+ nodes silently fail to converge.
+        assert_eq!(
+            result.converged.len() as u32,
+            cfg.n_nodes - 1,
+            "[{}] only the killed node should fail to converge; got {} of {} converged",
             s.name(),
-            result.converged.len()
+            result.converged.len(),
+            cfg.n_nodes,
         );
 
-        // The error tree must mention NodeId(15) somewhere.
-        if let Some(err) = &result.failed {
-            let affected = err.affected_nodes();
-            assert!(
-                affected.contains(&NodeId(15)),
-                "[{}] killed node 15 not in error tree (affected: {:?})",
-                s.name(),
-                affected
-            );
-        } else {
+        let err = result.failed.as_ref().unwrap_or_else(|| {
             panic!(
-                "[{}] expected at least one failure, got is_success=true (converged={})",
+                "[{}] expected failure, got is_success=true (converged={})",
                 s.name(),
                 result.converged.len()
-            );
-        }
+            )
+        });
+        let affected = err.affected_nodes();
+
+        // EXACTLY one affected node, and it's the one we killed.
+        // Tightened from `contains(&15)` so we'd catch cascading
+        // failures that drag in extra nodes (none should — strategies
+        // route around `failed_nodes`).
+        assert_eq!(
+            affected.len(),
+            1,
+            "[{}] expected exactly 1 affected node (only the killed one); got {:?}",
+            s.name(),
+            affected
+        );
+        assert_eq!(
+            affected[0],
+            NodeId(15),
+            "[{}] expected affected = [NodeId(15)]; got {:?}",
+            s.name(),
+            affected
+        );
 
         assert_universal_invariants(s.name(), &cfg, &result);
     }
@@ -205,16 +221,24 @@ fn error_walk_yields_leaves_in_depth_order() {
         CascadeError::Partitioned { tgt, .. } => leaves.push((depth, *tgt)),
         _ => {}
     });
-    assert!(!leaves.is_empty(), "no leaves walked");
-    // Depth depends on cascade tree shape — single-edge failures
-    // produce naked leaves (depth 0) because the coordinator unwraps
-    // singleton SubtreeAggregates. Multi-failure-per-parent buckets
-    // produce SubtreeAggregate wrappers (depth >= 1). Both are valid.
-    // The invariant we care about: every leaf is reachable.
-    let max_depth = leaves.iter().map(|(d, _)| *d).max().unwrap();
+    assert_eq!(
+        leaves.len(),
+        1,
+        "expected exactly 1 leaf for single-node failure: {leaves:?}"
+    );
+    let (depth, node) = leaves[0];
+    assert_eq!(
+        node,
+        NodeId(7),
+        "leaf should be the killed node, got {node:?}"
+    );
+    // Tightened: a single failed-target failure should bubble at depth
+    // <= 2 — coordinator either emits the naked leaf (depth 0) or wraps
+    // it in 1-2 SubtreeAggregates (depth 1-2 for the parent and
+    // grandparent buckets). The previous `<= n_nodes` bound was 16 —
+    // would have admitted catastrophic over-nesting.
     assert!(
-        max_depth <= cfg.n_nodes as usize,
-        "implausibly deep tree (max_depth={max_depth}, n_nodes={})",
-        cfg.n_nodes,
+        depth <= 2,
+        "single-failure leaf depth should be <= 2 (coordinator wraps in 0-2 SubtreeAggregates), got {depth}",
     );
 }

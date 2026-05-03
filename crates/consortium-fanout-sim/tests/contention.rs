@@ -445,13 +445,19 @@ fn heterogeneous_uplinks_partition_into_fast_and_slow_clusters() {
         .map(|d| d.as_secs_f64())
         .sum();
 
-    // The mixed fast/slow network should finish much faster (fast nodes dominate
-    // early rounds, slow nodes only participate in late rounds when most work is done).
+    // Tightened: with half the nodes 1000× faster (1 GB/s vs 1 MB/s),
+    // a strategy that prefers fast sources should finish much faster
+    // than the all-slow baseline — at least 2× faster. The previous
+    // `total_fast < total_slow` admitted "1ns faster also passes",
+    // which would mask a regression where the strategy ignored uplink
+    // heterogeneity entirely.
+    let speedup = total_slow / total_fast;
     assert!(
-        total_fast < total_slow,
-        "expected mixed fast/slow ({:.3}s) to finish faster than all-slow ({:.3}s)",
+        speedup >= 2.0,
+        "expected mixed fast/slow ({:.3}s) to be >= 2× faster than all-slow ({:.3}s); got {:.1}× — strategy may not be preferring fast-uplink sources",
         total_fast,
         total_slow,
+        speedup,
     );
 }
 
@@ -520,12 +526,24 @@ fn partition_under_contention_still_bubbles_errors() {
         affected
     );
 
-    // All other nodes should have converged.
-    assert!(
-        result.converged.len() as u32 >= n_nodes - 1,
-        "expected at least {} converged, got {} (only node {:?} was killed)",
+    // Tightened: EXACTLY n_nodes-1 should converge (only the killed
+    // node fails). The previous `>= n_nodes - 1` admitted "0 converged
+    // also passes" because >= still holds vacuously when even more
+    // failed. Lock the count exactly.
+    assert_eq!(
+        result.converged.len() as u32,
         n_nodes - 1,
-        result.converged.len(),
+        "expected exactly {} converged (only {:?} should fail); got {}",
+        n_nodes - 1,
         killed_node,
+        result.converged.len(),
     );
+    // And the affected set is exactly the killed node — no cascading
+    // failures dragging in extra nodes.
+    assert_eq!(
+        affected.len(),
+        1,
+        "expected exactly 1 affected node; got {affected:?}"
+    );
+    assert_eq!(affected[0], killed_node, "affected node mismatch");
 }
