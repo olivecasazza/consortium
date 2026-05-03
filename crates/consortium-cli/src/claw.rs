@@ -27,7 +27,7 @@ use consortium_fanout_sim::DeterministicExecutor;
 use consortium_nix::cascade::{
     Cascade, CascadeNode, Log2FanOut, NetworkProfile, NodeId, NodeIdAlloc,
 };
-use consortium_nix::cascade_strategies::{MaxBottleneckSpanning, SteinerGreedy};
+use consortium_nix::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
 
 /// claw — execute commands in parallel across cluster nodes.
 ///
@@ -158,9 +158,16 @@ struct Args {
     #[arg(long = "tb-seeds", default_value_t = 1)]
     tb_seeds: u32,
 
-    /// (testbed) Strategy: log2-fanout, max-bottleneck, steiner.
-    #[arg(long = "tb-strategy", default_value = "max-bottleneck")]
+    /// (testbed) Strategy: level-tree (default — pre-shaped F-ary tree,
+    /// each round populates one tree level), log2-fanout, max-bottleneck,
+    /// or steiner.
+    #[arg(long = "tb-strategy", default_value = "level-tree")]
     tb_strategy: String,
+
+    /// (testbed) Fanout for level-tree strategy (children per node in
+    /// the deployment tree). 2 → balanced binary tree.
+    #[arg(long = "tb-fanout", default_value_t = 2)]
+    tb_fanout: u32,
 
     /// (testbed) Wall-time delay between rounds in ms — makes the live
     /// re-render visible (sim is otherwise microseconds per round).
@@ -384,7 +391,16 @@ fn run_testbed(args: &Args) -> anyhow::Result<i32> {
     let renderer = LiveTreeRenderer::new(color, args.tb_max_depth);
 
     // Run the cascade through the chosen strategy.
+    let level_tree = LevelTreeFanOut::new(args.tb_fanout.max(1));
     let result = match args.tb_strategy.as_str() {
+        "level-tree" | "level" | "tree" => Cascade::new()
+            .nodes(nodes)
+            .seeded(seeded)
+            .network(net)
+            .strategy(&level_tree)
+            .executor(&delayed)
+            .events(&renderer)
+            .run(),
         "log2-fanout" | "log2" => Cascade::new()
             .nodes(nodes)
             .seeded(seeded)
@@ -409,9 +425,9 @@ fn run_testbed(args: &Args) -> anyhow::Result<i32> {
             .executor(&delayed)
             .events(&renderer)
             .run(),
-        other => {
-            anyhow::bail!("unknown strategy: {other} (use log2-fanout, max-bottleneck, or steiner)")
-        }
+        other => anyhow::bail!(
+            "unknown strategy: {other} (use level-tree, log2-fanout, max-bottleneck, or steiner)"
+        ),
     };
 
     // Final summary — printed BELOW the live tree (LiveTreeRenderer

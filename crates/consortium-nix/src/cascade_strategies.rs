@@ -197,6 +197,107 @@ impl CascadeStrategy for SteinerGreedy {
 // Tests
 // ============================================================================
 
+// ============================================================================
+// LevelTreeFanOut — pre-shaped F-ary tree, level-synchronized
+// ============================================================================
+
+/// Pre-shapes the deployment as a balanced F-ary tree using BFS / heap-
+/// style id assignment: parent of node `i` (i >= 1) is `(i-1) / fanout`.
+/// Each round populates exactly one tree level.
+///
+/// Round 0: seed → its `fanout` direct children (level 1)
+/// Round 1: every level-1 node → its `fanout` children (level 2; F²
+///   parallel deploys)
+/// Round 2: F³ parallel
+/// ...
+///
+/// This matches what users expect from `nh`/`nom`-style visualization:
+/// the tree's "level k" is exactly "round k", so renderers show all of
+/// L1 spinning together, then complete, then all of L2 spinning, etc.
+/// In contrast `MaxBottleneckSpanning` greedy-picks per round, which
+/// produces a heavily left-skewed tree where late nodes appear at
+/// surprising depths.
+///
+/// Use this when:
+/// - The deployment topology is known up-front (typical for nix push
+///   to a fixed fleet)
+/// - Visual tree-shape predictability matters more than per-round
+///   bandwidth optimization
+/// - You want the "L1 deploys to all children at once" semantic
+pub struct LevelTreeFanOut {
+    pub fanout: u32,
+}
+
+impl LevelTreeFanOut {
+    pub fn new(fanout: u32) -> Self {
+        assert!(fanout >= 1, "LevelTreeFanOut: fanout must be >= 1");
+        Self { fanout }
+    }
+
+    /// Children of `id` in the heap-style F-ary tree, where the seed
+    /// is at id 0. Returns child ids in `[id*F + 1, id*F + F]`,
+    /// clipped to `< n_nodes`.
+    fn tree_children(&self, id: NodeId, n_nodes: u32) -> Vec<NodeId> {
+        let base = id.0.checked_mul(self.fanout);
+        let Some(base) = base else { return Vec::new() };
+        (1..=self.fanout)
+            .filter_map(|k| {
+                let child = base.checked_add(k)?;
+                if child < n_nodes {
+                    Some(NodeId(child))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+impl CascadeStrategy for LevelTreeFanOut {
+    fn name(&self) -> &'static str {
+        "level-tree"
+    }
+
+    fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
+        let n_nodes = state.nodes.len() as u32;
+        let mut assignments = Vec::new();
+
+        // For every node that already has the closure, plan edges to
+        // its predetermined tree children that don't yet have it.
+        // Skip failed nodes, partitioned edges, and edges already
+        // attempted — the strategy is otherwise topology-blind so it
+        // always picks the same tree shape.
+        for node in state.nodes {
+            if !state.has_closure.contains(&node.id) {
+                continue;
+            }
+            if state.failed_nodes.contains(&node.id) {
+                continue;
+            }
+            for child in self.tree_children(node.id, n_nodes) {
+                if state.has_closure.contains(&child) {
+                    continue;
+                }
+                if state.failed_nodes.contains(&child) {
+                    continue;
+                }
+                if state.attempted.contains(&(node.id, child)) {
+                    continue;
+                }
+                if net.is_partitioned(node.id, child) {
+                    continue;
+                }
+                assignments.push((node.id, child));
+            }
+        }
+
+        CascadePlan {
+            round: state.round,
+            assignments,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +385,65 @@ mod tests {
         assert!(result.is_success(), "failed: {:?}", result.failed);
         assert_eq!(result.converged.len(), 16);
         assert_eq!(result.rounds, 4);
+    }
+
+    #[test]
+    fn level_tree_fanout_2_produces_balanced_binary_tree() {
+        // 15 nodes, fanout=2, 1 seed → perfect binary heap layout:
+        //   L0=1 (n0), L1=2 (n1,n2), L2=4 (n3..n6), L3=8 (n7..n14)
+        // Each round populates exactly one level → 3 rounds for 15 nodes.
+        // Pins the "round k populates level k" semantic that level-tree
+        // exists to provide. Catches regressions where greedy picking
+        // sneaks back in or the heap-index math drifts.
+        let nodes = make_nodes(15);
+        let mut seeded = std::collections::HashSet::new();
+        seeded.insert(NodeId(0));
+        let exec = BandwidthSimExecutor {
+            closure_bytes: 1024 * 1024,
+            default_bw: 100 * 1024 * 1024,
+        };
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &LevelTreeFanOut::new(2),
+            &exec,
+            32,
+            None,
+        );
+        assert!(result.is_success(), "failed: {:?}", result.failed);
+        assert_eq!(result.converged.len(), 15);
+        // 15 nodes: L0=1, L1=2, L2=4, L3=8 → 3 rounds (L1 + L2 + L3)
+        assert_eq!(
+            result.rounds, 3,
+            "LevelTreeFanOut(fanout=2) at N=15 should converge in exactly 3 rounds (one per tree level past root); got {}",
+            result.rounds,
+        );
+    }
+
+    #[test]
+    fn level_tree_assigns_correct_parents() {
+        // Heap layout: parent(i) = (i-1)/fanout for i>=1.
+        // Test the tree_children helper directly.
+        let lt = LevelTreeFanOut::new(2);
+        // node 0's children at fanout=2 are nodes 1, 2
+        assert_eq!(lt.tree_children(NodeId(0), 100), vec![NodeId(1), NodeId(2)]);
+        // node 1's children: 1*2+1=3, 1*2+2=4
+        assert_eq!(lt.tree_children(NodeId(1), 100), vec![NodeId(3), NodeId(4)]);
+        // node 7 at N=15: 7*2+1=15 (out of range), 7*2+2=16 (out) → empty
+        assert_eq!(lt.tree_children(NodeId(7), 15), vec![]);
+        // node 6 at N=15: 13, 14 (both in range)
+        assert_eq!(
+            lt.tree_children(NodeId(6), 15),
+            vec![NodeId(13), NodeId(14)]
+        );
+
+        // fanout=3: node 1's children = 4, 5, 6
+        let lt3 = LevelTreeFanOut::new(3);
+        assert_eq!(
+            lt3.tree_children(NodeId(1), 100),
+            vec![NodeId(4), NodeId(5), NodeId(6)]
+        );
     }
 
     #[test]
