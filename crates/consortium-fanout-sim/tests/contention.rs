@@ -129,12 +129,18 @@ fn contention_makes_steiner_worse_than_max_bottleneck() {
     let steiner_total: Duration = steiner.round_durations.iter().sum();
     let mb_total: Duration = max_bottleneck.round_durations.iter().sum();
 
-    // With uplink contention Steiner must be >= MaxBottleneck.
+    // Tightened: with seed.uplink=10MB/s serving 63 targets, Steiner takes
+    // ~315s (50MB / (10MB/63) per edge) while MaxBottleneck takes ~30s
+    // (50MB/10MB × 6 rounds). Ratio should be >= 5×, not just >=. The
+    // previous `>=` admitted "1ns slower also passes" — hides regressions
+    // where the contention model degrades but doesn't disappear.
+    let ratio = steiner_total.as_secs_f64() / mb_total.as_secs_f64();
     assert!(
-        steiner_total >= mb_total,
-        "expected Steiner ({:?}) >= MaxBottleneck ({:?}) under uplink contention",
+        ratio >= 5.0,
+        "expected Steiner ({:?}) to be >= 5× slower than MaxBottleneck ({:?}) under uplink contention; got {:.1}× — contention model may be degrading",
         steiner_total,
         mb_total,
+        ratio,
     );
 }
 

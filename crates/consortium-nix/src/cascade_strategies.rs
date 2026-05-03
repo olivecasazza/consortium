@@ -287,7 +287,13 @@ mod tests {
     }
 
     #[test]
-    fn steiner_greedy_correct_on_uniform() {
+    fn steiner_greedy_converges_in_one_round_on_uniform() {
+        // Steiner is uncapped per source. With 1 seed, no contention, no
+        // per-edge bandwidth heterogeneity, the seed serves all N-1
+        // targets in round 0 and the cascade halts. This test pins that
+        // strategy-design behavior — if someone "fixes" Steiner to add a
+        // per-source cap, the test fails loudly so the rationale gets
+        // re-examined rather than silently changed.
         let nodes = make_nodes(16);
         let mut seeded = std::collections::HashSet::new();
         seeded.insert(NodeId(0));
@@ -306,6 +312,42 @@ mod tests {
         );
         assert!(result.is_success(), "failed: {:?}", result.failed);
         assert_eq!(result.converged.len(), 16);
+        assert_eq!(
+            result.rounds, 1,
+            "Steiner should converge in EXACTLY 1 round on uniform topology with 1 seed (it's uncapped per source). Got {} rounds — strategy semantics changed.",
+            result.rounds
+        );
+    }
+
+    #[test]
+    fn max_bottleneck_converges_in_log2_rounds_on_uniform() {
+        // MaxBottleneck caps each source to 1 outgoing edge per round, so
+        // on uniform topology it converges in EXACTLY ⌈log₂(N)⌉ rounds —
+        // same shape as Log2FanOut. Pins the per-source cap behavior; if
+        // it regresses, this test names the value that broke.
+        let nodes = make_nodes(16);
+        let mut seeded = std::collections::HashSet::new();
+        seeded.insert(NodeId(0));
+        let exec = BandwidthSimExecutor {
+            closure_bytes: 1024 * 1024 * 100,
+            default_bw: 100 * 1024 * 1024,
+        };
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &MaxBottleneckSpanning,
+            &exec,
+            32,
+            None,
+        );
+        assert!(result.is_success(), "failed: {:?}", result.failed);
+        assert_eq!(result.converged.len(), 16);
+        assert_eq!(
+            result.rounds, 4,
+            "MaxBottleneck should converge in ⌈log₂(16)⌉=4 rounds on uniform topology (capped at 1 edge/source/round). Got {}",
+            result.rounds
+        );
     }
 
     #[test]
@@ -343,9 +385,13 @@ mod tests {
         let mb_total: Duration = mb.round_durations.iter().sum();
         assert!(log2.is_success());
         assert!(mb.is_success());
+        // Tightened: require MaxBottleneck to be measurably better, not
+        // just "no worse". 90% threshold catches the case where the
+        // bandwidth-aware strategy degenerates and matches Log2's
+        // network-blind choice (the previous `<=` admitted this).
         assert!(
-            mb_total <= log2_total,
-            "MaxBottleneck ({:?}) should be <= Log2FanOut ({:?}) on skewed network",
+            mb_total.as_secs_f64() <= log2_total.as_secs_f64() * 0.90,
+            "MaxBottleneck ({:?}) should be at least 10% faster than Log2FanOut ({:?}) on skewed network — bandwidth-aware pairing isn't paying off",
             mb_total,
             log2_total,
         );
