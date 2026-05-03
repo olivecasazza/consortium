@@ -507,6 +507,32 @@ impl EventSink for LiveTreeRenderer {
 }
 
 // ============================================================================
+// DelaySink — wraps another sink and sleeps after each RoundCompleted
+// ============================================================================
+
+/// Wraps an `EventSink` and injects a wall-time sleep after each
+/// `RoundCompleted` event. Useful for making the deterministic sim
+/// watchable in live mode — without this the cascade fires in
+/// microseconds, faster than the live renderer's frames can register
+/// to a human eye.
+///
+/// **Test/demo only.** Inject this in production and you'll add fake
+/// latency to real deploys.
+pub struct DelaySink<'a> {
+    pub inner: &'a dyn EventSink,
+    pub delay: Duration,
+}
+
+impl<'a> EventSink for DelaySink<'a> {
+    fn emit(&self, event: &CascadeEvent) {
+        self.inner.emit(event);
+        if matches!(event, CascadeEvent::RoundCompleted { .. }) {
+            std::thread::sleep(self.delay);
+        }
+    }
+}
+
+// ============================================================================
 // render_events
 // ============================================================================
 

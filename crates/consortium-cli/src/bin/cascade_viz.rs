@@ -17,7 +17,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use is_terminal::IsTerminal;
 
-use consortium_cli::event_render::{render_events, EventCollector, JsonlWriter, LiveTreeRenderer};
+use consortium_cli::event_render::{
+    render_events, DelaySink, EventCollector, JsonlWriter, LiveTreeRenderer,
+};
 use consortium_cli::tree::OutputFormat;
 use consortium_fanout_sim::fixtures::{
     rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution,
@@ -105,6 +107,15 @@ struct LiveArgs {
     /// sense in a captured stream.
     #[arg(long = "no-watch")]
     no_watch: bool,
+
+    /// Inject artificial wall-time delay between rounds, in milliseconds
+    /// (e.g. `--per-round-delay 200`). The deterministic sim runs in
+    /// microseconds — without this, the live re-render fires faster
+    /// than humans can perceive. Use for demos / visual debugging only;
+    /// it does NOT affect the `round_durations` reported in traces (those
+    /// stay sim-time).
+    #[arg(long = "per-round-delay")]
+    per_round_delay_ms: Option<u64>,
 }
 
 // ============================================================================
@@ -196,7 +207,19 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
     if live_eligible {
         let color = !cli.no_color;
         let renderer = LiveTreeRenderer::new(color, cli.max_depth);
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer);
+        if let Some(ms) = args.per_round_delay_ms {
+            // Wrap the renderer in a DelaySink so each RoundCompleted
+            // gets a wall-time pause — makes the live re-render visible
+            // on the deterministic sim (which otherwise fires events
+            // in microseconds).
+            let delayed = DelaySink {
+                inner: &renderer,
+                delay: std::time::Duration::from_millis(ms),
+            };
+            run_scenario(args, closure_bytes, bandwidth, uplinks, &delayed);
+        } else {
+            run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer);
+        }
         // The renderer prints the final frame on `Finished`; nothing more
         // for us to flush.
         return Ok(());
