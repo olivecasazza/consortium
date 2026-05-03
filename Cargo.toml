@@ -10,6 +10,7 @@ members = [
     "crates/consortium-ray",
     "crates/consortium-skypilot",
     "crates/consortium-test-harness",
+    "crates/consortium-fanout-sim",
 ]
 
 [workspace.metadata.crane]

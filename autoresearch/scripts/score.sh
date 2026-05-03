@@ -110,11 +110,16 @@ if git diff --name-only "$BASE_REF"...HEAD 2>/dev/null | grep -qE '^(lib/|tests/
     fi
 fi
 
-# Gate 5 (differential, conditional): perf bench when AR_TASK_TYPE=perf-dag-executor.
-# Dispatched by run-once.sh exporting the env. Standalone score.sh callers
-# (e.g. CI smoke) leave AR_TASK_TYPE unset and skip this gate.
-if [[ "${AR_TASK_TYPE:-}" == "perf-dag-executor" ]]; then
-    PERF_OUT=$(bash "$(dirname "$0")/score-perf.sh" "$WORKTREE" 2>"$TMP/perf.err")
+# Gate 5 (differential, conditional): perf bench dispatched on AR_TASK_TYPE.
+# Standalone score.sh callers (e.g. CI smoke) leave AR_TASK_TYPE unset and
+# skip this gate. Each perf task type has its own scoring script.
+case "${AR_TASK_TYPE:-}" in
+    perf-dag-executor)        PERF_SCRIPT="$(dirname "$0")/score-perf.sh" ;;
+    perf-cascade-strategy)    PERF_SCRIPT="$(dirname "$0")/score-perf-cascade.sh" ;;
+    *)                        PERF_SCRIPT="" ;;
+esac
+if [[ -n "$PERF_SCRIPT" ]]; then
+    PERF_OUT=$(bash "$PERF_SCRIPT" "$WORKTREE" 2>"$TMP/perf.err")
     PERF_EXIT=$?
     if [[ "$PERF_EXIT" -eq 0 ]]; then
         SUMMARY+="${PERF_OUT}"$'\n'
