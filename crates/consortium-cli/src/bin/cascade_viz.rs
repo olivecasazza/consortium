@@ -18,7 +18,7 @@ use clap::{Args, Parser, Subcommand};
 use is_terminal::IsTerminal;
 
 use consortium_cli::event_render::{
-    render_events, DelaySink, EventCollector, JsonlWriter, LiveTreeRenderer,
+    render_events, DelayingExecutor, EventCollector, JsonlWriter, LiveTreeRenderer,
 };
 use consortium_cli::tree::OutputFormat;
 use consortium_fanout_sim::fixtures::{
@@ -194,7 +194,7 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
     // as they're emitted, no buffering through a Vec.
     if cli.format == "jsonl" {
         let sink = JsonlWriter::new(Box::new(io::stdout()));
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink);
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink, None);
         return Ok(());
     }
 
@@ -207,19 +207,10 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
     if live_eligible {
         let color = !cli.no_color;
         let renderer = LiveTreeRenderer::new(color, cli.max_depth);
-        if let Some(ms) = args.per_round_delay_ms {
-            // Wrap the renderer in a DelaySink so each RoundCompleted
-            // gets a wall-time pause — makes the live re-render visible
-            // on the deterministic sim (which otherwise fires events
-            // in microseconds).
-            let delayed = DelaySink {
-                inner: &renderer,
-                delay: std::time::Duration::from_millis(ms),
-            };
-            run_scenario(args, closure_bytes, bandwidth, uplinks, &delayed);
-        } else {
-            run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer);
-        }
+        let delay = args
+            .per_round_delay_ms
+            .map(std::time::Duration::from_millis);
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer, delay);
         // The renderer prints the final frame on `Finished`; nothing more
         // for us to flush.
         return Ok(());
@@ -227,7 +218,7 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
 
     // Batch path: accumulate, then delegate to print_events.
     let collector = EventCollector::new();
-    run_scenario(args, closure_bytes, bandwidth, uplinks, &collector);
+    run_scenario(args, closure_bytes, bandwidth, uplinks, &collector, None);
     let events = collector.events();
     print_events(&events, cli)
 }
@@ -241,6 +232,7 @@ fn run_scenario<S: EventSink>(
     bandwidth: BandwidthDistribution,
     uplinks: Option<UplinkDistribution>,
     sink: &S,
+    per_round_delay: Option<std::time::Duration>,
 ) {
     let n_nodes = args.nodes;
 
@@ -276,8 +268,22 @@ fn run_scenario<S: EventSink>(
         profile
     };
 
-    let exec =
+    let base_exec =
         consortium_fanout_sim::DeterministicExecutor::new(closure_bytes, FailureSchedule::None);
+
+    // If --per-round-delay set, wrap the deterministic executor in a
+    // DelayingExecutor so each dispatch() sleeps for the configured
+    // duration. The sleep happens BETWEEN PlanComputed (renderer paints
+    // ⏵ spinners) and EdgeCompleted (renderer paints ✔), so the spinner
+    // frame is actually visible.
+    let delayed_exec = per_round_delay.map(|delay| DelayingExecutor {
+        inner: &base_exec as &dyn consortium_nix::cascade::RoundExecutor,
+        delay,
+    });
+    let exec: &dyn consortium_nix::cascade::RoundExecutor = delayed_exec
+        .as_ref()
+        .map(|d| d as &dyn consortium_nix::cascade::RoundExecutor)
+        .unwrap_or(&base_exec);
 
     match args.strategy.as_str() {
         "max-bottleneck" | "max-bottleneck-spanning" => {
@@ -286,7 +292,7 @@ fn run_scenario<S: EventSink>(
                 .seeded(seeded)
                 .network(net)
                 .strategy(&MaxBottleneckSpanning)
-                .executor(&exec)
+                .executor(exec)
                 .events(sink)
                 .run();
         }
@@ -296,7 +302,7 @@ fn run_scenario<S: EventSink>(
                 .seeded(seeded)
                 .network(net)
                 .strategy(&SteinerGreedy)
-                .executor(&exec)
+                .executor(exec)
                 .events(sink)
                 .run();
         }
@@ -306,7 +312,7 @@ fn run_scenario<S: EventSink>(
                 .seeded(seeded)
                 .network(net)
                 .strategy(&Log2FanOut)
-                .executor(&exec)
+                .executor(exec)
                 .events(sink)
                 .run();
         }

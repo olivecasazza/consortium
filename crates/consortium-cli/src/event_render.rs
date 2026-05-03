@@ -123,6 +123,12 @@ struct NodeState {
     has_closure: bool,
     /// True if this node appeared in any EdgeFailed as tgt.
     failed: bool,
+    /// True if this node is currently being served — set on PlanComputed
+    /// (we know the strategy assigned it this round), cleared on
+    /// EdgeCompleted (success → has_closure) or EdgeFailed (failure).
+    /// Drives the "spinning" ⏵ glyph during the wall-time the cascade
+    /// is actually doing the copy.
+    in_progress: bool,
 }
 
 impl NodeState {
@@ -134,6 +140,7 @@ impl NodeState {
             duration: None,
             has_closure: false,
             failed: false,
+            in_progress: false,
         }
     }
 }
@@ -207,20 +214,20 @@ impl EventSink for SnapshotAccumulator {
                 }
             }
             CascadeEvent::PlanComputed { assignments, .. } => {
-                // Register all planned edges as tentative parent→child relationships.
-                // If an edge later completes or fails, those events will refine the
-                // state. This ensures planned-but-unresolved nodes appear in the tree
-                // as Pending rather than being invisible orphans.
+                // Register all planned edges as tentative parent→child relationships
+                // AND mark targets as in_progress — that drives the "spinning"
+                // ⏵ glyph during the actual copy. EdgeCompleted/EdgeFailed will
+                // clear the spinner when the edge resolves.
                 for edge in assignments {
                     let src = edge.src;
                     let tgt = edge.tgt;
-                    acc.node(src); // ensure exists
+                    acc.node(src);
                     {
-                        // Only set tentative parent if no parent assigned yet.
                         let n = acc.node(tgt);
                         if n.parent.is_none() {
                             n.parent = Some(src);
                         }
+                        n.in_progress = true;
                     }
                     if !acc
                         .nodes
@@ -255,11 +262,12 @@ impl EventSink for SnapshotAccumulator {
                 {
                     acc.node(src).children.push(tgt);
                 }
-                // Register parent on tgt.
+                // Register parent on tgt + clear in_progress (it's done now).
                 {
                     let n = acc.node(tgt);
                     n.parent = Some(src);
                     n.has_closure = true;
+                    n.in_progress = false;
                     n.converged_round = Some(round);
                     n.duration = Some(dur);
                 }
@@ -269,7 +277,6 @@ impl EventSink for SnapshotAccumulator {
             } => {
                 let src = *src;
                 let tgt = *tgt;
-                // Still establish topology so failed nodes appear in tree.
                 if !acc
                     .nodes
                     .get(&src)
@@ -283,6 +290,7 @@ impl EventSink for SnapshotAccumulator {
                         n.parent = Some(src);
                     }
                     n.failed = true;
+                    n.in_progress = false; // resolved (to failure)
                 }
             }
             CascadeEvent::RoundCompleted {
@@ -325,6 +333,7 @@ fn build_node(id: NodeId, acc: &AccumulatorInner) -> OwnedTreeNode {
         None => Some(NodeStatus::Pending),
         Some(s) if s.failed => Some(NodeStatus::Failed),
         Some(s) if s.has_closure => Some(NodeStatus::Ok),
+        Some(s) if s.in_progress => Some(NodeStatus::InProgress),
         Some(_) => Some(NodeStatus::Pending),
     };
 
@@ -494,15 +503,69 @@ impl EventSink for LiveTreeRenderer {
     fn emit(&self, event: &CascadeEvent) {
         // Always update the in-memory tree.
         self.accumulator.emit(event);
-        // Repaint on round boundaries + final tick. Per-edge events are
-        // accumulated silently — keeps the redraw rate manageable at
-        // high N (1024 nodes × log₂ rounds → ~10k edge events).
+        // Repaint on:
+        // - PlanComputed → spinning state for this round's targets
+        // - RoundCompleted → done state for this round
+        // - Finished → final state (catches the very last RoundCompleted
+        //   if the cascade halted between rounds for any reason)
+        // Per-edge EdgeStarted/Completed/Failed events update the
+        // in-memory state but don't trigger repaints — the renderer
+        // shows a "before" frame (PlanComputed) and "after" frame
+        // (RoundCompleted) per round, with the wall-time between them
+        // owned by the executor (DelayingExecutor in demo mode, real
+        // network IO in production).
         match event {
-            CascadeEvent::RoundCompleted { .. } | CascadeEvent::Finished { .. } => {
+            CascadeEvent::PlanComputed { .. }
+            | CascadeEvent::RoundCompleted { .. }
+            | CascadeEvent::Finished { .. } => {
                 self.repaint();
             }
             _ => {}
         }
+    }
+}
+
+// ============================================================================
+// DelayingExecutor — wraps a RoundExecutor + sleeps inside dispatch
+// ============================================================================
+
+/// Wraps a [`consortium_nix::cascade::RoundExecutor`] and sleeps for a
+/// configurable duration *inside* `dispatch`. Critical for live demos:
+/// without this, the deterministic sim resolves a round in microseconds
+/// and the live renderer's "spinning" frame (rendered at PlanComputed)
+/// is invisible because EdgeCompleted fires before the human eye can
+/// register it.
+///
+/// The sleep happens between PlanComputed (which marks targets
+/// in_progress) and EdgeCompleted (which marks them has_closure), so
+/// the spinning ⏵ glyph is visible for `delay` real wall-time, then
+/// snaps to ✔ on the next frame.
+///
+/// **Demo / visualization only.** Putting this in production paths
+/// adds fake latency to real deploys.
+pub struct DelayingExecutor<'a> {
+    pub inner: &'a dyn consortium_nix::cascade::RoundExecutor,
+    pub delay: Duration,
+}
+
+impl<'a> consortium_nix::cascade::RoundExecutor for DelayingExecutor<'a> {
+    fn dispatch(
+        &self,
+        nodes: &[consortium_nix::cascade::CascadeNode],
+        edges: &[(
+            consortium_nix::cascade::NodeId,
+            consortium_nix::cascade::NodeId,
+        )],
+        net: &consortium_nix::cascade::NetworkProfile,
+    ) -> std::collections::HashMap<
+        (
+            consortium_nix::cascade::NodeId,
+            consortium_nix::cascade::NodeId,
+        ),
+        Result<Duration, consortium_nix::cascade::CascadeError>,
+    > {
+        std::thread::sleep(self.delay);
+        self.inner.dispatch(nodes, edges, net)
     }
 }
 
@@ -769,12 +832,21 @@ mod tests {
         assert_eq!(n1.status, Some(NodeStatus::Ok));
     }
 
-    /// 5. render_events Tree format includes status glyphs.
+    /// 5. render_events Tree format includes all four status glyphs.
+    /// Status semantics:
+    /// - PlanComputed marks a target as InProgress (⏵ "spinning")
+    /// - EdgeCompleted clears in_progress and sets has_closure (✔)
+    /// - EdgeFailed clears in_progress and sets failed (⚠)
+    /// - A node that's only listed in `Started` as a child (or never
+    ///   appears in any event but is reachable from a parent) renders
+    ///   as Pending (⏸)
     #[test]
     fn render_events_tree_format_includes_status_glyphs() {
-        // n3 is in plan but never completed → Pending ⏸
-        // n2 → ⚠ (EdgeFailed adds it even without PlanComputed)
-        let events_with_pending = vec![
+        // Plan: (0,1) completes → ✔, (0,3) is in plan AND completes
+        // before Finished → ✔. (0,2) fails → ⚠. n4 is in plan but
+        // never resolves (no EdgeCompleted/EdgeFailed) → stays ⏵
+        // (in_progress) when PlanComputed marked it.
+        let events = vec![
             started_event(&[0]),
             CascadeEvent::PlanComputed {
                 round: 0,
@@ -785,17 +857,23 @@ mod tests {
                     },
                     Edge {
                         src: node(0),
-                        tgt: node(3),
+                        tgt: node(2),
                     },
+                    Edge {
+                        src: node(0),
+                        tgt: node(4),
+                    }, // never resolves → ⏵
                 ],
             },
-            edge_completed(0, 0, 1, 5), // n1 → Ok ✔
-            edge_failed(0, 0, 2),       // n2 → ⚠
+            edge_completed(0, 0, 1, 5), // ✔
+            edge_failed(0, 0, 2),       // ⚠
+            // n4 left in_progress (PlanComputed marked it but no
+            // EdgeCompleted/EdgeFailed)
             finished(2, 1, 1),
         ];
 
         let out = render_events(
-            &events_with_pending,
+            &events,
             &OutputFormat::Tree {
                 max_depth: None,
                 color: false,
@@ -804,7 +882,13 @@ mod tests {
 
         assert!(out.contains("✔"), "missing ✔ (Ok glyph): {out}");
         assert!(out.contains("⚠"), "missing ⚠ (Failed glyph): {out}");
-        assert!(out.contains("⏸"), "missing ⏸ (Pending glyph): {out}");
+        // n4 still in_progress at the end → ⏵ glyph visible.
+        // This is the test that proves PlanComputed sets in_progress
+        // and unresolved nodes keep that state.
+        assert!(
+            out.contains("⏵"),
+            "missing ⏵ (InProgress glyph for unresolved planned target): {out}"
+        );
     }
 
     /// 7. LiveTreeRenderer emits a frame on each RoundCompleted + Finished,
@@ -864,12 +948,18 @@ mod tests {
             cursor_up_count >= 2,
             "expected >=2 ANSI escape sequences (one per repaint after the first), got {cursor_up_count}"
         );
-        // Synchronized-update begin marker fires on every repaint after the
-        // first. Three repaints (2 RoundCompleted + 1 Finished) → 2 begin markers.
+        // Synchronized-update begin marker fires on every repaint after
+        // the first. The renderer paints on PlanComputed, RoundCompleted,
+        // and Finished. The test events trigger:
+        //   PlanComputed (round 0) → frame 1 (no markers, first frame)
+        //   RoundCompleted (round 0) → frame 2 (markers)
+        //   RoundCompleted (round 1) → frame 3 (markers)
+        //   Finished → frame 4 (markers)
+        // = 3 non-first frames → 3 sync-update begin markers.
         let sync_begin_count = captured.matches("\x1b[?2026h").count();
         assert_eq!(
-            sync_begin_count, 2,
-            "expected exactly 2 synchronized-update begin markers (one per non-first repaint); got {sync_begin_count}\n{captured:?}"
+            sync_begin_count, 3,
+            "expected exactly 3 synchronized-update begin markers (PlanComputed first frame + RoundCompleted×2 + Finished); got {sync_begin_count}\n{captured:?}"
         );
         // n0, n1, n2 should all eventually appear in the captured output.
         assert!(captured.contains("n0"));
