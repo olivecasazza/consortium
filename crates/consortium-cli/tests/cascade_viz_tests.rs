@@ -16,13 +16,13 @@ fn cascade_viz_live_tree_renders() {
         .assert()
         .success()
         // host-N labels from CascadeTreeNode::label()
-        .stdout(predicate::str::contains("host-"))
+        // event_render uses NodeId's Display ("nN"); richer labels pending
+        // an event_render constructor that takes a NodeId → addr map.
+        .stdout(predicate::str::contains("n0"))
         // box-drawing connectors from tree::render
         .stdout(predicate::str::contains("├──"))
         // ✔ glyph for converged nodes (NodeStatus::Ok)
-        .stdout(predicate::str::contains("✔"))
-        // cascade synthetic root label always present
-        .stdout(predicate::str::contains("cascade ["));
+        .stdout(predicate::str::contains("✔"));
 }
 
 // ─── live json output ─────────────────────────────────────────────────────────
@@ -79,7 +79,9 @@ fn cascade_viz_live_max_bottleneck_strategy() {
         .args(["live", "-n", "8", "-s", "max-bottleneck", "--no-color"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("host-"));
+        // event_render uses NodeId's Display ("nN"); richer labels pending
+        // an event_render constructor that takes a NodeId → addr map.
+        .stdout(predicate::str::contains("n0"));
 }
 
 #[test]
@@ -88,7 +90,9 @@ fn cascade_viz_live_steiner_strategy() {
         .args(["live", "-n", "8", "-s", "steiner", "--no-color"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("host-"));
+        // event_render uses NodeId's Display ("nN"); richer labels pending
+        // an event_render constructor that takes a NodeId → addr map.
+        .stdout(predicate::str::contains("n0"));
 }
 
 // ─── replay subcommand ───────────────────────────────────────────────────────
@@ -124,7 +128,9 @@ fn cascade_viz_replay_renders_tree() {
         .args(["replay", trace_path.to_str().unwrap(), "--no-color"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("host-"))
+        // event_render uses NodeId's Display ("nN"); richer labels pending
+        // an event_render constructor that takes a NodeId → addr map.
+        .stdout(predicate::str::contains("n0"))
         .stdout(predicate::str::contains("✔"));
 }
 
@@ -137,16 +143,26 @@ fn cascade_viz_replay_bad_file_errors() {
         .stderr(predicate::str::contains("failed to open trace file"));
 }
 
-// ─── node count propagates ───────────────────────────────────────────────────
+// ─── all 4 nodes converge ────────────────────────────────────────────────────
 
 #[test]
-fn cascade_viz_live_node_count_in_label() {
-    cascade_viz()
+fn cascade_viz_live_renders_all_requested_nodes() {
+    let output = cascade_viz()
         .args(["live", "-n", "4", "--no-color"])
-        .assert()
-        .success()
-        // The synthetic root label always contains "nodes=4"
-        .stdout(predicate::str::contains("nodes=4"));
+        .output()
+        .expect("failed to run cascade-viz");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // event_render's SnapshotAccumulator builds the tree rooted at
+    // each seeded node; with 4 nodes + single seed, all 4 NodeId
+    // displays should appear.
+    for n in 0..4 {
+        assert!(
+            stdout.contains(&format!("n{n}")),
+            "expected n{n} in output: {stdout}"
+        );
+    }
 }
 
 // ─── depth limit ─────────────────────────────────────────────────────────────
@@ -160,8 +176,8 @@ fn cascade_viz_max_depth_zero_shows_only_root() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Root label present.
-    assert!(stdout.contains("cascade ["), "missing root: {stdout}");
+    // Seed node (n0) is the root at depth 0.
+    assert!(stdout.contains("n0"), "missing seed root: {stdout}");
     // At depth 0 all children are hidden behind a truncation marker.
     assert!(
         stdout.contains("more)"),
