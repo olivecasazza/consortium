@@ -194,6 +194,29 @@ impl SnapshotAccumulator {
         let acc = self.inner.lock().unwrap();
         build_tree(&acc)
     }
+
+    /// Aggregate counts per status: `(ok, in_progress, pending, failed)`.
+    /// Used by [`LiveTreeRenderer`] to render the nom-style summary
+    /// row at the bottom of each frame: `∑ N✔ M⏵ K⏸ J⚠`.
+    pub fn status_counts(&self) -> (usize, usize, usize, usize) {
+        let acc = self.inner.lock().unwrap();
+        let mut ok = 0;
+        let mut in_progress = 0;
+        let mut pending = 0;
+        let mut failed = 0;
+        for state in acc.nodes.values() {
+            if state.failed {
+                failed += 1;
+            } else if state.has_closure {
+                ok += 1;
+            } else if state.in_progress {
+                in_progress += 1;
+            } else {
+                pending += 1;
+            }
+        }
+        (ok, in_progress, pending, failed)
+    }
 }
 
 impl Default for SnapshotAccumulator {
@@ -421,14 +444,14 @@ pub struct LiveTreeRenderer {
     /// Optional Mutex<Vec<u8>> for testing — when Some, frames go here
     /// instead of stdout. Production passes None.
     capture: Option<Mutex<Vec<u8>>>,
-    /// Tracks whether we've entered the alternate screen buffer.
-    /// Mirrors what top/htop/vim/less do: a separate screen with no
-    /// scrollback, so cursor-home + clear works reliably regardless of
-    /// frame size or terminal viewport height. Without this, frames
-    /// larger than the viewport scroll content off the top into
-    /// scrollback, and subsequent redraws can't walk up to clear them
-    /// → user sees multiple "n0" headers piling up as the tree grows.
-    alt_screen_active: Mutex<bool>,
+    /// Number of lines printed in the last frame. On the next repaint
+    /// we walk the cursor up this many lines and clear each, then
+    /// write the new frame. This mirrors nix-output-monitor's exact
+    /// idiom (NOM/IO.hs `writeStateToScreen`): erase-in-place using
+    /// `\x1b[2K` + `\x1b[1A\x1b[2K`×(N-1) rather than alt-screen.
+    /// Wrapped in iTerm2 synchronized-update markers to avoid
+    /// mid-frame flicker on terminals that support them.
+    last_printed_lines: Mutex<usize>,
 }
 
 impl LiveTreeRenderer {
@@ -438,13 +461,12 @@ impl LiveTreeRenderer {
             color,
             max_depth,
             capture: None,
-            alt_screen_active: Mutex::new(false),
+            last_printed_lines: Mutex::new(0),
         }
     }
 
     /// Test-only constructor that captures frames into an internal buffer
-    /// instead of writing to stdout. Skips alt-screen mode (tests don't
-    /// have a real terminal to swap buffers on).
+    /// instead of writing to stdout.
     #[doc(hidden)]
     pub fn with_capture(color: bool, max_depth: Option<usize>) -> Self {
         Self {
@@ -452,7 +474,7 @@ impl LiveTreeRenderer {
             color,
             max_depth,
             capture: Some(Mutex::new(Vec::new())),
-            alt_screen_active: Mutex::new(false),
+            last_printed_lines: Mutex::new(0),
         }
     }
 
@@ -465,49 +487,12 @@ impl LiveTreeRenderer {
             .unwrap_or_default()
     }
 
-    /// Switch the terminal to its alternate screen buffer + hide the
-    /// cursor. Idempotent; a no-op in capture mode.
-    fn enter_alt_screen(&self) {
-        if self.capture.is_some() {
-            return;
-        }
-        let mut active = self.alt_screen_active.lock().unwrap();
-        if *active {
-            return;
-        }
-        let mut stdout = io::stdout().lock();
-        // \x1b[?1049h: enter alt screen
-        // \x1b[?25l:   hide cursor
-        // \x1b[H:      cursor home
-        let _ = stdout.write_all(b"\x1b[?1049h\x1b[?25l\x1b[H");
-        let _ = stdout.flush();
-        *active = true;
-    }
-
-    /// Restore the main screen buffer + cursor visibility. Called on
-    /// Finished and from Drop (panic safety).
-    fn exit_alt_screen(&self) {
-        if self.capture.is_some() {
-            return;
-        }
-        let mut active = self.alt_screen_active.lock().unwrap();
-        if !*active {
-            return;
-        }
-        let mut stdout = io::stdout().lock();
-        // \x1b[?25h:   show cursor
-        // \x1b[?1049l: leave alt screen (restores prior buffer contents)
-        let _ = stdout.write_all(b"\x1b[?25h\x1b[?1049l");
-        let _ = stdout.flush();
-        *active = false;
-    }
-
-    /// Render the current tree state to the alt screen (or capture
-    /// buffer in tests). Cursor goes to home, screen is cleared, frame
-    /// is written. Simple + reliable regardless of frame size.
-    fn repaint(&self) {
+    /// Render the current tree state, wrapped with HEAVY section
+    /// borders (┏━ ┃ ┗━) and a summary row at the bottom — exactly the
+    /// frame shape `nom` produces (NOM/Print.hs `printSections`).
+    fn build_frame(&self) -> String {
         let tree = self.accumulator.to_tree();
-        let frame = crate::tree::render(
+        let inner = crate::tree::render(
             &tree,
             &OutputFormat::Tree {
                 max_depth: self.max_depth,
@@ -515,36 +500,63 @@ impl LiveTreeRenderer {
             },
         );
 
+        // Count statuses for the summary row.
+        let (ok, in_progress, pending, failed) = self.accumulator.status_counts();
+
+        let mut frame = String::with_capacity(inner.len() + 256);
+        // Top border: nom uses ┏━━━ for the start of each section.
+        frame.push_str("┏━ Cascade deploy\n");
+        // Body: prefix every tree line with ┃  (the vertical chrome).
+        for line in inner.lines() {
+            frame.push_str("┃  ");
+            frame.push_str(line);
+            frame.push('\n');
+        }
+        // Bottom border: ┗━ + summary row, nom-style: ∑ N✔ M⏵ K⏸ J⚠
+        frame.push_str(&format!("┗━ ∑ {ok}✔ {in_progress}⏵ {pending}⏸ {failed}⚠\n"));
+        frame
+    }
+
+    /// Erase-in-place repaint. Walks the cursor up `last_printed_lines`
+    /// and clears each line individually — exactly the sequence
+    /// `nom`'s `writeStateToScreen` emits (NOM/IO.hs). Wrapped in
+    /// synchronized-update markers so terminals that support them
+    /// (iTerm2, alacritty, kitty, recent gnome-terminal) display the
+    /// frame atomically without flicker.
+    fn repaint(&self) {
+        let frame = self.build_frame();
+        let new_lines = frame.lines().count();
+        let mut last = self.last_printed_lines.lock().unwrap();
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 64);
+        // begin synchronized update
+        bytes.extend_from_slice(b"\x1b[?2026h");
+        // Erase last frame: clear current line, then for each previous
+        // line walk up + clear. This mirrors nom's stimesMonoid pattern
+        // exactly (NOM/IO.hs `writeStateToScreen`).
+        if *last > 0 {
+            // clear current line
+            bytes.extend_from_slice(b"\x1b[2K");
+            for _ in 1..*last {
+                // cursor up one line, clear that line
+                bytes.extend_from_slice(b"\x1b[1A\x1b[2K");
+            }
+            // cursor to start of line so next write begins flush-left
+            bytes.extend_from_slice(b"\r");
+        }
+        bytes.extend_from_slice(frame.as_bytes());
+        // end synchronized update
+        bytes.extend_from_slice(b"\x1b[?2026l");
+
         if let Some(cap) = &self.capture {
-            // Capture mode: prepend the cursor-home + clear escapes so
-            // tests can see frame boundaries, but don't actually mess
-            // with the terminal.
-            let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 8);
-            bytes.extend_from_slice(b"\x1b[H\x1b[2J");
-            bytes.extend_from_slice(frame.as_bytes());
             cap.lock().unwrap().extend_from_slice(&bytes);
-            return;
+        } else {
+            let mut stdout = io::stdout().lock();
+            let _ = stdout.write_all(&bytes);
+            let _ = stdout.flush();
         }
 
-        // Production: ensure alt screen is active, cursor home, clear,
-        // print frame. iTerm2 synchronized-update markers wrap the
-        // operation to avoid mid-frame flicker on terminals that
-        // support them; older terminals ignore them silently.
-        self.enter_alt_screen();
-        let mut stdout = io::stdout().lock();
-        let _ = stdout.write_all(b"\x1b[?2026h\x1b[H\x1b[2J");
-        let _ = stdout.write_all(frame.as_bytes());
-        let _ = stdout.write_all(b"\x1b[?2026l");
-        let _ = stdout.flush();
-    }
-}
-
-impl Drop for LiveTreeRenderer {
-    /// Restore the terminal on drop in case the cascade panicked
-    /// before Finished fired. Without this, the user is stuck in alt
-    /// screen with the cursor hidden until they reset their terminal.
-    fn drop(&mut self) {
-        self.exit_alt_screen();
+        *last = new_lines;
     }
 }
 
@@ -552,33 +564,14 @@ impl EventSink for LiveTreeRenderer {
     fn emit(&self, event: &CascadeEvent) {
         // Always update the in-memory tree.
         self.accumulator.emit(event);
-        // Repaint on:
-        // - PlanComputed → spinning state for this round's targets
-        // - RoundCompleted → done state for this round
-        // - Finished → final state, then exit alt screen + print final
-        //   frame to main buffer so the user has a permanent record.
+        // Repaint on round boundaries + final tick. Per-edge events
+        // accumulate silently — keeps redraw rate manageable. Following
+        // nom's pattern: erase-in-place at frame time, no alt screen.
         match event {
-            CascadeEvent::PlanComputed { .. } | CascadeEvent::RoundCompleted { .. } => {
+            CascadeEvent::PlanComputed { .. }
+            | CascadeEvent::RoundCompleted { .. }
+            | CascadeEvent::Finished { .. } => {
                 self.repaint();
-            }
-            CascadeEvent::Finished { .. } => {
-                self.repaint();
-                // Render the final frame separately for the main buffer
-                // so the user sees the converged tree after we exit
-                // alt screen.
-                let final_frame = crate::tree::render(
-                    &self.accumulator.to_tree(),
-                    &OutputFormat::Tree {
-                        max_depth: self.max_depth,
-                        color: self.color,
-                    },
-                );
-                self.exit_alt_screen();
-                if self.capture.is_none() {
-                    let mut stdout = io::stdout().lock();
-                    let _ = stdout.write_all(final_frame.as_bytes());
-                    let _ = stdout.flush();
-                }
             }
             _ => {}
         }
@@ -994,25 +987,46 @@ mod tests {
 
         let captured = renderer.captured();
 
-        // Each frame is prefixed with cursor-home + clear-screen
-        // (\x1b[H\x1b[2J) — the alt-screen redraw idiom. PlanComputed,
-        // RoundCompleted, and Finished each trigger a repaint. With
-        // these test events:
-        //   PlanComputed (round 0) → frame 1
-        //   RoundCompleted (round 0) → frame 2
-        //   RoundCompleted (round 1) → frame 3
-        //   Finished → frame 4
-        // = 4 frames, 4 cursor-home sequences.
-        let cursor_home_count = captured.matches("\x1b[H").count();
+        // Replicates nom's `writeStateToScreen` exactly: each frame is
+        // wrapped in synchronized-update markers `\x1b[?2026h` …
+        // `\x1b[?2026l`. The first frame has no preceding clear (last
+        // was 0). Subsequent frames clear the previous frame line-by-
+        // line: `\x1b[2K` for the bottom line, then `\x1b[1A\x1b[2K`
+        // for each line above.
+        //
+        // Test events: PlanComputed → frame 1 (no clears),
+        // RoundCompleted×2 → frames 2-3, Finished → frame 4. Total
+        // 4 sync-update begin markers.
+        let sync_begin = captured.matches("\x1b[?2026h").count();
         assert_eq!(
-            cursor_home_count, 4,
-            "expected exactly 4 cursor-home sequences (one per repaint); got {cursor_home_count}\n{captured:?}"
+            sync_begin, 4,
+            "expected exactly 4 synchronized-update begin markers (one per repaint); got {sync_begin}\n{captured:?}"
         );
-        let clear_screen_count = captured.matches("\x1b[2J").count();
+        let sync_end = captured.matches("\x1b[?2026l").count();
         assert_eq!(
-            clear_screen_count, 4,
-            "expected exactly 4 clear-screen sequences (one per repaint); got {clear_screen_count}\n{captured:?}"
+            sync_end, 4,
+            "synchronized-update markers should be balanced"
         );
+        // Frames 2, 3, 4 each emit at least one clear-line escape
+        // (\x1b[2K) since they're erasing prior content. Don't assert
+        // exact count — depends on how many lines the prior frame had.
+        let clear_lines = captured.matches("\x1b[2K").count();
+        assert!(
+            clear_lines >= 3,
+            "expected at least 3 clear-line escapes (one per non-first frame); got {clear_lines}\n{captured:?}"
+        );
+        // Every frame should include the heavy section border ┏━ at top
+        // and ┗━ at bottom — that's how nom wraps each section.
+        assert!(
+            captured.contains("┏━"),
+            "missing top border ┏━: {captured:?}"
+        );
+        assert!(
+            captured.contains("┗━"),
+            "missing bottom border ┗━: {captured:?}"
+        );
+        // Bottom border carries a summary row with at least one ✔ count.
+        assert!(captured.contains("✔"), "missing ✔ glyph: {captured:?}");
         // n0, n1, n2 should all eventually appear in the captured output.
         assert!(captured.contains("n0"));
         assert!(captured.contains("n1"));
