@@ -26,6 +26,7 @@ pub mod activate;
 pub mod build;
 pub mod cascade;
 pub mod cascade_events;
+pub mod cascade_executor;
 pub mod cascade_strategies;
 pub mod cascade_trace;
 pub mod config;
