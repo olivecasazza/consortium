@@ -1,0 +1,43 @@
+# Sample cascade-copy inventory for the nixlab fleet — SAFE SUBSET.
+#
+# Intentionally excludes:
+#   - K3s control-plane nodes (contra, gcp-cp): not safe to subject to
+#     experimental cascade ordering — they hold etcd quorum.
+#   - GCP relay (gcp-udp-relay): WireGuard hub, not a deploy target.
+#   - traitor: DHCP-assigned IP, drifts; bring up with cast first.
+#
+# Includes:
+#   - seir as seed (workstation, fastest builder, has the closure already
+#     when run from there).
+#   - hp01-hp03 (ProLiant workers, on rack-1, fast LAN).
+#   - mm01-mm05 (Mac Mini agents, on rack-2).
+#
+# To use:
+#   1. SSH to seir (or run `cascade-copy` locally if seir IS your dev box).
+#   2. Pick a small, known-good store path you don't mind re-copying:
+#         nix path-info -r .#nixosConfigurations.seir.config.system.build.toplevel | tail -1
+#      Or build something tiny first:
+#         nix build nixpkgs#hello --no-link --print-out-paths
+#   3. Run:
+#         cascade-copy <path> -i examples/inventories/nixlab-safe.toml
+#
+# IPs are documentation; the SSH `user@host` form below relies on the
+# host's SSH config / known_hosts to resolve. If you don't have nixlab
+# DNS locally, replace each `root@hpNN` with `root@192.168.1.1NN` etc.
+# (See nixlab/lib/hosts.nix for the IP source-of-truth.)
+
+# Seed: where the closure originates. nix copy from here runs LOCALLY
+# (no SSH wrap). Use the address of whichever box has the path built.
+seed = "root@seir"
+
+# Targets: every other host the cascade should distribute to.
+nodes = [
+    "root@hp01",
+    "root@hp02",
+    "root@hp03",
+    "root@mm01",
+    "root@mm02",
+    "root@mm03",
+    "root@mm04",
+    "root@mm05",
+]
