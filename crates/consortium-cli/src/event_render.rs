@@ -566,14 +566,14 @@ impl LiveTreeRenderer {
             frame.push_str(line);
             frame.push('\n');
         }
-        // Bottom border: ┗━ + summary row, nom-style: ∑ N✔ M⏵ K⏸ J⚠
-        // Pad each count to 4 chars right-aligned so the line doesn't
-        // wobble as numbers grow (1 → 53 → 121). Width matches a
-        // typical small-fleet upper bound; truncates gracefully on
-        // huge counts because format! ignores width when the value
-        // is wider.
+        // Bottom border: ┗━ + summary row.
+        // Format: `∑ || N ✔ || M ⏵ || K ⏸ || J ⚠`
+        // - `||` separator between fields makes them visually distinct
+        //   without leaning on whitespace alignment (which falls apart
+        //   when counts grow to 3+ digits)
+        // - single space between count and glyph for readability
         frame.push_str(&format!(
-            "┗━ ∑ {ok:>4}✔  {in_progress:>4}⏵  {pending:>4}⏸  {failed:>4}⚠\n"
+            "┗━ ∑ || {ok} ✔ || {in_progress} ⏵ || {pending} ⏸ || {failed} ⚠\n"
         ));
 
         // Truncate to terminal height (NOM/IO.hs `truncateRows`).
