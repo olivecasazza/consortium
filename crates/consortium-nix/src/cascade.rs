@@ -259,6 +259,19 @@ pub enum CascadeError {
 }
 
 impl CascadeError {
+    /// Whether the error is "transient" — a single edge failure that
+    /// might succeed on retry from a different source. The coordinator
+    /// uses this to decide whether to mark a target as permanently
+    /// failed (dead-letter) or leave it open for retry:
+    ///
+    /// - `Copy` → transient (network glitch, transient bandwidth issue)
+    /// - `SshHandshake`, `Activation`, `Partitioned` → permanent
+    ///   (target node is dead / unreachable / activation failure)
+    /// - `SubtreeAggregate` → never used as a per-edge outcome
+    pub fn is_transient(&self) -> bool {
+        matches!(self, CascadeError::Copy { .. })
+    }
+
     /// Fold a parent's children's errors into a SubtreeAggregate.
     pub fn merge(parent: NodeId, errors: Vec<CascadeError>) -> Self {
         Self::SubtreeAggregate {
@@ -610,7 +623,7 @@ impl NetworkBuilder {
 /// kept for backwards compatibility and for the builder's `.run()` to
 /// delegate to.
 pub fn run_cascade(
-    mut nodes: Vec<CascadeNode>,
+    nodes: Vec<CascadeNode>,
     seeded: HashSet<NodeId>,
     net: NetworkProfile,
     strategy: &dyn CascadeStrategy,
@@ -661,6 +674,10 @@ pub fn run_cascade_with_events(
 
     let mut has_closure = seeded.clone();
     let mut attempted: HashSet<(NodeId, NodeId)> = HashSet::new();
+    // failed_nodes contains targets that hit a PERMANENT error
+    // (Activation, SshHandshake, Partitioned — i.e. the node is
+    // genuinely dead/unreachable). Transient Copy errors do NOT mark
+    // failed_nodes; the strategy retries from an alternate source.
     let mut failed_nodes: HashSet<NodeId> = HashSet::new();
     let mut round_durations: Vec<Duration> = Vec::new();
 
@@ -769,18 +786,26 @@ pub fn run_cascade_with_events(
                     }
                 }
                 Some(Err(err)) => {
-                    failed_nodes.insert(*tgt);
                     // Record parent linkage even on failure so error
                     // bubbling has a path. The src is the parent that
                     // tried to serve this target.
                     if let Some(node) = nodes.iter_mut().find(|n| n.id == *tgt) {
                         node.parent = Some(*src);
                     }
+                    // Permanently mark target as failed ONLY for non-
+                    // transient errors. CascadeError::Copy = transient
+                    // (retry from another source via the strategy's
+                    // fallback). Activation / SshHandshake / Partitioned
+                    // = permanent (target is dead/unreachable; orphan
+                    // re-routing kicks in for its descendants).
+                    if !err.is_transient() {
+                        failed_nodes.insert(*tgt);
+                    }
                     pending_errors.entry(*src).or_default().push(err.clone());
                 }
                 None => {
-                    // Executor dropped the edge — treat as failure.
-                    failed_nodes.insert(*tgt);
+                    // Executor dropped the edge — treat the same as a
+                    // transient Copy failure (let the strategy retry).
                     let err = CascadeError::Copy {
                         node: *tgt,
                         stderr: format!("executor returned no result for edge {src} -> {tgt}"),
@@ -1156,12 +1181,19 @@ mod tests {
         assert!(!result.is_success(), "expected failure");
         let failed = result.failed.expect("failed should be Some");
         let affected = failed.affected_nodes();
-        assert_eq!(affected, vec![NodeId(6)], "only node 6 should be affected");
-        // Walk should give us depth 1 (one SubtreeAggregate above the leaf
-        // is round-0's pending bucket → 2's bucket → bubble to root).
-        let mut leaves = Vec::new();
-        failed.walk_leaves(|depth, e| leaves.push((depth, format!("{e:?}"))));
-        assert_eq!(leaves.len(), 1);
+        // Node 6 may appear multiple times (one per retry attempt from
+        // alternate sources, since the coordinator no longer marks
+        // targets permanently failed on a single edge failure). Dedupe.
+        let unique: std::collections::HashSet<_> = affected.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "only one unique failed node expected, got {affected:?}"
+        );
+        assert!(
+            unique.contains(&NodeId(6)),
+            "node 6 should be in affected, got {affected:?}"
+        );
     }
 
     #[test]

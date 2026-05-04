@@ -173,21 +173,24 @@ fn error_tree_shape_under_killed_node() {
         });
         let affected = err.affected_nodes();
 
-        // EXACTLY one affected node, and it's the one we killed.
-        // Tightened from `contains(&15)` so we'd catch cascading
-        // failures that drag in extra nodes (none should — strategies
-        // route around `failed_nodes`).
+        // The unique affected set is exactly the killed node — no
+        // cascading failures dragging in extra nodes.
+        // Note: NodeId(15) may appear multiple times in `affected`
+        // because the coordinator no longer permanently marks targets
+        // as failed on a single edge failure; strategies retry from
+        // alternate sources, and each retry adds another error to
+        // the tree. We dedupe to count unique affected nodes.
+        let unique: std::collections::HashSet<_> = affected.iter().copied().collect();
         assert_eq!(
-            affected.len(),
+            unique.len(),
             1,
-            "[{}] expected exactly 1 affected node (only the killed one); got {:?}",
+            "[{}] expected exactly 1 unique affected node; got {:?}",
             s.name(),
             affected
         );
-        assert_eq!(
-            affected[0],
-            NodeId(15),
-            "[{}] expected affected = [NodeId(15)]; got {:?}",
+        assert!(
+            unique.contains(&NodeId(15)),
+            "[{}] expected affected to include NodeId(15); got {:?}",
             s.name(),
             affected
         );
@@ -221,17 +224,26 @@ fn error_walk_yields_leaves_in_depth_order() {
         CascadeError::Partitioned { tgt, .. } => leaves.push((depth, *tgt)),
         _ => {}
     });
+    // The killed node may appear multiple times in the leaves because
+    // the strategy retries from alternate sources after each failure
+    // (coordinator no longer marks targets permanently failed on a
+    // single edge failure). Dedupe by node id and assert it's the
+    // killed one.
+    assert!(
+        !leaves.is_empty(),
+        "expected at least 1 leaf for failed cascade: {leaves:?}"
+    );
+    let unique_nodes: std::collections::HashSet<_> = leaves.iter().map(|(_, n)| *n).collect();
     assert_eq!(
-        leaves.len(),
+        unique_nodes.len(),
         1,
-        "expected exactly 1 leaf for single-node failure: {leaves:?}"
+        "expected exactly 1 unique failed node, got {leaves:?}"
     );
-    let (depth, node) = leaves[0];
-    assert_eq!(
-        node,
-        NodeId(7),
-        "leaf should be the killed node, got {node:?}"
+    assert!(
+        unique_nodes.contains(&NodeId(7)),
+        "leaves should contain killed node NodeId(7), got {leaves:?}"
     );
+    let depth = leaves[0].0;
     // Tightened: a single failed-target failure should bubble at depth
     // <= 2 — coordinator either emits the naked leaf (depth 0) or wraps
     // it in 1-2 SubtreeAggregates (depth 1-2 for the parent and

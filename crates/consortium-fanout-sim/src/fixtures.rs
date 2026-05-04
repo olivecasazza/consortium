@@ -243,9 +243,14 @@ impl FailureSchedule {
             FailureSchedule::None => None,
             FailureSchedule::KillNodeAtRound { node, round: r } => {
                 if round >= *r && tgt == *node {
-                    Some(CascadeError::Copy {
+                    // Permanent failure: the node is dead. Use
+                    // Activation error (signals "target node failed
+                    // to activate the closure") so the coordinator
+                    // marks it in failed_nodes. Orphan re-routing
+                    // then kicks in for any descendants in level-tree.
+                    Some(CascadeError::Activation {
                         node: tgt,
-                        stderr: format!("node {tgt} killed at round {r} (current round {round})"),
+                        stage: "killed",
                     })
                 } else {
                     None
@@ -263,26 +268,20 @@ impl FailureSchedule {
                 }
             }
             FailureSchedule::Random { fraction, seed } => {
-                // Deterministic per-edge decision: hash (seed, round, src, tgt)
-                // and compare against fraction. Same inputs → same outcome,
-                // so a "weird" failure pattern is reproducible from the seed.
-                // Different rounds for the same edge get different hashes,
-                // so a retry from a different src has a fresh chance (which
-                // is what gives orphan re-routing a chance to succeed).
-                use std::hash::{BuildHasher, Hasher};
-                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-                // Use a deterministic hasher seeded from `seed` rather than
-                // RandomState (which is process-random). RandomState above
-                // is thrown away — it's the import we need; below we use
-                // FxHash-like XOR mixing for determinism.
+                // Deterministic per-edge decision: mix (seed, round, src,
+                // tgt) into a u64 with FxHash-style XOR/multiply, then
+                // map to [0, 1) and compare against fraction. Same
+                // inputs → same outcome, so a failure pattern is
+                // reproducible from the seed. Different rounds get
+                // different hashes, so a retry has a fresh chance.
                 let mut state: u64 = *seed;
                 state ^= (round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
                 state ^= (src.0 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
                 state ^= (tgt.0 as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
                 state = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
                 state ^= state >> 33;
-                let _ = h; // suppress unused
-                           // Map to [0.0, 1.0): take low 53 bits, divide by 2^53.
+                // Map to [0.0, 1.0): take high 53 bits (after the >>33
+                // mixing has scrambled them), divide by 2^53.
                 let p = ((state >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
                 if p < fraction.clamp(0.0, 1.0) {
                     Some(CascadeError::Copy {

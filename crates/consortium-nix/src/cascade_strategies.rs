@@ -234,10 +234,13 @@ impl LevelTreeFanOut {
         Self { fanout }
     }
 
-    /// Children of `id` in the heap-style F-ary tree, where the seed
-    /// is at id 0. Returns child ids in `[id*F + 1, id*F + F]`,
-    /// clipped to `< n_nodes`.
-    fn tree_children(&self, id: NodeId, n_nodes: u32) -> Vec<NodeId> {
+    /// Children of `id` in the heap-style F-ary tree.
+    ///
+    /// Currently unused by `next_round` (which iterates by target and
+    /// walks UP via `alive_ancestor`), but kept for tests + future
+    /// use cases that need to enumerate the planned tree-shape.
+    #[allow(dead_code)]
+    pub(crate) fn tree_children(&self, id: NodeId, n_nodes: u32) -> Vec<NodeId> {
         let base = id.0.checked_mul(self.fanout);
         let Some(base) = base else { return Vec::new() };
         (1..=self.fanout)
@@ -311,6 +314,18 @@ impl CascadeStrategy for LevelTreeFanOut {
         // alive ancestor (the orphan re-routing mechanism). This keeps
         // failures localized — one failed node only stalls its OWN
         // serving attempts, not its entire subtree.
+        // Pre-compute the set of "alive sources" (any node with the
+        // closure that isn't in failed_nodes) for fallback re-routing
+        // when the heap ancestor chain is exhausted.
+        let mut alive_sources: Vec<NodeId> = state
+            .nodes
+            .iter()
+            .filter(|n| state.has_closure.contains(&n.id))
+            .filter(|n| !state.failed_nodes.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        alive_sources.sort();
+
         for tgt_id in 0..n_nodes {
             let tgt = NodeId(tgt_id);
             if state.has_closure.contains(&tgt) {
@@ -319,22 +334,46 @@ impl CascadeStrategy for LevelTreeFanOut {
             if state.failed_nodes.contains(&tgt) {
                 continue;
             }
-            // Find an alive ancestor — tree-parent first, then walk up.
-            let Some(src) = self.alive_ancestor(tgt, state) else {
-                continue;
-            };
-            if state.attempted.contains(&(src, tgt)) {
-                continue;
-            }
-            if net.is_partitioned(src, tgt) {
-                continue;
-            }
-            // Avoid duplicates if multiple orphans pick the same src
-            // — the coordinator dedups on (src, tgt) anyway, but
-            // skipping here keeps the plan tidy.
             if used_targets.contains(&tgt) {
                 continue;
             }
+
+            // Try the heap ancestor chain first (preserves the
+            // canonical level-by-level tree shape).
+            let mut chosen: Option<NodeId> = None;
+            let heap_anc = self.alive_ancestor(tgt, state);
+            let mut needs_retry_fallback = false;
+            if let Some(anc) = heap_anc {
+                if !state.attempted.contains(&(anc, tgt)) && !net.is_partitioned(anc, tgt) {
+                    chosen = Some(anc);
+                } else {
+                    // Heap ancestor was alive but the edge can't be
+                    // used (already tried, or partitioned). Engage
+                    // fallback for this target — try a sibling source.
+                    needs_retry_fallback = true;
+                }
+            }
+            // If alive_ancestor returned None, that's the "wait for
+            // not-yet-ready parent" case. DO NOT fall back to an
+            // unrelated source — that would break the level-by-level
+            // reveal by short-circuiting every target to the seed in
+            // round 0. Fallback only engages on genuine retries
+            // (heap path returned a source but its edge is unusable).
+
+            if chosen.is_none() && needs_retry_fallback {
+                for &src in &alive_sources {
+                    if state.attempted.contains(&(src, tgt)) {
+                        continue;
+                    }
+                    if net.is_partitioned(src, tgt) {
+                        continue;
+                    }
+                    chosen = Some(src);
+                    break;
+                }
+            }
+
+            let Some(src) = chosen else { continue };
             assignments.push((src, tgt));
             used_targets.insert(tgt);
         }
@@ -409,9 +448,13 @@ mod tests {
                 .iter()
                 .map(|(src, tgt)| {
                     let outcome = if self.dead.contains(tgt) {
-                        Err(crate::cascade::CascadeError::Copy {
+                        // Use Activation (permanent) so the coordinator
+                        // marks tgt in failed_nodes — orphan re-routing
+                        // depends on this signal.
+                        let _ = src;
+                        Err(crate::cascade::CascadeError::Activation {
                             node: *tgt,
-                            stderr: format!("simulated dead target {tgt} from {src}"),
+                            stage: "simulated dead target",
                         })
                     } else {
                         Ok(Duration::from_millis(1))

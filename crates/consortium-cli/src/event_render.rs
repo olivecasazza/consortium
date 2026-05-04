@@ -567,7 +567,14 @@ impl LiveTreeRenderer {
             frame.push('\n');
         }
         // Bottom border: ┗━ + summary row, nom-style: ∑ N✔ M⏵ K⏸ J⚠
-        frame.push_str(&format!("┗━ ∑ {ok}✔ {in_progress}⏵ {pending}⏸ {failed}⚠\n"));
+        // Pad each count to 4 chars right-aligned so the line doesn't
+        // wobble as numbers grow (1 → 53 → 121). Width matches a
+        // typical small-fleet upper bound; truncates gracefully on
+        // huge counts because format! ignores width when the value
+        // is wider.
+        frame.push_str(&format!(
+            "┗━ ∑ {ok:>4}✔  {in_progress:>4}⏵  {pending:>4}⏸  {failed:>4}⚠\n"
+        ));
 
         // Truncate to terminal height (NOM/IO.hs `truncateRows`).
         // Resolve effective max from explicit override or terminal query.

@@ -102,11 +102,17 @@ proptest! {
             strategy.name(),
         );
         prop_assert!(
-            result.rounds <= cfg.n_nodes,
-            "[{}] rounds {} > n_nodes {}",
+            // Loose bound: rounds capped by coordinator's max_rounds.
+            // Was previously `rounds <= n_nodes` but retry-on-failure
+            // semantics (since the coordinator stopped marking targets
+            // permanently failed on single edge failures) means an
+            // unlucky failure pattern can legitimately exceed n_nodes
+            // rounds. The strategy keeps trying alternate sources.
+            result.rounds <= cfg.max_rounds,
+            "[{}] rounds {} > max_rounds {}",
             strategy.name(),
             result.rounds,
-            cfg.n_nodes,
+            cfg.max_rounds,
         );
         prop_assert_eq!(
             result.round_durations.len() as u32,
@@ -177,11 +183,17 @@ proptest! {
             strategy.name(),
         );
         prop_assert!(
-            result.rounds <= cfg.n_nodes,
-            "[{}] rounds {} > n_nodes {}",
+            // Loose bound: rounds capped by coordinator's max_rounds.
+            // Was previously `rounds <= n_nodes` but retry-on-failure
+            // semantics (since the coordinator stopped marking targets
+            // permanently failed on single edge failures) means an
+            // unlucky failure pattern can legitimately exceed n_nodes
+            // rounds. The strategy keeps trying alternate sources.
+            result.rounds <= cfg.max_rounds,
+            "[{}] rounds {} > max_rounds {}",
             strategy.name(),
             result.rounds,
-            cfg.n_nodes,
+            cfg.max_rounds,
         );
         prop_assert_eq!(
             result.round_durations.len() as u32,

@@ -538,12 +538,20 @@ fn partition_under_contention_still_bubbles_errors() {
         killed_node,
         result.converged.len(),
     );
-    // And the affected set is exactly the killed node — no cascading
-    // failures dragging in extra nodes.
+    // The affected set should ONLY mention the killed node — no
+    // cascading failures dragging in extra nodes. Note: the killed
+    // node may appear multiple times (one per retry attempt from
+    // different sources, since the coordinator no longer permanently
+    // marks targets as failed on a single edge failure — strategies
+    // retry from alternate sources).
+    let unique: std::collections::HashSet<_> = affected.iter().copied().collect();
     assert_eq!(
-        affected.len(),
+        unique.len(),
         1,
-        "expected exactly 1 affected node; got {affected:?}"
+        "expected exactly 1 unique affected node; got {affected:?}"
     );
-    assert_eq!(affected[0], killed_node, "affected node mismatch");
+    assert!(
+        unique.contains(&killed_node),
+        "expected affected to contain killed node {killed_node:?}; got {affected:?}"
+    );
 }
