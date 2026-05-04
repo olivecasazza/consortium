@@ -27,6 +27,7 @@ pub mod build;
 pub mod cascade;
 pub mod cascade_events;
 pub mod cascade_executor;
+pub mod cascade_integration;
 pub mod cascade_strategies;
 pub mod cascade_trace;
 pub mod config;
@@ -39,7 +40,10 @@ pub mod tasks;
 pub use config::{DeployAction, DeploymentNode, DeploymentPlan, FleetConfig, ProfileType};
 pub use error::{NixError, Result};
 
-use consortium::dag::{DagContext, DagReport, ErrorPolicy, StageBuilder};
+use consortium::dag::{DagContext, DagReport, ErrorPolicy, StageBuilder, TaskId};
+
+use crate::cascade_events::EventSink;
+use crate::cascade_integration::{cascade_copy_grouped, CascadeCopyConfig, CascadeCopyTarget};
 
 /// Run the full deployment pipeline using the DAG executor.
 ///
@@ -125,6 +129,207 @@ pub fn deploy(
         target_nodes,
         action,
     ))
+}
+
+/// Cascade-driven deploy: same eval/build/activate as [`deploy`], but
+/// the per-host `nix copy` stage is replaced by a single whole-fleet
+/// cascade that distributes each toplevel peer-to-peer.
+///
+/// ## Why
+///
+/// `deploy()` runs N parallel `nix copy` subprocesses, each pulling
+/// from the build host. The build host's uplink is the bottleneck —
+/// at scale the deploy serializes on it.
+///
+/// `deploy_with_cascade()` lets nodes that have already received the
+/// closure serve the next round's targets. With `fanout=2` and N hosts
+/// sharing one toplevel, copy time drops from `N * single_copy_duration`
+/// to `ceil(log2(N+1)) * single_copy_duration` in the best case.
+///
+/// ## How
+///
+/// 1. **DAG phase 1**: per-host eval + build (same as `deploy()`).
+/// 2. **Cascade phase**: collect built toplevels, group by toplevel,
+///    run one `cascade_copy_grouped()` per group. Live UI via
+///    `event_sink` if provided.
+/// 3. **DAG phase 2**: per-host activate (only for hosts whose copy
+///    succeeded; failed-copy hosts are reported as copy_failures).
+///
+/// ## When NOT to use
+///
+/// - 1-2 targets: cascade overhead > parallel direct copy. Use `deploy()`.
+/// - `action == DeployAction::Build`: nothing to copy. Use `deploy()`.
+/// - First-time use against an untrusted fleet: prefer `deploy()` first
+///   to validate SSH + signing trust path, then switch.
+pub fn deploy_with_cascade(
+    config: &FleetConfig,
+    target_nodes: &[String],
+    action: DeployAction,
+    max_parallel: usize,
+    use_builders: bool,
+    cascade_fanout: u32,
+    seed_addr: &str,
+    event_sink: Option<&dyn EventSink>,
+) -> Result<DeployReport> {
+    // Build-only path: no copy, no cascade — defer to deploy().
+    if action == DeployAction::Build {
+        return deploy(config, target_nodes, action, max_parallel, use_builders);
+    }
+
+    // Phase 0: builder health check (same as deploy()).
+    let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
+        let statuses = health::check_builders(config);
+        let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
+        if healthy.is_empty() {
+            eprintln!("warning: no healthy builders available, building locally");
+            None
+        } else {
+            match build::generate_machines_file_from_healthy(&healthy) {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    eprintln!("warning: failed to generate machines file: {}", e);
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 1 DAG: eval + build only.
+    let ctx1 = DagContext::new();
+    ctx1.set_state("fleet_config", config.clone());
+    ctx1.set_state("action", action);
+    if let Some(ref path) = machines_file {
+        ctx1.set_state("machines_file", path.clone());
+    }
+    let phase1_report = StageBuilder::new()
+        .resources(target_nodes.to_vec())
+        .stage("eval", Some(1), |host| {
+            Box::new(tasks::NixEvalTask::new(host))
+        })
+        .stage("build", Some(max_parallel), |host| {
+            Box::new(tasks::NixBuildTask::new(host))
+        })
+        .error_policy(ErrorPolicy::ContinueIndependent)
+        .context(ctx1.clone())
+        .build()
+        .map_err(|e| NixError::General(e.to_string()))?
+        .run()
+        .map_err(|e| NixError::General(e.to_string()))?;
+
+    // Collect successfully-built (host, toplevel) pairs from ctx1
+    // outputs. Skip hosts whose build failed.
+    let mut targets_for_cascade: Vec<CascadeCopyTarget> = Vec::new();
+    let mut build_failures: Vec<(String, String)> = Vec::new();
+    for host in target_nodes {
+        let build_id = TaskId(format!("build:{}", host));
+        if let Some(err) = phase1_report.failed.get(&build_id) {
+            build_failures.push((host.clone(), err.clone()));
+            continue;
+        }
+        let Some(toplevel) = ctx1.get_output::<String>(&build_id) else {
+            build_failures.push((
+                host.clone(),
+                "build succeeded but produced no toplevel output".into(),
+            ));
+            continue;
+        };
+        let Some(node) = config.nodes.get(host) else {
+            build_failures.push((host.clone(), "host missing from fleet config".into()));
+            continue;
+        };
+        targets_for_cascade.push(CascadeCopyTarget {
+            host_name: host.clone(),
+            ssh_addr: format!("{}@{}", node.target_user, node.target_host),
+            toplevel_path: toplevel,
+        });
+    }
+
+    // Cascade phase: group by toplevel, fan-out per group.
+    let mut cfg = CascadeCopyConfig::new(seed_addr.to_string(), targets_for_cascade.clone())
+        .fanout(cascade_fanout);
+    if let Some(sink) = event_sink {
+        cfg = cfg.events(sink);
+    }
+    let cascade_result = cascade_copy_grouped(cfg);
+
+    // Build a synthetic Phase-2 DagContext that pre-loads the cascade
+    // results into "copy:{host}" outputs so NixActivateTask can read
+    // them without modification.
+    let ctx2 = DagContext::new();
+    ctx2.set_state("fleet_config", config.clone());
+    ctx2.set_state("action", action);
+
+    // Carry the toplevels forward so activate can find them. Hosts
+    // whose copy failed are excluded — they won't be in the activate
+    // resource list.
+    let copied_set: std::collections::HashSet<&String> = cascade_result.copied.iter().collect();
+    let mut activate_targets: Vec<String> = Vec::new();
+    for t in &targets_for_cascade {
+        if copied_set.contains(&t.host_name) {
+            ctx2.set_output(
+                TaskId(format!("copy:{}", t.host_name)),
+                t.toplevel_path.clone(),
+            );
+            activate_targets.push(t.host_name.clone());
+        }
+    }
+
+    // Phase 2 DAG: activate only.
+    let phase2_report = if !activate_targets.is_empty() {
+        StageBuilder::new()
+            .resources(activate_targets.clone())
+            .stage("activate", Some(max_parallel.min(4)), |host| {
+                Box::new(tasks::NixActivateTask::new(host))
+            })
+            .error_policy(ErrorPolicy::ContinueIndependent)
+            .context(ctx2)
+            .build()
+            .map_err(|e| NixError::General(e.to_string()))?
+            .run()
+            .map_err(|e| NixError::General(e.to_string()))?
+    } else {
+        DagReport {
+            completed: Default::default(),
+            skipped: Default::default(),
+            failed: Default::default(),
+            cancelled: Default::default(),
+        }
+    };
+
+    // Synthesize a DeployReport from the three phases.
+    let mut activated = Vec::new();
+    let mut activation_failures = Vec::new();
+    for host in &activate_targets {
+        let id = TaskId(format!("activate:{}", host));
+        if phase2_report.completed.contains(&id) || phase2_report.skipped.contains(&id) {
+            activated.push(host.clone());
+        } else if let Some(err) = phase2_report.failed.get(&id) {
+            activation_failures.push((host.clone(), err.clone()));
+        }
+    }
+
+    let built: Vec<String> = target_nodes
+        .iter()
+        .filter(|h| !build_failures.iter().any(|(b, _)| &b == h))
+        .cloned()
+        .collect();
+
+    let copy_failures: Vec<(String, String)> = cascade_result
+        .failed
+        .into_iter()
+        .map(|(h, e)| (h, e))
+        .collect();
+
+    Ok(DeployReport {
+        built,
+        copied: cascade_result.copied,
+        activated,
+        build_failures,
+        copy_failures,
+        activation_failures,
+    })
 }
 
 /// Summary of a deployment run.

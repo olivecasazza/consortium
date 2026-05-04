@@ -89,6 +89,19 @@ enum Commands {
         /// Maximum parallel operations.
         #[arg(short = 'f', long = "fanout", default_value = "4")]
         fanout: usize,
+
+        /// Use the cascade primitive for the copy stage — peer-to-peer
+        /// fan-out instead of per-host serial. Each host that has the
+        /// closure joins the source pool for the next round, dropping
+        /// copy time from O(N) to O(log N) for hosts sharing a toplevel.
+        #[arg(long = "cascade")]
+        cascade: bool,
+
+        /// Cascade tree fanout (children per node). Only meaningful with
+        /// --cascade. 2 = binary tree (default); higher values trade
+        /// per-source bandwidth contention for fewer rounds.
+        #[arg(long = "cascade-fanout", default_value = "2")]
+        cascade_fanout: u32,
     },
 
     /// Probe builder health.
@@ -133,14 +146,34 @@ fn main() {
             tag,
             builders,
             fanout,
-        } => cmd_deploy(&config, on.as_deref(), &tag, "build", builders, fanout),
+        } => cmd_deploy(
+            &config,
+            on.as_deref(),
+            &tag,
+            "build",
+            builders,
+            fanout,
+            false,
+            2,
+        ),
         Commands::Deploy {
             on,
             tag,
             action,
             builders,
             fanout,
-        } => cmd_deploy(&config, on.as_deref(), &tag, &action, builders, fanout),
+            cascade,
+            cascade_fanout,
+        } => cmd_deploy(
+            &config,
+            on.as_deref(),
+            &tag,
+            &action,
+            builders,
+            fanout,
+            cascade,
+            cascade_fanout,
+        ),
         Commands::Health => cmd_health(&config),
         Commands::Status { on, tag } => cmd_status(&config, on.as_deref(), &tag),
     };
@@ -222,6 +255,8 @@ fn cmd_deploy(
     action_str: &str,
     use_builders: bool,
     fanout: usize,
+    cascade: bool,
+    cascade_fanout: u32,
 ) -> anyhow::Result<()> {
     let targets = resolve_targets(config, on, tags)?;
     let action: DeployAction = action_str.parse().map_err(|_| {
@@ -232,15 +267,43 @@ fn cmd_deploy(
     })?;
 
     println!(
-        "Deploying {} host(s) with action '{}':",
+        "Deploying {} host(s) with action '{}'{}:",
         targets.len(),
-        action
+        action,
+        if cascade {
+            format!(
+                " [cascade copy fanout={} — peer-to-peer fan-out]",
+                cascade_fanout
+            )
+        } else {
+            String::new()
+        }
     );
     for name in &targets {
         println!("  {}", name);
     }
 
-    let report = consortium_nix::deploy(config, &targets, action, fanout, use_builders)?;
+    let report = if cascade && action != DeployAction::Build {
+        // Determine seed addr — the host running cast IS the seed
+        // (closure was built locally, or fetched here). The display
+        // name is just for the live UI; NixCopyExecutor uses local
+        // `nix copy` regardless.
+        let seed_addr = std::env::var("USER")
+            .map(|u| format!("{}@localhost", u))
+            .unwrap_or_else(|_| "localhost".into());
+        consortium_nix::deploy_with_cascade(
+            config,
+            &targets,
+            action,
+            fanout,
+            use_builders,
+            cascade_fanout,
+            &seed_addr,
+            None, // event sink — deferred until LiveTreeRenderer wiring
+        )?
+    } else {
+        consortium_nix::deploy(config, &targets, action, fanout, use_builders)?
+    };
 
     println!();
     if report.is_success() {
