@@ -235,32 +235,57 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
     let live_eligible = cli.format == "tree" && io::stdout().is_terminal() && !args.no_watch;
     if live_eligible {
         let color = !cli.no_color;
-        // Compose a nom-style header showing all relevant scenario
-        // params separated by `||`.
-        let mut header_parts = vec![
-            format!("Strategy: {}", args.strategy),
-            format!("Nodes: {}", args.nodes),
-            format!("Fanout: {}", args.fanout),
-            format!("Seeds: {}", args.seeds),
-            format!("Closure: {}MB", args.closure_mb),
-            format!("Bandwidth: {}", args.bandwidth),
-        ];
-        if let Some(uplink) = args.uplinks {
-            header_parts.push(format!("Uplinks: {}B/s", uplink));
+        // Compose nom-style header lines. Identity (line 1) always
+        // shows. Scenario knobs only appear when non-default; failure
+        // / timing config only appears when explicitly enabled.
+        // Keeps the default invocation tight, expands only with what
+        // matters.
+        let mut header_lines: Vec<String> = Vec::new();
+
+        // Line 1: identity — always present.
+        header_lines.push(format!(
+            "Strategy: {} || Nodes: {}",
+            args.strategy, args.nodes
+        ));
+
+        // Line 2: scenario knobs that differ from defaults.
+        let mut scenario: Vec<String> = Vec::new();
+        if args.fanout != 2 {
+            scenario.push(format!("Fanout: {}", args.fanout));
         }
+        if args.seeds != 1 {
+            scenario.push(format!("Seeds: {}", args.seeds));
+        }
+        if args.closure_mb != 50 {
+            scenario.push(format!("Closure: {}MB", args.closure_mb));
+        }
+        if args.bandwidth != "uniform" {
+            scenario.push(format!("Bandwidth: {}", args.bandwidth));
+        }
+        if let Some(uplink) = args.uplinks {
+            scenario.push(format!("Uplinks: {}B/s", uplink));
+        }
+        if !scenario.is_empty() {
+            header_lines.push(scenario.join(" || "));
+        }
+
+        // Line 3: failure / timing — only when enabled.
+        let mut runtime: Vec<String> = Vec::new();
         if args.failure_rate > 0.0 {
-            header_parts.push(format!(
+            runtime.push(format!(
                 "Failures: {:.0}% (seed={})",
                 args.failure_rate * 100.0,
                 args.failure_seed
             ));
         }
         if let Some(delay_ms) = args.per_round_delay_ms {
-            header_parts.push(format!("Delay: {}ms/round", delay_ms));
+            runtime.push(format!("Delay: {}ms/round", delay_ms));
         }
-        let header_text = header_parts.join(" || ");
+        if !runtime.is_empty() {
+            header_lines.push(runtime.join(" || "));
+        }
 
-        let renderer = LiveTreeRenderer::new(color, cli.max_depth).with_header_text(header_text);
+        let renderer = LiveTreeRenderer::new(color, cli.max_depth).with_header_lines(header_lines);
         let delay = args
             .per_round_delay_ms
             .map(std::time::Duration::from_millis);

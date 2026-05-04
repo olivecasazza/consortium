@@ -565,11 +565,12 @@ pub struct LiveTreeRenderer {
     /// Wall-time of the last repaint. Used to gate repaints at ≥60ms
     /// intervals (nom `minFrameDuration = 60_000 µs`). None on first paint.
     last_paint_at: Mutex<Option<Instant>>,
-    /// Header text rendered after `┏━ ` on the first frame line.
-    /// Default: `"Cascade deploy"`. Callers (cascade-viz, claw, future
-    /// bins) override via `with_header_text()` to display strategy +
-    /// scenario params: `"Strategy: level-tree || Nodes: 64 || ..."`.
-    header_text: Mutex<String>,
+    /// Header lines rendered at the top of each frame:
+    /// - First line gets `┏━ ` prefix (top-left corner)
+    /// - Subsequent lines get `┣ ` prefix (T-junction)
+    /// Default: `vec!["Cascade deploy"]`. Override via `with_header_text()`
+    /// (single line) or `with_header_lines()` (multiple).
+    header_lines: Mutex<Vec<String>>,
 }
 
 impl LiveTreeRenderer {
@@ -582,7 +583,7 @@ impl LiveTreeRenderer {
             last_printed_lines: Mutex::new(0),
             max_height: None,
             last_paint_at: Mutex::new(None),
-            header_text: Mutex::new("Cascade deploy".to_string()),
+            header_lines: Mutex::new(vec!["Cascade deploy".to_string()]),
         }
     }
 
@@ -598,7 +599,7 @@ impl LiveTreeRenderer {
             last_printed_lines: Mutex::new(0),
             max_height: None,
             last_paint_at: Mutex::new(None),
-            header_text: Mutex::new("Cascade deploy".to_string()),
+            header_lines: Mutex::new(vec!["Cascade deploy".to_string()]),
         }
     }
 
@@ -613,17 +614,31 @@ impl LiveTreeRenderer {
     }
 
     /// Builder: replace the default `"Cascade deploy"` header with a
-    /// custom string. Format with `||` separators between fields:
+    /// single custom line.
+    pub fn with_header_text(self, text: impl Into<String>) -> Self {
+        *self.header_lines.lock().unwrap() = vec![text.into()];
+        self
+    }
+
+    /// Builder: provide multiple header lines. The first renders with
+    /// `┏━ ` (top-left), each subsequent line renders with `┣ `
+    /// (T-junction) — matches nom's section convention. Use to keep
+    /// a wide header readable on narrow terminals without truncation:
     ///
     /// ```ignore
     /// LiveTreeRenderer::new(color, max_depth)
-    ///     .with_header_text(format!(
-    ///         "Strategy: {} || Nodes: {} || Fanout: {}",
-    ///         strategy_name, n_nodes, fanout
-    ///     ))
+    ///     .with_header_lines(vec![
+    ///         format!("Strategy: {} || Nodes: {}", name, n),
+    ///         format!("Fanout: {} || Failures: {}%", f, fr),
+    ///     ])
     /// ```
-    pub fn with_header_text(self, text: impl Into<String>) -> Self {
-        *self.header_text.lock().unwrap() = text.into();
+    pub fn with_header_lines(self, lines: Vec<String>) -> Self {
+        let lines = if lines.is_empty() {
+            vec!["Cascade deploy".to_string()]
+        } else {
+            lines
+        };
+        *self.header_lines.lock().unwrap() = lines;
         self
     }
 
@@ -674,10 +689,16 @@ impl LiveTreeRenderer {
         };
 
         let mut frame = String::with_capacity(inner.len() + 256);
-        let header = self.header_text.lock().unwrap().clone();
-        let header_line = format!("┏━ {header}");
-        frame.push_str(&truncate_to_width(&header_line, term_cols));
-        frame.push('\n');
+        // Multi-line header: first line gets ┏━ (top-left corner),
+        // additional lines get ┣ (T-junction) — matches nom's section
+        // convention for stacked sections.
+        let header_lines = self.header_lines.lock().unwrap().clone();
+        for (i, line) in header_lines.iter().enumerate() {
+            let prefix = if i == 0 { "┏━ " } else { "┣ " };
+            let composed = format!("{prefix}{line}");
+            frame.push_str(&truncate_to_width(&composed, term_cols));
+            frame.push('\n');
+        }
         // Body: prefix every tree line with ┃  (the vertical chrome).
         for line in inner.lines() {
             let bodied = format!("┃  {line}");
