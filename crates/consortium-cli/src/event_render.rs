@@ -249,6 +249,14 @@ impl EventSink for SnapshotAccumulator {
             } => {
                 acc.seeds = seeded.clone();
                 acc.total_nodes = *n_nodes;
+                // Pre-populate ALL nodes so the renderer can show
+                // pending ones (⏸) from frame 1 — without this, only
+                // nodes that appear in some event are visible, which
+                // makes the user see "✔ + ⚠" but no ⏸ even when the
+                // summary says there are dozens pending.
+                for i in 0..*n_nodes {
+                    acc.node(NodeId(i));
+                }
                 for &id in seeded {
                     let n = acc.node(id);
                     n.has_closure = true;
@@ -353,18 +361,79 @@ impl EventSink for SnapshotAccumulator {
 fn build_tree(acc: &AccumulatorInner) -> OwnedTreeNode {
     let root_id = acc.seeds.first().copied();
 
-    match root_id {
-        Some(rid) => build_node(rid, acc),
-        None => {
-            // No Started event — return a synthetic root with whatever we have.
-            OwnedTreeNode {
-                label: "cascade".into(),
-                status: Some(NodeStatus::Pending),
-                metadata: Vec::new(),
-                children: Vec::new(),
-            }
+    let Some(rid) = root_id else {
+        return OwnedTreeNode {
+            label: "cascade".into(),
+            status: Some(NodeStatus::Pending),
+            metadata: Vec::new(),
+            children: Vec::new(),
+        };
+    };
+
+    let mut root = build_node(rid, acc);
+
+    // Adopt orphans: nodes that have no parent set yet but exist in
+    // the accumulator (pre-populated from Started's n_nodes count).
+    // Without this, pending nodes that haven't been planned yet are
+    // invisible — the user's summary says "61 pending" but the tree
+    // shows nothing for them. Adopting under root makes them visible
+    // as ⏸; once a real parent emerges from EdgeCompleted/Failed,
+    // they move to their proper subtree on the next render.
+    let in_tree = collect_node_ids(&root);
+    let mut orphans: Vec<NodeId> = acc
+        .nodes
+        .keys()
+        .copied()
+        .filter(|id| !in_tree.contains(id))
+        .filter(|id| {
+            // Skip nodes that have a parent set (they should appear
+            // under their parent — if they're not in `in_tree` then
+            // their parent is unreachable, but we'll still show them
+            // here so the user can see them).
+            acc.nodes
+                .get(id)
+                .and_then(|s| s.parent)
+                .is_none_or(|_| true)
+        })
+        .filter(|id| acc.nodes.get(id).is_some_and(|s| s.parent.is_none()))
+        .collect();
+    orphans.sort_by_key(|cid| {
+        let p = match acc.nodes.get(cid) {
+            None => 2u8,
+            Some(s) if s.failed => 0,
+            Some(s) if s.in_progress => 1,
+            Some(s) if !s.has_closure => 2,
+            Some(_) => 3,
+        };
+        (p, *cid)
+    });
+    for orphan in orphans {
+        root.children.push(build_node(orphan, acc));
+    }
+    root
+}
+
+/// Collect every NodeId that appears in the rooted-from-seed subtree.
+/// Used to identify orphans (nodes in the accumulator but not yet
+/// reachable from the seed via parent links).
+fn collect_node_ids(node: &OwnedTreeNode) -> std::collections::HashSet<NodeId> {
+    let mut acc = std::collections::HashSet::new();
+    fn walk(n: &OwnedTreeNode, acc: &mut std::collections::HashSet<NodeId>) {
+        // Parse the NodeId from the label (`nN`). If unparseable
+        // (synthetic root), skip — orphan check is best-effort.
+        if let Some(num) = n
+            .label
+            .strip_prefix('n')
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            acc.insert(NodeId(num));
+        }
+        for c in &n.children {
+            walk(c, acc);
         }
     }
+    walk(node, &mut acc);
+    acc
 }
 
 fn build_node(id: NodeId, acc: &AccumulatorInner) -> OwnedTreeNode {
@@ -1113,10 +1182,13 @@ mod tests {
         assert!(matches!(&evs[2], CascadeEvent::Finished { .. }));
     }
 
-    /// 3. SnapshotAccumulator builds correct tree topology from EdgeCompleted.
+    /// 3. SnapshotAccumulator builds correct tree topology from EdgeCompleted
+    /// AND adopts pre-populated unparented nodes (orphans) under root.
     #[test]
     fn snapshot_accumulator_builds_correct_tree_topology() {
-        // n0 → n1, n0 → n2
+        // started_event creates 4 nodes (n0..n3). EdgeCompleted attaches
+        // n1, n2 to n0. n3 is pre-populated by Started but never gets an
+        // event → orphan → adopted under root as Pending.
         let acc = SnapshotAccumulator::new();
         acc.emit(&started_event(&[0]));
         acc.emit(&edge_completed(0, 0, 1, 10));
@@ -1125,16 +1197,30 @@ mod tests {
 
         let tree = acc.to_tree();
         assert_eq!(tree.label, "n0");
-        assert_eq!(tree.children.len(), 2, "root should have 2 children");
+        // 3 children: n1, n2 (Ok via EdgeCompleted) + n3 (Pending orphan).
+        assert_eq!(
+            tree.children.len(),
+            3,
+            "root should have 2 served + 1 pre-populated orphan = 3 children"
+        );
 
         let child_labels: Vec<&str> = tree.children.iter().map(|c| c.label.as_str()).collect();
         assert!(child_labels.contains(&"n1"), "missing n1: {child_labels:?}");
         assert!(child_labels.contains(&"n2"), "missing n2: {child_labels:?}");
+        assert!(
+            child_labels.contains(&"n3"),
+            "missing n3 (orphan): {child_labels:?}"
+        );
 
-        // Root and children should be Ok (has_closure).
+        // Root is Ok (seeded). Served children are Ok; orphan is Pending.
         assert_eq!(tree.status, Some(NodeStatus::Ok));
         for child in &tree.children {
-            assert_eq!(child.status, Some(NodeStatus::Ok));
+            let expected = match child.label.as_str() {
+                "n1" | "n2" => Some(NodeStatus::Ok),
+                "n3" => Some(NodeStatus::Pending),
+                other => panic!("unexpected child {other}"),
+            };
+            assert_eq!(child.status, expected, "wrong status for {}", child.label);
         }
     }
 

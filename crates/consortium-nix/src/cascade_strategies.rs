@@ -340,31 +340,27 @@ impl CascadeStrategy for LevelTreeFanOut {
 
             // Try the heap ancestor chain first (preserves the
             // canonical level-by-level tree shape).
+            //
+            // We do NOT filter by `state.attempted` for transient
+            // failures — that would block retries. After (anc, tgt)
+            // failed in a previous round (with a Copy/transient
+            // error), the same edge may succeed on the next attempt.
+            // Permanent failures get filtered via `state.failed_nodes`
+            // (populated by the coordinator on non-transient errors).
             let mut chosen: Option<NodeId> = None;
             let heap_anc = self.alive_ancestor(tgt, state);
-            let mut needs_retry_fallback = false;
             if let Some(anc) = heap_anc {
-                if !state.attempted.contains(&(anc, tgt)) && !net.is_partitioned(anc, tgt) {
+                if !net.is_partitioned(anc, tgt) {
                     chosen = Some(anc);
-                } else {
-                    // Heap ancestor was alive but the edge can't be
-                    // used (already tried, or partitioned). Engage
-                    // fallback for this target — try a sibling source.
-                    needs_retry_fallback = true;
                 }
             }
-            // If alive_ancestor returned None, that's the "wait for
-            // not-yet-ready parent" case. DO NOT fall back to an
-            // unrelated source — that would break the level-by-level
-            // reveal by short-circuiting every target to the seed in
-            // round 0. Fallback only engages on genuine retries
-            // (heap path returned a source but its edge is unusable).
 
-            if chosen.is_none() && needs_retry_fallback {
+            // Fallback: if heap path unusable (no alive ancestor or
+            // edge partitioned), pick ANY alive source. Skip the
+            // wait-not-ready case (heap_anc.is_none()) — those need
+            // to wait for next round, not short-circuit to root.
+            if chosen.is_none() && heap_anc.is_some() {
                 for &src in &alive_sources {
-                    if state.attempted.contains(&(src, tgt)) {
-                        continue;
-                    }
                     if net.is_partitioned(src, tgt) {
                         continue;
                     }
