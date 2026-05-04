@@ -453,6 +453,83 @@ impl TreeNode for OwnedTreeNode {
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/// Truncate `s` so its display width fits within `max_cols` terminal
+/// columns. If truncated, appends an ellipsis `…` (which is 1 column
+/// wide). ANSI escape sequences in `s` are stripped before measuring
+/// so they don't count against the budget.
+///
+/// Why this matters: a line wider than the terminal wraps onto multiple
+/// visual lines. The cursor-walk-up cleanup logic counts LOGICAL lines
+/// (one per `\n`), not visual lines, so wrapped content ends up
+/// only-partially erased between frames — leaving the wrapped
+/// portion as visual cruft.
+///
+/// Uses byte-level char iteration because `console::measure_text_width`
+/// requires the full `unicode-width` dep tree we don't pull in.
+/// Char count == display width is roughly true for our content (ASCII
+/// + a handful of single-cell box-drawing + status glyphs).
+fn truncate_to_width(s: &str, max_cols: usize) -> String {
+    if max_cols == usize::MAX {
+        return s.to_string();
+    }
+    // Strip ANSI for measurement.
+    let visible: String = strip_ansi(s);
+    let visible_width = visible.chars().count();
+    if visible_width <= max_cols {
+        return s.to_string();
+    }
+    // Need to truncate. Walk the original string char-by-char, skipping
+    // ANSI escape sequences (so they pass through without consuming
+    // budget), until visible budget is spent.
+    let budget = max_cols.saturating_sub(1); // reserve 1 col for ellipsis
+    let mut out = String::with_capacity(s.len());
+    let mut visible_count = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ANSI CSI sequence: copy through to terminator [a-zA-Z]
+            out.push(c);
+            for nc in chars.by_ref() {
+                out.push(nc);
+                if nc.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if visible_count >= budget {
+            break;
+        }
+        out.push(c);
+        visible_count += 1;
+    }
+    out.push('…');
+    out
+}
+
+/// Strip ANSI CSI escape sequences from a string for width measurement.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip through alphabetic terminator.
+            for nc in chars.by_ref() {
+                if nc.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// ============================================================================
 // LiveTreeRenderer — re-renders the tree in place on each RoundCompleted
 // ============================================================================
 
@@ -579,14 +656,32 @@ impl LiveTreeRenderer {
         // Count statuses for the summary row.
         let (ok, in_progress, pending, failed) = self.accumulator.status_counts();
 
+        // Probe the terminal width for line truncation. If we don't
+        // truncate, lines wider than the terminal wrap onto multiple
+        // visual lines — but our `frame.lines().count()` only counts
+        // logical lines, so the cleanup walk-up is off by however many
+        // lines wrapped. Result: previous frames' wrapped portions
+        // never get erased, producing the multi-header visual stutter.
+        let term_cols = if self.capture.is_some() {
+            usize::MAX // tests: no truncation
+        } else {
+            let (_, cols) = console::Term::stdout().size();
+            if cols == 0 {
+                usize::MAX
+            } else {
+                cols as usize
+            }
+        };
+
         let mut frame = String::with_capacity(inner.len() + 256);
-        // Top border: nom uses ┏━━━ for the start of each section.
         let header = self.header_text.lock().unwrap().clone();
-        frame.push_str(&format!("┏━ {header}\n"));
+        let header_line = format!("┏━ {header}");
+        frame.push_str(&truncate_to_width(&header_line, term_cols));
+        frame.push('\n');
         // Body: prefix every tree line with ┃  (the vertical chrome).
         for line in inner.lines() {
-            frame.push_str("┃  ");
-            frame.push_str(line);
+            let bodied = format!("┃  {line}");
+            frame.push_str(&truncate_to_width(&bodied, term_cols));
             frame.push('\n');
         }
         // Bottom border: ┗━ + summary row.
@@ -595,9 +690,9 @@ impl LiveTreeRenderer {
         //   without leaning on whitespace alignment (which falls apart
         //   when counts grow to 3+ digits)
         // - single space between count and glyph for readability
-        frame.push_str(&format!(
-            "┗━ ∑ || {ok} ✔ || {in_progress} ⏵ || {pending} ⏸ || {failed} ⚠\n"
-        ));
+        let summary = format!("┗━ ∑ || {ok} ✔ || {in_progress} ⏵ || {pending} ⏸ || {failed} ⚠");
+        frame.push_str(&truncate_to_width(&summary, term_cols));
+        frame.push('\n');
 
         // Truncate to terminal height (NOM/IO.hs `truncateRows`).
         // Resolve effective max from explicit override or terminal query.
