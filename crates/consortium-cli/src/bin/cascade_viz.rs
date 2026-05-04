@@ -235,7 +235,32 @@ fn run_live(args: &LiveArgs, cli: &Cli) -> Result<()> {
     let live_eligible = cli.format == "tree" && io::stdout().is_terminal() && !args.no_watch;
     if live_eligible {
         let color = !cli.no_color;
-        let renderer = LiveTreeRenderer::new(color, cli.max_depth);
+        // Compose a nom-style header showing all relevant scenario
+        // params separated by `||`.
+        let mut header_parts = vec![
+            format!("Strategy: {}", args.strategy),
+            format!("Nodes: {}", args.nodes),
+            format!("Fanout: {}", args.fanout),
+            format!("Seeds: {}", args.seeds),
+            format!("Closure: {}MB", args.closure_mb),
+            format!("Bandwidth: {}", args.bandwidth),
+        ];
+        if let Some(uplink) = args.uplinks {
+            header_parts.push(format!("Uplinks: {}B/s", uplink));
+        }
+        if args.failure_rate > 0.0 {
+            header_parts.push(format!(
+                "Failures: {:.0}% (seed={})",
+                args.failure_rate * 100.0,
+                args.failure_seed
+            ));
+        }
+        if let Some(delay_ms) = args.per_round_delay_ms {
+            header_parts.push(format!("Delay: {}ms/round", delay_ms));
+        }
+        let header_text = header_parts.join(" || ");
+
+        let renderer = LiveTreeRenderer::new(color, cli.max_depth).with_header_text(header_text);
         let delay = args
             .per_round_delay_ms
             .map(std::time::Duration::from_millis);

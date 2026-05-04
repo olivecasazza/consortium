@@ -488,6 +488,11 @@ pub struct LiveTreeRenderer {
     /// Wall-time of the last repaint. Used to gate repaints at ≥60ms
     /// intervals (nom `minFrameDuration = 60_000 µs`). None on first paint.
     last_paint_at: Mutex<Option<Instant>>,
+    /// Header text rendered after `┏━ ` on the first frame line.
+    /// Default: `"Cascade deploy"`. Callers (cascade-viz, claw, future
+    /// bins) override via `with_header_text()` to display strategy +
+    /// scenario params: `"Strategy: level-tree || Nodes: 64 || ..."`.
+    header_text: Mutex<String>,
 }
 
 impl LiveTreeRenderer {
@@ -500,6 +505,7 @@ impl LiveTreeRenderer {
             last_printed_lines: Mutex::new(0),
             max_height: None,
             last_paint_at: Mutex::new(None),
+            header_text: Mutex::new("Cascade deploy".to_string()),
         }
     }
 
@@ -515,6 +521,7 @@ impl LiveTreeRenderer {
             last_printed_lines: Mutex::new(0),
             max_height: None,
             last_paint_at: Mutex::new(None),
+            header_text: Mutex::new("Cascade deploy".to_string()),
         }
     }
 
@@ -525,6 +532,21 @@ impl LiveTreeRenderer {
     /// paint via `console::Term::stdout().size()`.
     pub fn with_max_height(mut self, h: Option<usize>) -> Self {
         self.max_height = h;
+        self
+    }
+
+    /// Builder: replace the default `"Cascade deploy"` header with a
+    /// custom string. Format with `||` separators between fields:
+    ///
+    /// ```ignore
+    /// LiveTreeRenderer::new(color, max_depth)
+    ///     .with_header_text(format!(
+    ///         "Strategy: {} || Nodes: {} || Fanout: {}",
+    ///         strategy_name, n_nodes, fanout
+    ///     ))
+    /// ```
+    pub fn with_header_text(self, text: impl Into<String>) -> Self {
+        *self.header_text.lock().unwrap() = text.into();
         self
     }
 
@@ -559,7 +581,8 @@ impl LiveTreeRenderer {
 
         let mut frame = String::with_capacity(inner.len() + 256);
         // Top border: nom uses ┏━━━ for the start of each section.
-        frame.push_str("┏━ Cascade deploy\n");
+        let header = self.header_text.lock().unwrap().clone();
+        frame.push_str(&format!("┏━ {header}\n"));
         // Body: prefix every tree line with ┃  (the vertical chrome).
         for line in inner.lines() {
             frame.push_str("┃  ");
@@ -661,17 +684,26 @@ impl LiveTreeRenderer {
         let mut bytes: Vec<u8> = Vec::with_capacity(frame.len() + 64);
         // begin synchronized update
         bytes.extend_from_slice(b"\x1b[?2026h");
-        // Erase last frame: clear current line, then for each previous
-        // line walk up + clear. This mirrors nom's stimesMonoid pattern
-        // exactly (NOM/IO.hs `writeStateToScreen`).
+        // Erase last frame in place. Our `frame` ends with a trailing
+        // `\n` (so user's shell prompt lands on a fresh line at end of
+        // run), which means after the previous frame the cursor is one
+        // line BELOW the last frame line. We need to clear that empty
+        // line PLUS each of the prior `last` frame lines:
+        //
+        //   - clear current line (the empty line after the \n)
+        //   - then `last` iterations of (cursor up, clear line) →
+        //     walks from line N+1 → line N → ... → line 1, clearing each
+        //   - finally `\r` to put cursor at column 0 for the new frame
+        //
+        // nom's `writeStateToScreen` does (last-1) iterations because
+        // its frames don't end with \n — the cursor stays at the END
+        // of the last line, so it only needs (last-1) up-clears to
+        // walk to line 1. Ours has the trailing \n so we need one more.
         if *last > 0 {
-            // clear current line
             bytes.extend_from_slice(b"\x1b[2K");
-            for _ in 1..*last {
-                // cursor up one line, clear that line
+            for _ in 0..*last {
                 bytes.extend_from_slice(b"\x1b[1A\x1b[2K");
             }
-            // cursor to start of line so next write begins flush-left
             bytes.extend_from_slice(b"\r");
         }
         bytes.extend_from_slice(frame.as_bytes());
