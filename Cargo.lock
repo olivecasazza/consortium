@@ -266,6 +266,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "predicates",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
