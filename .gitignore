@@ -47,3 +47,17 @@ results/
 tests/docker/ssh/
 tests/docker/docker-compose.generated.yml
 .pre-commit-config.yaml
+
+# autoresearch local config
+autoresearch/.env
+autoresearch/logs/
+autoresearch/queue/in-progress/*.task.toml
+autoresearch/queue/abandoned/*.task.toml
+
+# Agent worktrees — created by Claude Code via .claude/worktrees/.
+# These are local working copies that should never be tracked.
+.claude/worktrees/
+.claire/
+
+# Backup files from autoresearch's accountant agent.
+*.bak.*

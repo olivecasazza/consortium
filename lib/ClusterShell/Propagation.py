@@ -272,6 +272,13 @@ class PropagationChannel(Channel):
             self.opened = True
             self.logger.debug('channel started (version %s on remote gateway)',
                               self._xml_reader.version)
+            # Gateway connected: cancel the connect timeout so the
+            # long-lived channel worker is not killed while relaying.
+            gwstr = str(self.gateway)
+            if gwstr in self.task.gateways:
+                chanworker = self.task.gateways[gwstr][0]
+                for client in chanworker._engine_clients():
+                    self.task._engine.timerq.invalidate(client)
         else:
             self.logger.error('unexpected message: %s', str(msg))
 

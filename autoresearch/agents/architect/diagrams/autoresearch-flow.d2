@@ -1,0 +1,101 @@
+# autoresearch end-to-end flow
+# render: d2 autoresearch-flow.d2 autoresearch-flow.svg
+
+direction: down
+
+control_plane: control plane {
+  systemd: gascity-supervisor.service {
+    shape: package
+  }
+  supervisor: gascity supervisor {
+    shape: cylinder
+    tooltip: "gc supervisor run (long-lived user service)"
+  }
+  drain: drain-queue order {
+    shape: rectangle
+    tooltip: "autoresearch/orders/drain-queue.toml\ncooldown 30m"
+  }
+  refill: refill-queue order {
+    shape: rectangle
+    tooltip: "cron 0 * * * *"
+  }
+
+  systemd -> supervisor: launches
+  supervisor -> drain: dispatch (cooldown 30m)
+  supervisor -> refill: dispatch (cron 0 * * * *)
+}
+
+worker: worker pipeline {
+  run_once: run-once.sh
+  pick: pick-task.sh
+  worktree: new-worktree.sh
+  agent: agent-opencode.sh
+  score: score.sh
+  finalize: finalize.sh
+
+  run_once -> pick: claim task
+  pick -> worktree: task claimed
+  worktree -> agent: invoke agent
+  agent -> score: agent done
+  score -> finalize: score green
+  score -> run_once: no diff / score fail (abandon)
+}
+
+queue: queue {
+  pending: queue/pending {
+    shape: queue
+  }
+  in_progress: queue/in-progress {
+    shape: queue
+  }
+  done: queue/done {
+    shape: queue
+  }
+  abandoned: queue/abandoned {
+    shape: queue
+  }
+}
+
+inference: inference {
+  litellm: LiteLLM proxy {
+    tooltip: "http://localhost:4000\nport-forward apps/litellm"
+  }
+  vllm: vllm pod (qwen3-8b on seir)
+  openrouter: OpenRouter {
+    tooltip: "qwen3-coder, gpt-oss-120b, ..."
+  }
+  cloud: cloud (claude-sonnet-4-6)
+
+  litellm -> vllm: route local
+  litellm -> openrouter: route remote
+  litellm -> cloud: route remote
+}
+
+refill_jobs: refill jobs {
+  seed: seed-queue.sh {
+    tooltip: "walks repo for TODO/FIXME"
+  }
+  upstream: upstream-diff.sh --limit 5
+}
+
+# control plane -> worker
+control_plane.drain -> worker.run_once: execs\nbash -c '. .env; bash scripts/run-once.sh\n  --agent scripts/agent-opencode.sh'
+control_plane.refill -> refill_jobs.seed: execs
+control_plane.refill -> refill_jobs.upstream: execs
+
+# refill jobs -> queue
+refill_jobs.seed -> queue.pending: writes new .task.toml
+refill_jobs.upstream -> queue.pending: writes new .task.toml
+
+# pick / finalize <-> queue
+worker.pick -> queue.pending: read claim
+worker.pick -> queue.in_progress: move .task.toml
+worker.finalize -> queue.in_progress: read
+worker.finalize -> queue.done: commit + push + gh pr create
+worker.run_once -> queue.abandoned: append abandon log + move
+
+# agent -> inference
+worker.agent -> inference.litellm: opencode run\n--model litellm/<AR_MODEL>\nPOST /v1/chat/completions
+
+# worktree note
+worker.worktree -> worker.agent: ".claude/worktrees/agent-<id>/\nbranch agent/<id>/<topic>"

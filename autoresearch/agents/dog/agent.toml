@@ -1,0 +1,7 @@
+fallback = false
+idle_timeout = "30m"
+max_active_sessions = 5
+min_active_sessions = 2
+nudge = "Check your hook for dog-tier work. If task is bigger than dog-tier, say so and exit."
+scope = "city"
+wake_mode = "fresh"

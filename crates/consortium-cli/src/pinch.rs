@@ -14,6 +14,7 @@ use clap::Parser;
 
 use consortium::node_set::NodeSet;
 use consortium::range_set::RangeSet;
+use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// pinch — node set operations for consortium.
 ///
@@ -97,10 +98,14 @@ struct Args {
     // ── Positional ─────────────────────────────────────────────────────
     /// Input node sets or node names. Reads from stdin if none given.
     nodesets: Vec<String>,
+
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 fn main() {
     let args = Args::parse();
+    let _out = CliOutput::from_args(&args.output);
     if let Err(e) = run(args) {
         eprintln!("pinch: {e}");
         process::exit(1);

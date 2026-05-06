@@ -1,0 +1,20 @@
+task_id	branch	status	score	tests_passed	tests_added	notes	timestamp
+nixpar-79f745a1	agent/6de61bc5/nixpar-79f745a1	abandoned				no-diff: agent did not modify any files	2026-04-25T14:58:28Z
+nixpar-9066ce54	agent/1a7c626f/nixpar-9066ce54	abandoned				no-diff: agent did not modify any files	2026-04-25T14:59:46Z
+nixpar-79f745a1	agent/5a897c72/nixpar-79f745a1	abandoned				no-diff: agent did not modify any files	2026-04-25T15:06:39Z
+nixpar-79f745a1	agent/739681d6/nixpar-79f745a1	abandoned				no-diff: agent did not modify any files	2026-04-25T15:08:40Z
+nixpar-79f745a1	agent/ccee7d9c/nixpar-79f745a1	abandoned				no-diff: agent did not modify any files	2026-04-25T15:10:32Z
+nixpar-79f745a1	agent/bcfd6e31/nixpar-79f745a1	abandoned				no-diff: agent did not modify any files	2026-04-25T15:14:36Z
+nixpar-79f745a1	agent/782a14aa/nixpar-79f745a1	abandoned				score-fail	2026-04-25T16:00:12Z
+nixpar-9066ce54	agent/c3ca9ef1/nixpar-9066ce54	abandoned				no-diff: agent did not modify any files	2026-04-25T16:02:52Z
+nixpar-9066ce54	agent/0e57817f/nixpar-9066ce54	abandoned				no-diff: agent did not modify any files	2026-04-25T16:05:06Z
+nixpar-9066ce54	agent/71cbf85d/nixpar-9066ce54	abandoned				no-diff: agent did not modify any files	2026-04-25T16:07:11Z
+nixpar-9066ce54	agent/81624ef3/nixpar-9066ce54	abandoned				no-diff: agent did not modify any files	2026-04-25T16:09:19Z
+nixpar-be66cc05	agent/f1ea86c7/nixpar-be66cc05	abandoned				no-diff: agent did not modify any files	2026-04-25T16:56:51Z
+nixpar-f587887e	agent/78724997/nixpar-f587887e	abandoned				no-diff: agent did not modify any files	2026-04-25T19:10:01Z
+nixpar-be66cc05	agent/d64835ea/nixpar-be66cc05	abandoned				score-fail	2026-04-25T19:11:38Z
+nixpar-be66cc05	agent/b542b4b8/nixpar-be66cc05	done	pass	445	4		2026-04-25T19:21:41Z
+nixpar-cf7af3ed	agent/53bbcee6/nixpar-cf7af3ed	abandoned				no-diff: agent did not modify any files	2026-04-28T04:37:48Z
+pyfix-df4629b5	agent/307226ef/pyfix-df4629b5	abandoned				no-diff: agent did not modify any files	2026-05-02T16:28:28Z
+pyfix-litellm-test	agent/03e55334/pyfix-litellm-test	abandoned				no-diff: agent did not modify any files	2026-05-02T16:51:22Z
+pyfix-compaction-test	agent/0437320d/pyfix-compaction-test	done	pass				2026-05-02T18:10:19Z

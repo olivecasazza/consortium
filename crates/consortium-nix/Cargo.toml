@@ -11,6 +11,10 @@ consortium.workspace = true
 thiserror.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# petgraph: deferred. Initial cascade strategies (max-weight bipartite
+# matching) work greedily without a graph library. petgraph comes back
+# when we add failure-recovery routing (orphaned-children re-parenting
+# is a Dijkstra problem on the network graph).
 
 [dev-dependencies]
 tempfile = "3"

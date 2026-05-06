@@ -21,6 +21,7 @@ use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
 use consortium_cli::display;
+use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// claw — execute commands in parallel across cluster nodes.
 ///
@@ -112,9 +113,8 @@ struct Args {
     #[arg(short = 'S', long = "maxrc")]
     maxrc: bool,
 
-    /// Verbose mode.
-    #[arg(short = 'v', long = "verbose")]
-    verbose: bool,
+    #[command(flatten)]
+    output: OutputArgs,
 
     // ── File transfer ──────────────────────────────────────────────────
     /// Copy a file to all target nodes.
@@ -147,6 +147,8 @@ fn main() {
 }
 
 fn run(args: Args) -> anyhow::Result<i32> {
+    let cli_out = CliOutput::from_args(&args.output);
+
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -156,12 +158,12 @@ fn run(args: Args) -> anyhow::Result<i32> {
         anyhow::bail!("no target nodes specified (use -w, -a, -g, or --hostfile)");
     }
 
-    if args.verbose {
-        eprintln!(
+    if cli_out.is_verbose() {
+        cli_out.info(format!(
             "claw: targeting {} node(s): {}",
             target_nodes.len(),
             target_nodes
-        );
+        ));
     }
 
     // ── Build the command string ───────────────────────────────────────

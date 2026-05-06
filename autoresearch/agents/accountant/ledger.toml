@@ -1,0 +1,354 @@
+# Model ledger — accountant's source of truth.
+#
+# Read by drain-queue and the accountant agent to allocate models.
+# Refreshed on a 6h cadence by `mol-accountant-patrol` (scripts/patrol.sh)
+# pulling from OpenRouter /api/v1/models + /api/v1/auth/key and LiteLLM
+# /spend/users + /global/spend.
+#
+# Live snapshot: agents/accountant/usage-snapshot.toml
+# Original research: agents/accountant/research-2026-04-25.md
+#
+# OpenRouter free-tier rate limits apply to every `tier = "free"` row:
+#   20 req/min; 50 req/day anonymous; 1000 req/day with $10 lifetime credit.
+#   Failed requests count. 429s under load are common on popular `:free`
+#   slugs — always wire a fallback.
+#
+# Tier:
+#   on-prem      runs on nixlab GPUs via LiteLLM (no marginal cost)
+#   free         OpenRouter free-tier (rate-capped, no $)
+#   paid-cheap   < $1/Mtok input
+#   paid         > $1/Mtok input
+#
+# Tags vocabulary:
+#   tool-use       reliably emits OpenAI-format tool calls
+#   code-edit      comfortable making structural Rust/Python edits
+#   reasoning      strong on planning / root-cause / multi-step
+#   long-context   ≥128k context, fits whole crates
+#   planning       multi-step decomposition / DAG-style work
+#   multilingual   non-English coverage (rare-need for autoresearch)
+#   bootstrap      stable + cheap enough to host an LLM agent itself
+#
+# `litellm_registered`: true if this row has a model_name in nixlab's
+#   modules/k8s/apps/litellm/litellm-config.yaml. If false, requires a
+#   nixlab PR before drain-queue can route to it (or call OpenRouter
+#   directly, bypassing LiteLLM tracking).
+
+# ────────────────────────────────────────────────────────────────────────
+# free — sorted best-fit-first for code-edit + tool-use
+# ────────────────────────────────────────────────────────────────────────
+
+[[model]]
+id = "minimax-m2.5-free"
+openrouter_id = "minimax/minimax-m2.5:free"
+litellm_registered = false
+tier = "free"
+context = 196608
+params = "~230B MoE"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "planning", "reasoning", "long-context"]
+notes = "TOP PICK 2026-04-25: SWE-Bench Verified 80.2%, BFCL multi-turn 76.8 (beats Claude 4.5's 68.0 and Gemini 3 Pro's 61.0). New on free tier; assume aggressive throttling. NOT IN LITELLM YET — needs nixlab PR to register."
+last_seen_working = ""
+
+[[model]]
+id = "qwen3-coder-free"
+openrouter_id = "qwen/qwen3-coder:free"
+litellm_registered = true
+tier = "free"
+context = 262000
+params = "480B MoE / 35B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "long-context"]
+notes = "Purpose-built for repo-level agentic coding. Frequent 429s on free tier (Venice provider flaky 2026-04-25). Always pair with fallback. Best long-context choice when available."
+last_seen_working = ""
+
+[[model]]
+id = "glm-4.5-air-free"
+openrouter_id = "z-ai/glm-4.5-air:free"
+litellm_registered = false
+tier = "free"
+context = 131072
+params = "106B MoE"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "reasoning"]
+notes = "Hybrid thinking/non-thinking via reasoning.enabled. Best tool-call track record in GLM family. Smaller than full GLM-4.5 (355B) — Air variant. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "gpt-oss-120b-free"
+openrouter_id = "openai/gpt-oss-120b:free"
+litellm_registered = true
+tier = "free"
+context = 131072
+params = "117B MoE / 5.1B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "reasoning"]
+notes = "Harmony response format quirks. Mid-stream 502s observed via OpenInference 2026-04-25. Knowledge cutoff Jun 2024. Made real edits in autoresearch agent=782a14aa (only fmt failure)."
+last_seen_working = "2026-04-25"
+
+[[model]]
+id = "qwen3-next-80b-free"
+openrouter_id = "qwen/qwen3-next-80b-a3b-instruct:free"
+litellm_registered = false
+tier = "free"
+context = 262000
+params = "80B MoE / 3B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "long-context"]
+notes = "Instruction-tuned (no thinking). Less code-specialised than qwen3-coder but quieter on rate-limits. Small active params — fast. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "nemotron-super-free"
+openrouter_id = "nvidia/nemotron-3-super-120b-a12b:free"
+litellm_registered = true
+tier = "free"
+context = 262144
+params = "120B MoE / 12B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["reasoning", "long-context", "code-edit"]
+notes = "Hybrid Mamba-Transformer. Strong on AIME / SWE-Bench Verified per NVIDIA. Tool-use untested in field. Probed clean 2026-04-25."
+last_seen_working = "2026-04-25"
+
+[[model]]
+id = "nemotron-nano-30b-free"
+openrouter_id = "nvidia/nemotron-3-nano-30b-a3b:free"
+litellm_registered = false
+tier = "free"
+context = 256000
+params = "30B MoE / 3B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "reasoning", "long-context"]
+notes = "Released 2025-12-14. Tool-use not in OR card but family pattern strong. Good bursty fallback when 120B Super is busy. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "gpt-oss-20b-free"
+openrouter_id = "openai/gpt-oss-20b:free"
+litellm_registered = false
+tier = "free"
+context = 131072
+params = "21B MoE / 3.6B active"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit"]
+notes = "Same Harmony format as 120b. Lower latency, weaker reasoning. Drop from 120b when latency matters more than depth. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "nemotron-nano-9b-free"
+openrouter_id = "nvidia/nemotron-nano-9b-v2:free"
+litellm_registered = false
+tier = "free"
+context = 128000
+params = "9B (hybrid Mamba-Transformer)"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "reasoning"]
+notes = "BFCL v3 0.649 (beats Qwen3-8B). Reasoning-toggleable. Too small for repo-wide edits; solid for narrow tool calls. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "hermes-3-405b-free"
+openrouter_id = "nousresearch/hermes-3-llama-3.1-405b:free"
+litellm_registered = false
+tier = "free"
+context = 131072
+params = "405B dense"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use", "code-edit", "reasoning"]
+notes = "Llama-3.1 base, knowledge cutoff Dec 2023 (stale for new libs). 'Improved function calling' per Nous; no fresh BFCL numbers. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "llama-3.3-70b-free"
+openrouter_id = "meta-llama/llama-3.3-70b-instruct:free"
+litellm_registered = false
+tier = "free"
+context = 65536
+params = "70B dense"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["tool-use"]
+notes = "Smallest context here. Well-known tool-call format; widely deployed → most predictable behaviour. Good baseline. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "gemma-3-27b-free"
+openrouter_id = "google/gemma-3-27b-it:free"
+litellm_registered = false
+tier = "free"
+context = 131072
+params = "27B dense"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 50
+good_for = ["code-edit", "multilingual"]
+notes = "Gemma 'function calling' is prompted structured output, NOT OpenAI-format tools — brittle in autonomous Edit/Read/Bash loops. Multimodal, 140+ langs. NOT IN LITELLM YET."
+last_seen_working = ""
+
+# ────────────────────────────────────────────────────────────────────────
+# on-prem (LiteLLM-routed to local vllm)
+# ────────────────────────────────────────────────────────────────────────
+
+[[model]]
+id = "local/qwen3-8b"
+openrouter_id = ""
+litellm_registered = true
+tier = "on-prem"
+context = 32768
+params = "8B"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 0
+good_for = []
+notes = "vllm-hermes pod on seir. Smoke-tested 2026-04-25: explores via Read/Grep/Glob but never invokes Edit. Avoid for any real edit task."
+last_seen_working = ""
+
+[[model]]
+id = "qwen2.5-coder-32b"
+openrouter_id = ""
+litellm_registered = true
+tier = "on-prem"
+context = 32768
+params = "32B (per name; actually routes to 7B)"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 0
+good_for = []
+notes = "BROKEN 2026-04-25: nixlab litellm-config routes this to openai/Qwen/Qwen2.5-Coder-7B-Instruct at vllm-service.apps.svc — wrong model id AND dead service (no endpoints). Do NOT recommend until nixlab PR fixes the routing."
+last_seen_working = ""
+
+[[model]]
+id = "qwen2.5-coder-7b"
+openrouter_id = ""
+litellm_registered = true
+tier = "on-prem"
+context = 32768
+params = "7B"
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+day_cap_req = 0
+good_for = []
+notes = "BROKEN 2026-04-25: same vllm-service routing dead-end as 32b. Do NOT recommend."
+last_seen_working = ""
+
+# ────────────────────────────────────────────────────────────────────────
+# paid escape hatch — all via OpenRouter (consolidated billing per owner pref)
+# ────────────────────────────────────────────────────────────────────────
+
+[[model]]
+id = "gemini-2.5-flash-lite"
+openrouter_id = "google/gemini-2.5-flash-lite"
+litellm_registered = false
+tier = "paid-cheap"
+context = 1048576
+params = "n/a"
+input_per_mtok = 0.10
+output_per_mtok = 0.40
+day_cap_req = 0
+good_for = ["tool-use", "long-context", "bootstrap"]
+notes = "Cheapest sane cloud option. Needs to see most of a crate? — pick this. Tool-use is fine, not stellar. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "deepseek-chat-v3.1"
+openrouter_id = "deepseek/deepseek-chat-v3.1"
+litellm_registered = false
+tier = "paid-cheap"
+context = 131072
+params = "n/a"
+input_per_mtok = 0.15
+output_per_mtok = 0.75
+day_cap_req = 0
+good_for = ["code-edit", "reasoning", "tool-use"]
+notes = "Strong code-edit under $1/Mtok input. Structured tool calls. Default escalation from free tier. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "gemini-2.5-flash"
+openrouter_id = "google/gemini-2.5-flash"
+litellm_registered = true
+tier = "paid-cheap"
+context = 1048576
+params = "n/a"
+input_per_mtok = 0.30
+output_per_mtok = 2.50
+day_cap_req = 0
+good_for = ["tool-use", "long-context", "reasoning"]
+notes = "When Lite isn't smart enough but still need 1M context. Reasoning-on by default."
+last_seen_working = ""
+
+[[model]]
+id = "claude-haiku-4-5"
+openrouter_id = "anthropic/claude-haiku-4.5"
+litellm_registered = false
+tier = "paid-cheap"
+context = 200000
+params = "n/a"
+input_per_mtok = 1.00
+output_per_mtok = 5.00
+day_cap_req = 0
+good_for = ["tool-use", "code-edit", "reasoning", "bootstrap"]
+notes = ">73% SWE-bench Verified. MOST RELIABLE TOOL-USE of the cheap tier; full coding/bash/web/computer-use tool support. Default for any non-trivial agentic loop. Use for accountant bootstrap. NOT IN LITELLM YET."
+last_seen_working = ""
+
+[[model]]
+id = "claude-sonnet-4-6"
+openrouter_id = "anthropic/claude-sonnet-4-6"
+litellm_registered = true
+tier = "paid"
+context = 200000
+params = "n/a"
+input_per_mtok = 3.00
+output_per_mtok = 15.00
+day_cap_req = 0
+good_for = ["tool-use", "code-edit", "reasoning", "long-context"]
+notes = "Reserve. Use only after a task fails ≥2 times on cheaper tiers, or for architecture-level synthesis. Bootstrap model for the architect agent."
+last_seen_working = ""
+
+[[model]]
+id = "claude-opus-4-6"
+openrouter_id = "anthropic/claude-opus-4-6"
+litellm_registered = true
+tier = "paid"
+context = 200000
+params = "n/a"
+input_per_mtok = 15.00
+output_per_mtok = 75.00
+day_cap_req = 0
+good_for = ["tool-use", "code-edit", "reasoning", "long-context", "planning"]
+notes = "Top of the line. Reserve for highest-stakes architectural decisions. Almost never the right answer for autoresearch coding tasks."
+last_seen_working = ""
+
+[[model]]
+id = "gpt-4o"
+openrouter_id = "openai/gpt-4o"
+litellm_registered = true
+tier = "paid"
+context = 128000
+params = "n/a"
+input_per_mtok = 2.50
+output_per_mtok = 10.00
+day_cap_req = 0
+good_for = ["tool-use", "reasoning"]
+notes = "Cloud OpenAI. Comparable cost to Sonnet, generally weaker on code edits. Keep for parity testing."
+last_seen_working = ""
