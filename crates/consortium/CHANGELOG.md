@@ -2,6 +2,15 @@
 
 ## Bug Fixes
 
+- use [lib] table instead of [package].lib.name ([#3](https://github.com/olivecasazza/consortium/pull/3))
+
+## Features
+
+- dag_executor microbench — autoresearch perf signal ([#4](https://github.com/olivecasazza/consortium/pull/4))
+
+
+## Bug Fixes
+
 - multi-dim pattern expansion, drain process output, group resolver, configparser 3.x
 - mark env-mutating tests as unsafe, bump nextest retries to 2
 
