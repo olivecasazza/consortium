@@ -23,3 +23,6 @@ name = "consortium-ray"
 
 [[package]]
 name = "consortium-skypilot"
+
+[[package]]
+name = "consortium-fanout-sim"
