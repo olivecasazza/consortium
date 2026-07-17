@@ -15,7 +15,7 @@ from ClusterShell.Task import task_self
 from ClusterShell.Propagation import PropagationChannel, RouteResolvingError
 from ClusterShell.NodeSet import NodeSet
 
-from TLib import HOSTNAME, make_temp_file
+from .TLib import HOSTNAME, make_temp_file
 
 logging.basicConfig(level=logging.DEBUG)
 

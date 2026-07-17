@@ -6,7 +6,7 @@
 
 [upstream]
 repo = "cea-hpc/clustershell"
-ref = "v1.9.3"
+ref = "7d440c7cce5ca358ff4a59729bc7b26e3e857d3e"
 
 [CLIClubakTest]
 test_000_noargs = []
