@@ -14,6 +14,10 @@ pub trait EventHandler: Send + Sync {
 
     /// Called for each node to indicate that a worker command for a
     /// specific node (or key) has just started.
+    ///
+    /// *Changed in version 1.10:* in tree mode, `ev_pickup` now fires
+    /// only once a command can no longer be rerouted, so it fires at
+    /// most once per node.
     fn ev_pickup(&mut self, _worker: &dyn Any, _node: &str) {}
 
     /// Called to indicate that a worker has data to read from a specific

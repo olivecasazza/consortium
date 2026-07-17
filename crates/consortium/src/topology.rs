@@ -641,6 +641,25 @@ impl<'a> Iterator for TopologyTreeIter<'a> {
 pub struct TopologyParser {
     graph: Option<TopologyGraph>,
     tree_cache: Option<TopologyTree>,
+    /// Deprecation warnings collected during parsing. Mirrors Python's
+    /// `warnings.catch_warnings(record=True)`: the parser records
+    /// `DeprecationWarning` messages here instead of emitting them.
+    warnings: Vec<String>,
+}
+
+/// Intermediate result of INI parsing: per-section entries and presence.
+///
+/// Section names are matched case-sensitively (`routes`, `Main`), exactly
+/// like Python's configparser used by ClusterShell.
+struct ParsedIni {
+    /// Whether a `[routes]` section header was seen.
+    routes_present: bool,
+    /// Whether a `[Main]` section header was seen.
+    main_present: bool,
+    /// Entries collected under `[routes]`.
+    routes: Vec<(String, String)>,
+    /// Entries collected under `[Main]`.
+    main: Vec<(String, String)>,
 }
 
 impl TopologyParser {
@@ -649,6 +668,7 @@ impl TopologyParser {
         Self {
             graph: None,
             tree_cache: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -659,21 +679,61 @@ impl TopologyParser {
         Ok(parser)
     }
 
+    /// Deprecation warnings recorded while loading the configuration.
+    ///
+    /// Equivalent to the `DeprecationWarning`s the Python parser emits
+    /// through the `warnings` module (e.g. for the legacy `[Main]`
+    /// section, deprecated since v1.7).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     /// Load a topology configuration file.
     pub fn load(&mut self, filename: &str) -> Result<()> {
         let content = std::fs::read_to_string(filename).map_err(|e| {
             TopologyError::ParseError(format!("Invalid configuration file: {} ({})", filename, e))
         })?;
 
-        let routes = Self::parse_ini(&content)?;
+        let parsed = Self::parse_ini(&content)?;
+        // [routes] takes precedence; [Main] is the deprecated compat fallback.
+        let routes = if parsed.routes_present {
+            parsed.routes
+        } else {
+            // compat routes section [deprecated since v1.7]
+            self.warnings.push(
+                "topology: [Main] section is deprecated since v1.7, use [routes] instead"
+                    .to_string(),
+            );
+            if !parsed.main_present {
+                // configparser.NoSectionError -> TopologyError upstream
+                return Err(TopologyError::ParseError(format!(
+                    "Invalid configuration file: {}",
+                    filename
+                )));
+            }
+            parsed.main
+        };
         self.build_graph(routes)?;
         Ok(())
     }
 
-    /// Parse INI-style content to extract routes.
-    fn parse_ini(content: &str) -> Result<Vec<(String, String)>> {
-        let mut routes = Vec::new();
-        let mut in_section = false;
+    /// Parse INI-style content into per-section route entries.
+    fn parse_ini(content: &str) -> Result<ParsedIni> {
+        #[derive(PartialEq)]
+        enum Section {
+            None,
+            Routes,
+            Main,
+            Other,
+        }
+
+        let mut parsed = ParsedIni {
+            routes_present: false,
+            main_present: false,
+            routes: Vec::new(),
+            main: Vec::new(),
+        };
+        let mut section = Section::None;
 
         for line in content.lines() {
             let trimmed = line.trim();
@@ -683,27 +743,39 @@ impl TopologyParser {
                 continue;
             }
 
-            // Section headers
+            // Section headers (case-sensitive, like Python configparser)
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                let section = &trimmed[1..trimmed.len() - 1];
-                in_section =
-                    section.eq_ignore_ascii_case("routes") || section.eq_ignore_ascii_case("main");
+                section = match &trimmed[1..trimmed.len() - 1] {
+                    "routes" => {
+                        parsed.routes_present = true;
+                        Section::Routes
+                    }
+                    "Main" => {
+                        parsed.main_present = true;
+                        Section::Main
+                    }
+                    _ => Section::Other,
+                };
                 continue;
             }
 
-            if in_section {
-                // Parse "src: dst" or "src:dst"
-                if let Some(colon_pos) = trimmed.find(':') {
-                    let src = trimmed[..colon_pos].trim().to_string();
-                    let dst = trimmed[colon_pos + 1..].trim().to_string();
-                    if !src.is_empty() && !dst.is_empty() {
-                        routes.push((src, dst));
-                    }
+            let entries = match section {
+                Section::Routes => &mut parsed.routes,
+                Section::Main => &mut parsed.main,
+                _ => continue,
+            };
+
+            // Parse "src: dst" or "src:dst"
+            if let Some(colon_pos) = trimmed.find(':') {
+                let src = trimmed[..colon_pos].trim().to_string();
+                let dst = trimmed[colon_pos + 1..].trim().to_string();
+                if !src.is_empty() && !dst.is_empty() {
+                    entries.push((src, dst));
                 }
             }
         }
 
-        Ok(routes)
+        Ok(parsed)
     }
 
     /// Build the topology graph from parsed routes.
@@ -1064,6 +1136,95 @@ mod tests {
         }
         assert_eq!(all.to_string(), ns("admin,nodes[0-9]").to_string());
     }
+
+    #[test]
+    fn test_parser_main_compat_deprecation_warning() {
+        // Mirror of TreeTopologyTest: parsing a legacy [Main] section
+        // records exactly one DeprecationWarning (upstream #226).
+        let mut tmpfile = NamedTempFile::new().unwrap();
+        writeln!(tmpfile, "[Main]").unwrap();
+        writeln!(tmpfile, "admin: nodes[0-1]").unwrap();
+        writeln!(tmpfile, "nodes[0-1]: nodes[2-5]").unwrap();
+        writeln!(tmpfile, "nodes[4-5]: nodes[6-9]").unwrap();
+        tmpfile.flush().unwrap();
+
+        let mut parser = TopologyParser::from_file(tmpfile.path().to_str().unwrap()).unwrap();
+        // the [Main] fallback still builds the same tree...
+        let tree = parser.tree("admin").unwrap();
+        let mut all = NodeSet::new();
+        for group in tree.iter() {
+            all.update(&group.nodeset);
+        }
+        assert_eq!(all.to_string(), ns("admin,nodes[0-9]").to_string());
+        // ...but exactly one deprecation warning was recorded
+        assert_eq!(parser.warnings().len(), 1);
+        assert_eq!(
+            parser.warnings()[0],
+            "topology: [Main] section is deprecated since v1.7, use [routes] instead"
+        );
+    }
+
+    #[test]
+    fn test_parser_routes_section_no_deprecation_warning() {
+        // Canonical [routes] section: no warning recorded.
+        let mut tmpfile = NamedTempFile::new().unwrap();
+        writeln!(tmpfile, "[routes]").unwrap();
+        writeln!(tmpfile, "admin: nodes[0-1]").unwrap();
+        writeln!(tmpfile, "nodes[0-1]: nodes[2-5]").unwrap();
+        tmpfile.flush().unwrap();
+
+        let parser = TopologyParser::from_file(tmpfile.path().to_str().unwrap()).unwrap();
+        assert!(parser.warnings().is_empty());
+    }
+
+    #[test]
+    fn test_parser_routes_preferred_over_main() {
+        // When both sections exist, [routes] wins and [Main] is ignored
+        // (mirrors configparser has_section("routes") branch upstream).
+        let mut tmpfile = NamedTempFile::new().unwrap();
+        writeln!(tmpfile, "[Main]").unwrap();
+        writeln!(tmpfile, "admin: stale[0-1]").unwrap();
+        writeln!(tmpfile, "[routes]").unwrap();
+        writeln!(tmpfile, "admin: nodes[0-1]").unwrap();
+        writeln!(tmpfile, "nodes[0-1]: nodes[2-5]").unwrap();
+        tmpfile.flush().unwrap();
+
+        let mut parser = TopologyParser::from_file(tmpfile.path().to_str().unwrap()).unwrap();
+        let tree = parser.tree("admin").unwrap();
+
+        let mut all = NodeSet::new();
+        for group in tree.iter() {
+            all.update(&group.nodeset);
+        }
+        // stale[0-1] from [Main] must not appear
+        assert_eq!(all.to_string(), ns("admin,nodes[0-5]").to_string());
+        assert!(parser.warnings().is_empty());
+    }
+
+    #[test]
+    fn test_parser_missing_routes_and_main_warns_then_errors() {
+        // No [routes] and no [Main]: the deprecation warning is still
+        // recorded first, then loading fails like configparser's
+        // NoSectionError -> TopologyError upstream.
+        let mut tmpfile = NamedTempFile::new().unwrap();
+        writeln!(tmpfile, "[other]").unwrap();
+        writeln!(tmpfile, "admin: nodes[0-1]").unwrap();
+        tmpfile.flush().unwrap();
+
+        let mut parser = TopologyParser::new();
+        let result = parser.load(tmpfile.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid configuration file"));
+        assert_eq!(parser.warnings().len(), 1);
+        assert_eq!(
+            parser.warnings()[0],
+            "topology: [Main] section is deprecated since v1.7, use [routes] instead"
+        );
+    }
+
 
     #[test]
     fn test_parser_short_syntax() {
