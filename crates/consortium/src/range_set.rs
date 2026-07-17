@@ -53,6 +53,23 @@ fn sorted_elements(elements: &BTreeSet<String>) -> Vec<String> {
     v
 }
 
+/// Normalize `start`/`stop` search-window bounds like Python's
+/// `_normalized_index_bounds()` (list.index() semantics: negative values
+/// count from the end).
+fn normalized_index_bounds(length: usize, start: isize, stop: Option<isize>) -> (usize, usize) {
+    let start = if start < 0 {
+        (length as isize + start).max(0) as usize
+    } else {
+        start as usize
+    };
+    let stop = match stop {
+        None => length,
+        Some(s) if s < 0 => (length as isize + s).max(0) as usize,
+        Some(s) => s as usize,
+    };
+    (start, stop)
+}
+
 // ---------------------------------------------------------------------------
 // Slice representation (used internally for display)
 // ---------------------------------------------------------------------------
@@ -98,6 +115,28 @@ impl RangeSet {
         rs.set_autostep(autostep);
         rs._parse(pattern)?;
         Ok(rs)
+    }
+
+    /// Construct from an optional pattern, mirroring Python's
+    /// `RangeSet(pattern_or_None)`: `None` yields an empty set, while
+    /// `Some("")` is an error by design, exactly like `RangeSet("")`.
+    ///
+    /// This is the round-trip-safe reconstruction path for the empty set,
+    /// porting the upstream pickling fix (ClusterShell commit 9df4c5a):
+    /// Python's `RangeSet.__reduce__` stores `None` instead of `""` when the
+    /// set is empty, so unpickling an empty RangeSet works again. In Rust
+    /// terms, serializing an empty set must produce `None` (not
+    /// `Some(String::new())`), and deserializing through this constructor
+    /// round-trips correctly.
+    pub fn from_optional_pattern(pattern: Option<&str>, autostep: Option<u32>) -> Result<Self> {
+        match pattern {
+            None => {
+                let mut rs = Self::new();
+                rs.set_autostep(autostep);
+                Ok(rs)
+            }
+            Some(p) => Self::parse(p, autostep),
+        }
     }
 
     /// Internal parse: comma-separated subranges.
@@ -312,6 +351,54 @@ impl RangeSet {
     /// Check if an integer (unpadded) is in the set.
     pub fn contains_int(&self, value: i64) -> bool {
         self.elements.contains(&format!("{}", value))
+    }
+
+    /// Return the zero-based position of `value` in sorted order, or `None`
+    /// if the element is absent.
+    ///
+    /// Ports Python's `RangeSet.index()` (ClusterShell commit 484d230), the
+    /// reverse operation of `RangeSet.__getitem__`, behaving like
+    /// `list.index()` (absent element -> `None` here, `ValueError` there).
+    ///
+    /// Like the Python integer form, the value is looked up as its plain
+    /// decimal string, so zero-padding is significant: `9` is not a member
+    /// of `RangeSet("08-10")` and yields `None`. Negative values cannot be
+    /// expressed through this `u64` signature.
+    pub fn index(&self, value: u64) -> Option<usize> {
+        self.index_str(&value.to_string())
+    }
+
+    /// String form of [`RangeSet::index`], matching Python's string
+    /// argument form where zero-padding is significant.
+    pub fn index_str(&self, key: &str) -> Option<usize> {
+        self.index_str_within(key, 0, None)
+    }
+
+    /// [`RangeSet::index_str`] restricted to a search window, mirroring
+    /// Python's optional `start`/`stop` arguments of `RangeSet.index()`
+    /// (list.index() semantics; negative bounds count from the end).
+    /// Returns `None` when the element is absent or its position falls
+    /// outside the window.
+    pub fn index_str_within(&self, key: &str, start: isize, stop: Option<isize>) -> Option<usize> {
+        // Set membership is fast and padding-aware.
+        if !self.elements.contains(key) {
+            return None;
+        }
+        // Compute the rank in a single O(n) pass (no full sort) by counting
+        // the elements that sort before `key`, like the Python oracle.
+        let tkey = sort_key(key);
+        let found = self
+            .elements
+            .iter()
+            .filter(|elem| sort_key(elem) < tkey)
+            .count();
+        if start != 0 || stop.is_some() {
+            let (start, stop) = normalized_index_bounds(self.len(), start, stop);
+            if !(start <= found && found < stop) {
+                return None;
+            }
+        }
+        Some(found)
     }
 
     /// Get sorted elements as owned strings.
@@ -630,6 +717,14 @@ impl Default for RangeSet {
     }
 }
 
+impl PartialEq for RangeSet {
+    /// Equality follows Python's set semantics (used by `RangeSet.__eq__`):
+    /// only the contained elements are compared, not the autostep setting.
+    fn eq(&self, other: &Self) -> bool {
+        self.elements == other.elements
+    }
+}
+
 impl fmt::Display for RangeSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.strslices().join(","))
@@ -637,14 +732,71 @@ impl fmt::Display for RangeSet {
 }
 
 // ---------------------------------------------------------------------------
-// RangeSetND (N-dimensional) — stub
+// RangeSetND (N-dimensional) — partial port (no automatic nD folding yet)
 // ---------------------------------------------------------------------------
 
 /// N-dimensional range set, used internally by NodeSet for multi-range patterns.
+///
+/// NOTE: unlike Python's `RangeSetND`, no automatic n-dimensional folding
+/// (merging/sorting of overlapping vectors, i.e. `precond_fold`) is performed
+/// yet. Iteration and [`RangeSetND::index`] follow the stored vector order,
+/// so callers wanting Python-identical positions must store vectors already
+/// disjoint, merged, and ordered the way Python's fold would leave them.
 #[derive(Debug, Clone)]
 pub struct RangeSetND {
     pub vecrangesets: Vec<Vec<RangeSet>>,
     _autostep: f64,
+}
+
+/// Lazy Cartesian-product iterator over the sorted elements of each
+/// dimension of one RangeSet vector. The last dimension varies fastest,
+/// matching Python's `itertools.product`.
+struct VecProductIter {
+    dims: Vec<Vec<String>>,
+    counter: Vec<usize>,
+    done: bool,
+}
+
+impl VecProductIter {
+    fn new(dims: Vec<Vec<String>>) -> Self {
+        let done = dims.iter().any(|d| d.is_empty());
+        Self {
+            counter: vec![0; dims.len()],
+            dims,
+            done,
+        }
+    }
+}
+
+impl Iterator for VecProductIter {
+    type Item = Vec<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let item: Vec<String> = self
+            .dims
+            .iter()
+            .zip(&self.counter)
+            .map(|(d, &i)| d[i].clone())
+            .collect();
+        // Advance the mixed-radix counter, last dimension fastest.
+        let mut pos = self.counter.len();
+        loop {
+            if pos == 0 {
+                self.done = true;
+                break;
+            }
+            pos -= 1;
+            self.counter[pos] += 1;
+            if self.counter[pos] < self.dims[pos].len() {
+                break;
+            }
+            self.counter[pos] = 0;
+        }
+        Some(item)
+    }
 }
 
 impl RangeSetND {
@@ -653,6 +805,81 @@ impl RangeSetND {
             vecrangesets: Vec::new(),
             _autostep: autostep.map(|v| v as f64).unwrap_or(AUTOSTEP_DISABLED),
         }
+    }
+
+    /// Build from a vector of RangeSet vectors, mirroring Python's
+    /// `RangeSetND([[rs1, rs2, ...], ...])`.
+    pub fn from_rangesets(vecrangesets: Vec<Vec<RangeSet>>, autostep: Option<u32>) -> Self {
+        Self {
+            vecrangesets,
+            _autostep: autostep.map(|v| v as f64).unwrap_or(AUTOSTEP_DISABLED),
+        }
+    }
+
+    /// Count elements as the sum of each vector's Cartesian-product size.
+    ///
+    /// Without nD folding this counts duplicate index vectors across
+    /// overlapping stored vectors multiple times; Python's `__len__` folds
+    /// first and counts unique vectors only.
+    pub fn len(&self) -> usize {
+        self.vecrangesets
+            .iter()
+            .map(|rgvec| rgvec.iter().map(RangeSet::len).product::<usize>())
+            .sum()
+    }
+
+    /// Whether the set contains no element.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate over all index vectors (as zero-padded strings) in iteration
+    /// order: stored vectors in order, and within each vector the Cartesian
+    /// product of its sorted RangeSets with the last dimension varying
+    /// fastest (Python's `RangeSetND._iter()`).
+    pub fn iter(&self) -> impl Iterator<Item = Vec<String>> + '_ {
+        self.vecrangesets.iter().flat_map(|rgvec| {
+            VecProductIter::new(rgvec.iter().map(RangeSet::sorted).collect())
+        })
+    }
+
+    /// Return the zero-based position of an index vector in iteration order,
+    /// or `None` if absent (Python raises `ValueError`).
+    ///
+    /// Ports Python's `RangeSetND.index()` (ClusterShell commit 484d230),
+    /// the reverse operation of `RangeSetND.__getitem__`. Elements may be
+    /// strings (zero-padding is then significant) or integers; anything
+    /// `ToString` covers mirrors Python's `"%s" % e` conversion. Python's
+    /// `TypeError` for bare strings/scalars is a compile-time impossibility
+    /// here since a slice of indexes is required.
+    pub fn index<T: ToString>(&self, elem: &[T]) -> Option<usize> {
+        self.index_within(elem, 0, None)
+    }
+
+    /// [`RangeSetND::index`] restricted to a search window, mirroring
+    /// Python's optional `start`/`stop` arguments (list.index() semantics;
+    /// negative bounds count from the end).
+    pub fn index_within<T: ToString>(
+        &self,
+        elem: &[T],
+        start: isize,
+        stop: Option<isize>,
+    ) -> Option<usize> {
+        let target: Vec<String> = elem.iter().map(|e| e.to_string()).collect();
+        for (pos, ivec) in self.iter().enumerate() {
+            if ivec == target {
+                if start != 0 || stop.is_some() {
+                    let (start, stop) = normalized_index_bounds(self.len(), start, stop);
+                    if !(start <= pos && pos < stop) {
+                        // First occurrence is outside the window: Python
+                        // breaks out of the scan and raises ValueError.
+                        break;
+                    }
+                }
+                return Some(pos);
+            }
+        }
+        None
     }
 }
 
@@ -1237,5 +1464,139 @@ mod tests {
     fn test_remove_missing_panics() {
         let mut r1 = RangeSet::parse("1-100", None).unwrap();
         r1.remove_str("101");
+    }
+
+    #[test]
+    fn test_index() {
+        // Python: testIndex (ClusterShell commit 484d230)
+        let r1 = RangeSet::parse("1-100,102,105-242,800", None).unwrap();
+        // index() is the reverse of __getitem__()
+        let sorted = r1.sorted();
+        for (i, elem) in sorted.iter().enumerate() {
+            assert_eq!(r1.index_str(elem), Some(i));
+        }
+        // accept both string and integer arguments
+        assert_eq!(r1.index_str("1"), Some(0));
+        assert_eq!(r1.index(1), Some(0));
+        assert_eq!(r1.index_str("102"), Some(100));
+        assert_eq!(r1.index(105), Some(101));
+        assert_eq!(r1.index_str("800"), Some(239));
+
+        // zero-padding is significant
+        let r2 = RangeSet::parse("08-10", None).unwrap();
+        assert_eq!(r2.index_str("08"), Some(0));
+        assert_eq!(r2.index_str("09"), Some(1));
+        assert_eq!(r2.index_str("10"), Some(2));
+        assert_eq!(r2.index_str("9"), None);
+        assert_eq!(r2.index(9), None);
+    }
+
+    #[test]
+    fn test_index_missing() {
+        // Python: testIndex — missing element raises ValueError there,
+        // returns None here (like list.index()).
+        let r1 = RangeSet::parse("1-100,102,105-242,800", None).unwrap();
+        assert_eq!(r1.index_str("101"), None);
+        assert_eq!(r1.index(101), None);
+        assert_eq!(r1.index(900), None);
+        // empty set: nothing is found
+        let r0 = RangeSet::new();
+        assert_eq!(r0.index(0), None);
+        assert_eq!(r0.index_str("0"), None);
+    }
+
+    #[test]
+    fn test_index_window() {
+        // Python: testIndex — optional start/end search window
+        // (list.index() semantics).
+        let r3 = RangeSet::parse("0-9", None).unwrap();
+        assert_eq!(r3.index_str_within("5", 3, None), Some(5));
+        assert_eq!(r3.index_str_within("5", 5, None), Some(5));
+        assert_eq!(r3.index_str_within("5", 6, None), None);
+        assert_eq!(r3.index_str_within("8", -3, None), Some(8));
+        assert_eq!(r3.index_str_within("5", 0, Some(6)), Some(5));
+        assert_eq!(r3.index_str_within("5", 0, Some(5)), None);
+        assert_eq!(r3.index_str_within("9", 0, Some(-1)), None);
+    }
+
+    #[test]
+    fn test_pickle_empty() {
+        // Python: test_pickle_empty (ClusterShell commit 9df4c5a).
+        // Pickling an empty RangeSet stores None (not "", which raises by
+        // design on reconstruction); the round trip preserves autostep.
+        let rs = RangeSet::from_optional_pattern(None, Some(3)).unwrap();
+        assert_eq!(rs, RangeSet::new());
+        assert_eq!(rs.to_string(), "");
+        assert_eq!(rs.len(), 0);
+        assert_eq!(rs.autostep(), Some(3));
+        // The serialized external representation of an empty set is the
+        // "no pattern" form, never Some("") which parse() rejects.
+        let external = if rs.is_empty() {
+            None
+        } else {
+            Some(rs.to_string())
+        };
+        let restored = RangeSet::from_optional_pattern(external.as_deref(), rs.autostep()).unwrap();
+        assert_eq!(restored, rs);
+        assert_eq!(restored.autostep(), Some(3));
+        // Some("") remains an error by design, like RangeSet("").
+        assert!(RangeSet::from_optional_pattern(Some(""), None).is_err());
+    }
+
+    #[test]
+    fn test_deepcopy_empty() {
+        // Python: test_deepcopy_empty — Rust Clone is the deepcopy
+        // equivalent for this value type.
+        let rs = RangeSet::new().clone();
+        assert_eq!(rs, RangeSet::new());
+        assert_eq!(rs.to_string(), "");
+        assert_eq!(rs.len(), 0);
+    }
+
+    #[test]
+    fn test_nd_index() {
+        // Python: RangeSetNDTest.test_index (ClusterShell commit 484d230).
+        // NOTE: the Python test builds RangeSetND([["10", "10-13"],
+        // ["0-3", "1-2"]]) and relies on automatic nD folding to merge and
+        // reorder the vectors. Folding is not implemented in Rust yet, so
+        // the vectors are stored here in Python's post-fold order, which
+        // yields identical iteration positions.
+        let rn1 = RangeSetND::from_rangesets(
+            vec![
+                vec![
+                    RangeSet::parse("0-3", None).unwrap(),
+                    RangeSet::parse("1-2", None).unwrap(),
+                ],
+                vec![
+                    RangeSet::parse("10", None).unwrap(),
+                    RangeSet::parse("10-13", None).unwrap(),
+                ],
+            ],
+            None,
+        );
+        assert_eq!(rn1.len(), 12);
+        // index() is the reverse of __getitem__()
+        for (i, ivec) in rn1.iter().enumerate() {
+            assert_eq!(rn1.index(&ivec), Some(i));
+        }
+        assert_eq!(rn1.index(&["0", "1"]), Some(0));
+        assert_eq!(rn1.index(&["3", "2"]), Some(7));
+        assert_eq!(rn1.index(&["10", "13"]), Some(11));
+        // integer vectors are also accepted (ToString mirrors "%s" % e)
+        assert_eq!(rn1.index(&[0, 1]), Some(0));
+        assert_eq!(rn1.index(&[10, 13]), Some(11));
+        // missing vector raises ValueError in Python, None here
+        assert_eq!(rn1.index(&["10", "14"]), None);
+        assert_eq!(rn1.index(&["5", "1"]), None);
+        // A bare string or scalar is not a valid index vector: Python raises
+        // TypeError; in Rust this is rejected at compile time since a slice
+        // of indexes is required (not testable at runtime).
+        //
+        // optional start/end search window (list.index() semantics)
+        assert_eq!(rn1.index_within(&["3", "2"], 7, None), Some(7));
+        assert_eq!(rn1.index_within(&["3", "2"], 8, None), None);
+        assert_eq!(rn1.index_within(&["10", "13"], -1, None), Some(11));
+        assert_eq!(rn1.index_within(&["10", "13"], 0, Some(12)), Some(11));
+        assert_eq!(rn1.index_within(&["10", "13"], 0, Some(-1)), None);
     }
 }
