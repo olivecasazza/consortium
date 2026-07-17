@@ -26,6 +26,20 @@ pub const ENCODING: &str = "utf-8";
 /// Default base64 line length for large payloads
 pub const DEFAULT_B64_LINE_LENGTH: usize = 65536;
 
+/// Pinned pickle protocol version for gateway/tree message payloads.
+///
+/// Mirrors upstream `Communication.GW_PICKLE_PROTOCOL`
+/// (`min(HIGHEST_PROTOCOL, 4)`, commit fee03a3): gateway messages may cross
+/// Python versions within a tree, so the protocol is capped at 4, readable
+/// since Python 3.4 (Python 2 writes protocol 2).
+///
+/// Rust payloads are opaque pre-serialized bytes (no pickle writer on this
+/// side), so the pin is enforced on READ: [`Message::data_decode`] rejects a
+/// payload stamped with a newer protocol, reproducing upstream's
+/// "unsupported pickle protocol: N" negotiation failure instead of silently
+/// mis-decoding. See [`validate_payload_protocol`].
+pub const GW_PICKLE_PROTOCOL: u8 = 4;
+
 // Channel stream name constants
 /// Stream name for the writer side of a channel
 pub const SNAME_WRITER: &str = "ch-writer";
@@ -55,9 +69,15 @@ const IDENT_END: &str = "END";
 /// Errors raised during message processing.
 #[derive(Error, Debug)]
 pub enum MessageProcessingError {
-    /// An unknown or invalid message type was encountered.
-    #[error("Unknown message type: {0}")]
+    /// An unknown message type was encountered.
+    /// Message text mirrors upstream "Unknown message type %s".
+    #[error("Unknown message type {0}")]
     UnknownType(String),
+
+    /// A message with no (or an empty) "type" attribute was encountered.
+    /// Message text mirrors upstream "Unknown message with no type".
+    #[error("Unknown message with no type")]
+    NoType,
 
     /// A required attribute is missing from a message.
     #[error("Invalid message attributes: missing key \"{0}\"")]
@@ -67,9 +87,20 @@ pub enum MessageProcessingError {
     #[error("Got unexpected payload for Message {0}")]
     UnexpectedPayload(String),
 
+    /// A message was received in a state where it is not expected.
+    /// Message text mirrors upstream "unexpected message: %s".
+    #[error("unexpected message: {0}")]
+    UnexpectedMessage(String),
+
     /// The message payload is invalid or corrupted.
     #[error("Message {0} has an invalid payload")]
     InvalidPayload(String),
+
+    /// The message payload is invalid or corrupted; carries the underlying
+    /// cause like upstream's "Message %s has an invalid payload (%s)"
+    /// (commit fee03a3 — the cause is included since Python 3.14/reporting).
+    #[error("Message {0} has an invalid payload ({1})")]
+    InvalidPayloadDetail(String, String),
 
     /// XML parse error.
     #[error("Parse error: {0}")]
@@ -129,17 +160,26 @@ pub fn base64_encode(input: &[u8]) -> String {
 }
 
 /// Decode base64 string to bytes. Ignores whitespace/newlines (RFC 4648 relaxed).
+///
+/// On failure returns [`MessageProcessingError::InvalidPayload`] carrying only
+/// the reason (no message ident); use [`Message::data_decode`] for ident-aware
+/// errors that mirror upstream's "Message %s has an invalid payload (%s)".
 pub fn base64_decode(input: &str) -> Result<Vec<u8>, MessageProcessingError> {
-    fn b64_val(c: u8) -> Result<u8, MessageProcessingError> {
+    base64_decode_reason(input).map_err(MessageProcessingError::InvalidPayload)
+}
+
+/// Inner base64 decoder returning a plain reason string on failure, so callers
+/// can attribute the error to a specific message ident (upstream fee03a3 adds
+/// the underlying cause to the raised MessageProcessingError).
+fn base64_decode_reason(input: &str) -> Result<Vec<u8>, String> {
+    fn b64_val(c: u8) -> Result<u8, String> {
         match c {
             b'A'..=b'Z' => Ok(c - b'A'),
             b'a'..=b'z' => Ok(c - b'a' + 26),
             b'0'..=b'9' => Ok(c - b'0' + 52),
             b'+' => Ok(62),
             b'/' => Ok(63),
-            _ => Err(MessageProcessingError::InvalidPayload(
-                "invalid base64 character".into(),
-            )),
+            _ => Err("invalid base64 character".to_string()),
         }
     }
 
@@ -149,12 +189,21 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, MessageProcessingError> {
         return Ok(Vec::new());
     }
 
+    // Padding rules mirror Python's base64.b64decode (binascii.Error):
+    // length must be a multiple of 4 and '=' may only terminate the data.
+    if !clean.len().is_multiple_of(4) {
+        return Err("Incorrect padding".to_string());
+    }
+    if let Some(pos) = clean.iter().position(|&b| b == b'=') {
+        if clean.len() - pos > 2 || clean[pos..].iter().any(|&b| b != b'=') {
+            return Err("Invalid padding".to_string());
+        }
+    }
+
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     for chunk in clean.chunks(4) {
         if chunk.len() < 2 {
-            return Err(MessageProcessingError::InvalidPayload(
-                "truncated base64".into(),
-            ));
+            return Err("truncated base64".to_string());
         }
         let a = b64_val(chunk[0])?;
         let b = b64_val(chunk[1])?;
@@ -169,6 +218,26 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, MessageProcessingError> {
         }
     }
     Ok(out)
+}
+
+/// Validate a decoded wire payload against [`GW_PICKLE_PROTOCOL`].
+///
+/// Mirrors the `ValueError` arm of upstream `Message.data_decode()`
+/// (commit fee03a3): `cPickle.loads()` raises `ValueError("unsupported pickle
+/// protocol: N")` when a gateway running a newer Python emits a payload
+/// stamped with a protocol this side cannot read. Pickle protocol 2+ streams
+/// start with the PROTO opcode (`\x80`) followed by the protocol number; a
+/// number greater than the pinned gateway protocol is rejected with the same
+/// cause text so the mismatch is detected and reported instead of silently
+/// mis-decoded. Non-pickle payloads (no PROTO header) pass through unchanged.
+pub fn validate_payload_protocol(ident: &str, raw: &[u8]) -> Result<(), MessageProcessingError> {
+    if raw.len() >= 2 && raw[0] == 0x80 && raw[1] > GW_PICKLE_PROTOCOL {
+        return Err(MessageProcessingError::InvalidPayloadDetail(
+            ident.to_string(),
+            format!("unsupported pickle protocol: {}", raw[1]),
+        ));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -479,12 +548,21 @@ impl Message {
     }
 
     /// Decode the base64 payload back to raw bytes.
+    ///
+    /// Mirrors upstream `Message.data_decode()` (commit fee03a3): base64 or
+    /// payload-protocol failures raise an error carrying the message ident
+    /// AND the underlying cause, e.g.
+    /// "Message CFG has an invalid payload (unsupported pickle protocol: 7)".
     pub fn data_decode(&self) -> Result<Vec<u8>, MessageProcessingError> {
         match self.data() {
             Some(d) => {
+                let ident = self.ident().to_string();
                 let s = std::str::from_utf8(d)
-                    .map_err(|_| MessageProcessingError::InvalidPayload(self.ident().into()))?;
-                base64_decode(s)
+                    .map_err(|_| MessageProcessingError::InvalidPayload(ident.clone()))?;
+                let raw = base64_decode_reason(s)
+                    .map_err(|reason| MessageProcessingError::InvalidPayloadDetail(ident.clone(), reason))?;
+                validate_payload_protocol(&ident, &raw)?;
+                Ok(raw)
             }
             None => Err(MessageProcessingError::InvalidPayload(self.ident().into())),
         }
@@ -624,17 +702,23 @@ impl Message {
     ///
     /// The message type is selected based on the "type" attribute, and all
     /// other attributes are read according to the variant's schema.
+    ///
+    /// Mirrors upstream `XMLReader.startElement`: a missing OR empty "type"
+    /// attribute raises "Unknown message with no type"; an unrecognized type
+    /// raises "Unknown message type %s" (commit range message wording).
     pub fn from_attrs(attrs: &HashMap<String, String>) -> Result<Message, MessageProcessingError> {
-        let msg_type = attrs
-            .get("type")
-            .ok_or_else(|| MessageProcessingError::MissingAttribute("type".into()))?;
+        let msg_type = match attrs.get("type") {
+            Some(t) if !t.is_empty() => t.as_str(),
+            // attributes.get('type') is None or falsy upstream: same error
+            _ => return Err(MessageProcessingError::NoType),
+        };
 
         let msgid: u64 = attrs
             .get("msgid")
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(next_msg_id);
 
-        match msg_type.as_str() {
+        match msg_type {
             IDENT_CFG => {
                 let gateway = attrs.get("gateway").cloned().unwrap_or_default();
                 Ok(Message::Configuration {
@@ -834,7 +918,14 @@ impl XmlReader {
                     }
                 }
                 ParserState::TagName => {
-                    if ch == '/' && self.tag_buf.is_empty() {
+                    if ch == '<' {
+                        // Stray '<' inside a tag: expat raises
+                        // "not well-formed (invalid token)" here (GH-range
+                        // parse errors must be reported, not mis-parsed).
+                        return Err(MessageProcessingError::ParseError(
+                            "not well-formed (invalid token)".into(),
+                        ));
+                    } else if ch == '/' && self.tag_buf.is_empty() {
                         // Closing tag: </...>
                         self.tag_buf.clear();
                         self.state = ParserState::CloseTagName;
@@ -859,6 +950,10 @@ impl XmlReader {
                     if ch == '>' {
                         self.end_element(&self.tag_buf.clone())?;
                         self.state = ParserState::Text;
+                    } else if ch == '<' {
+                        return Err(MessageProcessingError::ParseError(
+                            "not well-formed (invalid token)".into(),
+                        ));
                     } else {
                         self.tag_buf.push(ch);
                     }
@@ -874,6 +969,12 @@ impl XmlReader {
                         } else {
                             self.attr_val.push(ch);
                         }
+                    } else if ch == '<' {
+                        // e.g. `<message type="ABC"</message>` — expat raises
+                        // "not well-formed (invalid token)".
+                        return Err(MessageProcessingError::ParseError(
+                            "not well-formed (invalid token)".into(),
+                        ));
                     } else if ch == '=' {
                         // About to read attribute value
                     } else if ch == '"' || ch == '\'' {
@@ -900,8 +1001,12 @@ impl XmlReader {
                         self.start_element(&tag, &attrs)?;
                         self.end_element(&tag)?;
                         self.state = ParserState::Text;
+                    } else {
+                        // Anything but '>' after '/' is malformed XML.
+                        return Err(MessageProcessingError::ParseError(
+                            "not well-formed (invalid token)".into(),
+                        ));
                     }
-                    // else: unexpected char, skip
                 }
             }
         }
@@ -990,6 +1095,8 @@ pub struct Channel {
     pub setup: bool,
     /// Whether this end initiated the channel.
     pub initiator: bool,
+    /// Whether the channel has been closed (fatal error or EndMessage).
+    pub closed: bool,
     /// The XML reader for parsing incoming data.
     pub xml_reader: XmlReader,
     /// Outgoing message buffer.
@@ -1006,6 +1113,7 @@ impl Channel {
             opened: false,
             setup: false,
             initiator,
+            closed: false,
             xml_reader: XmlReader::new(),
             outbox: VecDeque::new(),
         }
@@ -1046,6 +1154,60 @@ impl Channel {
     /// Take the next outgoing message from the outbox.
     pub fn take_outgoing(&mut self) -> Option<Vec<u8>> {
         self.outbox.pop_front()
+    }
+
+    /// Mark the channel as closed (mirrors upstream `Channel._close`).
+    pub fn close(&mut self) {
+        self.closed = true;
+        self.opened = false;
+        self.setup = false;
+    }
+
+    /// Report a channel-level error, mirroring upstream `Channel.ev_read`'s
+    /// SAXParseException / MessageProcessingError handlers (commit 6f45bf5).
+    ///
+    /// - **initiator side**: returns a synthetic stderr [`Message`] (ident
+    ///   `SER`, srcid 0, nodes = `node`) whose payload is the error text
+    ///   encoded with [`ENCODING`]. Upstream passes *bytes* here; passing the
+    ///   error text through unchanged (instead of a str/bytes mix) is what
+    ///   fixed the TypeError that hid the original error. The caller delivers
+    ///   the returned message to its own `recv()` path, exactly like
+    ///   upstream's `self.recv(StdErrMessage(node, text.encode(ENCODING)))`.
+    ///   For a parse error the bare parser message is used (upstream sends
+    ///   `ex.getMessage()`, e.g. "not well-formed (invalid token)").
+    /// - **target side**: enqueues an Error message back to the peer
+    ///   ("Parse error: %s" for parse errors, the plain error text otherwise)
+    ///   and returns `None`.
+    ///
+    /// In both cases the channel is closed: upstream treats these as fatal
+    /// channel errors. This function is infallible — the error-reporting
+    /// path must never itself fail (6f45bf5).
+    pub fn handle_channel_error(
+        &mut self,
+        node: &str,
+        err: &MessageProcessingError,
+    ) -> Option<Message> {
+        let report = if self.initiator {
+            // Bare error text for the local stderr report.
+            let text = match err {
+                MessageProcessingError::ParseError(inner) => inner.clone(),
+                other => other.to_string(),
+            };
+            let mut msg = Message::stderr(node, 0);
+            msg.data_encode(text.as_bytes());
+            Some(msg)
+        } else {
+            // Send an error message back to the initiator.
+            let reason = match err {
+                MessageProcessingError::ParseError(inner) => format!("Parse error: {}", inner),
+                other => other.to_string(),
+            };
+            self.send(&Message::error(&reason));
+            None
+        };
+        // Fatal channel error: close the channel now.
+        self.close();
+        report
     }
 }
 
@@ -1703,5 +1865,189 @@ mod tests {
         if let Message::Error { reason, .. } = &parsed {
             assert_eq!(reason, "node<1>&\"2\"");
         }
+    }
+
+    // -- Upstream 1.10.1 ports (fee03a3, 6f45bf5, TreeGatewayTest mirrors) --
+
+    /// Mirror of TreeMessageTest::test_msg_pickle_protocol.
+    ///
+    /// The pinned gateway pickle protocol is exposed as a constant and
+    /// enforced on decode: payloads stamped with a protocol <= 4 roundtrip,
+    /// anything newer is rejected with upstream's cause text.
+    #[test]
+    fn test_msg_pickle_protocol_pin() {
+        // pinned at 4, readable since Python 3.4 (upstream: min(HIGHEST_PROTOCOL, 4))
+        assert_eq!(GW_PICKLE_PROTOCOL, 4);
+
+        // A protocol-4-stamped payload (pickle PROTO opcode + version 4) is accepted
+        let mut msg = Message::configuration("n1");
+        let raw = b"\x80\x04some-payload-bytes";
+        msg.data_encode(raw);
+        // protocol 2+ streams start with the PROTO opcode then the version
+        let encoded = msg.data().unwrap();
+        let decoded_b64 = base64_decode(std::str::from_utf8(encoded).unwrap()).unwrap();
+        assert_eq!(decoded_b64[0], 0x80);
+        assert!(decoded_b64[1] <= GW_PICKLE_PROTOCOL);
+        assert_eq!(msg.data_decode().unwrap(), raw);
+    }
+
+    /// Mirror of TreeGatewayTest::test_channel_err_pickle_proto_pl
+    /// (logic-level substitution: message decode instead of live gateway).
+    ///
+    /// A CFG payload with an unknown pickle protocol (7) is rejected with
+    /// "Message CFG has an invalid payload (unsupported pickle protocol: 7)".
+    #[test]
+    fn test_channel_err_pickle_proto_pl() {
+        // Same wire vector as upstream: base64(b'\x80\x07spam')
+        let payload = base64_encode(b"\x80\x07spam");
+        let xml = format!(
+            "<channel version=\"1.10.1\"><message msgid=\"14\" type=\"CFG\" gateway=\"n1\">{}</message></channel>",
+            payload
+        );
+        let mut reader = XmlReader::new();
+        reader.feed(&xml).unwrap();
+        let _start = reader.pop_msg().unwrap();
+        let cfg = reader.pop_msg().unwrap();
+        assert_eq!(cfg.ident(), "CFG");
+        let err = cfg.data_decode().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Message CFG has an invalid payload (unsupported pickle protocol: 7)"
+        );
+    }
+
+    /// Mirror of TreeGatewayTest::test_channel_err_no_type_msg.
+    #[test]
+    fn test_channel_err_no_type_msg() {
+        let mut reader = XmlReader::new();
+        let err = reader
+            .feed("<channel version=\"1\"><message msgid=\"24\"></message></channel>")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Unknown message with no type");
+    }
+
+    /// Mirror of TreeGatewayTest::test_channel_err_empty_type_msg.
+    #[test]
+    fn test_channel_err_empty_type_msg() {
+        let mut reader = XmlReader::new();
+        let err = reader
+            .feed("<channel version=\"1\"><message msgid=\"24\" type=\"\"></message></channel>")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Unknown message with no type");
+    }
+
+    /// Mirror of updated TreeGatewayTest::test_err_unknown_msg /
+    /// test_channel_err_unknown_msg: the offending type is named.
+    #[test]
+    fn test_channel_err_unknown_msg_names_type() {
+        let mut reader = XmlReader::new();
+        let err = reader
+            .feed("<channel version=\"1\"><message msgid=\"24\" type=\"ABC\"></message></channel>")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Unknown message type ABC");
+    }
+
+    /// Badly encoded payloads report the message ident AND the cause
+    /// (upstream fee03a3 wording; mirrors test_channel_err_badenc_pickle_pl
+    /// and test_channel_err_missing_pl at logic level).
+    #[test]
+    fn test_channel_err_invalid_payload_includes_cause() {
+        // invalid base64 content (same vector as upstream's "bar" payload:
+        // binascii.Error / Incorrect padding)
+        let mut msg = Message::configuration("n1");
+        msg.set_data(b"bar".to_vec());
+        let err = msg.data_decode().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Message CFG has an invalid payload (Incorrect padding)"
+        );
+
+        // valid base64 but not a valid payload stream: "barm" decodes to
+        // bytes whose first byte is not a pickle PROTO opcode, so it passes
+        // the protocol check and is returned raw (Rust payloads are opaque;
+        // upstream rejects it at unpickle time with the same prefix).
+        let mut msg2 = Message::configuration("n1");
+        msg2.set_data(b"barm".to_vec());
+        assert!(msg2.data_decode().is_ok());
+
+        // missing payload keeps the ident-only form
+        let msg3 = Message::configuration("n1");
+        let err3 = msg3.data_decode().unwrap_err();
+        assert_eq!(err3.to_string(), "Message CFG has an invalid payload");
+    }
+
+    /// Malformed XML inside a tag raises an expat-style parse error
+    /// (mirrors the input of TreeHeadChannelErrorTest::
+    /// test_head_channel_err_parse_error).
+    #[test]
+    fn test_xmlreader_parse_error_not_well_formed() {
+        let mut reader = XmlReader::new();
+        let err = reader
+            .feed("<message type=\"ABC\"</message>")
+            .unwrap_err();
+        assert!(matches!(err, MessageProcessingError::ParseError(_)));
+        assert!(err.to_string().contains("not well-formed"));
+    }
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_err_invalid_tag
+    /// (initiator side): the error is reported as a synthetic SER message
+    /// with srcid 0 and the bare error text as bytes payload; the channel is
+    /// closed (fatal). Reporting must not itself fail (6f45bf5).
+    #[test]
+    fn test_handle_channel_error_initiator_reports_stderr() {
+        let mut chan = Channel::new(true); // initiator (head side)
+        chan.opened = true;
+
+        let err = MessageProcessingError::InvalidTag("foo".into());
+        let msg = chan.handle_channel_error("gw1", &err).unwrap();
+
+        // synthetic stderr message: srcid 0, nodes = gateway node
+        assert_eq!(msg.ident(), "SER");
+        assert_eq!(msg.srcid(), Some(0));
+        assert_eq!(msg.nodes(), Some("gw1"));
+        // payload is the bare error text encoded as bytes (ENCODING)
+        assert_eq!(msg.data_decode().unwrap(), b"Invalid starting tag foo");
+
+        // fatal channel error: channel must be closed
+        assert!(chan.closed);
+        assert!(!chan.opened);
+    }
+
+    /// Initiator-side parse errors report the bare parser message
+    /// (upstream sends ex.getMessage(), e.g. "not well-formed ...").
+    #[test]
+    fn test_handle_channel_error_initiator_parse_error_bare_text() {
+        let mut chan = Channel::new(true);
+        let err = MessageProcessingError::ParseError("not well-formed (invalid token)".into());
+        let msg = chan.handle_channel_error("gw1", &err).unwrap();
+        assert_eq!(
+            msg.data_decode().unwrap(),
+            b"not well-formed (invalid token)"
+        );
+        assert!(chan.closed);
+    }
+
+    /// Target (gateway) side: an Error message is sent back to the peer and
+    /// the channel is closed; parse errors gain the "Parse error: " prefix.
+    #[test]
+    fn test_handle_channel_error_target_sends_error_message() {
+        let mut chan = Channel::new(false); // target side
+        chan.opened = true;
+
+        let err = MessageProcessingError::NoType;
+        let report = chan.handle_channel_error("n1", &err);
+        assert!(report.is_none());
+
+        let out = String::from_utf8(chan.take_outgoing().unwrap()).unwrap();
+        assert!(out.contains("type=\"ERR\""));
+        assert!(out.contains("reason=\"Unknown message with no type\""));
+        assert!(chan.closed);
+
+        // parse error: prefixed reason
+        let mut chan2 = Channel::new(false);
+        let err2 = MessageProcessingError::ParseError("not well-formed (invalid token)".into());
+        chan2.handle_channel_error("n1", &err2);
+        let out2 = String::from_utf8(chan2.take_outgoing().unwrap()).unwrap();
+        assert!(out2.contains("reason=\"Parse error: not well-formed (invalid token)\""));
     }
 }

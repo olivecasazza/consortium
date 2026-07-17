@@ -48,6 +48,21 @@ pub enum RouteResolvingError {
     NodeSet(#[from] crate::node_set::NodeSetError),
 }
 
+/// Errors raised by [`PropagationChannel::recv`].
+#[derive(Error, Debug)]
+pub enum RecvError {
+    /// Protocol/message-level failure (invalid payload, parse errors, ...).
+    #[error("{0}")]
+    Message(#[from] MessageProcessingError),
+
+    /// Gateway runtime error received after channel setup. Upstream raises
+    /// `TopologyError("%s: %s" % (gateway, reason))` here
+    /// (PropagationChannel.recv_ctl); the rendered text is kept identical,
+    /// e.g. "gw1: bad news".
+    #[error("{0}")]
+    Gateway(String),
+}
+
 // ============================================================================
 // PropagationTreeRouter
 // ============================================================================
@@ -368,8 +383,15 @@ pub struct PropagationChannel {
     pub gateway: String,
     /// Current FSM state.
     pub state: ChannelState,
-    /// Queue of control messages waiting to be sent.
-    send_queue: VecDeque<Message>,
+    /// Queue of control messages waiting to be sent, with the target nodes
+    /// whose pickup event must fire once the message is actually sent.
+    /// Mirrors upstream's `self._sendq` of (ctl, pickup_worker, pickup_nodes).
+    send_queue: VecDeque<(Message, Vec<String>)>,
+    /// Pickup notifications produced when a CTL actually goes on the wire
+    /// (upstream #594: `ev_pickup` fires only when the command really left
+    /// the local process). Drained by the caller (TreeWorker), which
+    /// forwards them as `ev_pickup`. write()/eof CTLs never add entries.
+    pub pickup_events: Vec<String>,
     /// Last return code from the gateway process.
     pub last_rc: Option<i32>,
     /// Write history for tracking ACKs to write operations.
@@ -398,6 +420,32 @@ pub enum PropagationResult {
     },
 }
 
+/// Split a byte buffer into lines, mirroring Python's `bytes.splitlines()`
+/// for the ASCII line boundaries used by the tree protocol (\n, \r\n, \r).
+/// Lines are returned without their terminator; a trailing partial line is
+/// kept. Matches the oracle's per-line stderr/stdout reporting.
+fn split_lines(buf: &[u8]) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] == b'\n' || buf[i] == b'\r' {
+            lines.push(buf[start..i].to_vec());
+            if buf[i] == b'\r' && i + 1 < buf.len() && buf[i + 1] == b'\n' {
+                i += 1;
+            }
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < buf.len() {
+        lines.push(buf[start..].to_vec());
+    }
+    lines
+}
+
 impl PropagationChannel {
     /// Create a new propagation channel for a gateway.
     pub fn new(gateway: &str) -> Self {
@@ -406,6 +454,7 @@ impl PropagationChannel {
             gateway: gateway.to_string(),
             state: ChannelState::Init,
             send_queue: VecDeque::new(),
+            pickup_events: Vec::new(),
             last_rc: None,
             write_history: VecDeque::new(),
             results: Vec::new(),
@@ -426,26 +475,51 @@ impl PropagationChannel {
         self.state = ChannelState::Config;
     }
 
+    /// Actually push a CTL message on the wire.
+    ///
+    /// Mirrors upstream `PropagationChannel._send_ctl`: if `pickup_nodes` is
+    /// non-empty, a pickup notification is recorded for every target node
+    /// AFTER the send — so a pickup event only fires when the command really
+    /// left the local process (#594). write()/set_write_eof() CTLs never
+    /// carry pickup nodes.
+    fn send_ctl(&mut self, ctl: Message, pickup_nodes: Vec<String>) {
+        self.channel.send(&ctl);
+        self.pickup_events.extend(pickup_nodes);
+    }
+
     /// Enqueue a control message for sending.
     ///
     /// If the channel is already set up and the queue is empty, the message
     /// is sent immediately. Otherwise it's queued for later.
     pub fn send_queued(&mut self, msg: Message) {
+        self.send_queued_pickup(msg, Vec::new());
+    }
+
+    /// Helper used to send a message, using the msg queue if needed, with
+    /// optional pickup nodes (mirrors upstream `send_queued(ctl,
+    /// pickup_worker=..., pickup_nodes=...)`).
+    fn send_queued_pickup(&mut self, msg: Message, pickup_nodes: Vec<String>) {
         if self.channel.setup && self.send_queue.is_empty() {
-            self.channel.send(&msg);
+            // send now if channel is setup and sendq empty
+            self.send_ctl(msg, pickup_nodes);
         } else {
-            self.send_queue.push_back(msg);
+            self.send_queue.push_back((msg, pickup_nodes));
         }
     }
 
-    /// Send one queued message, if any.
+    /// Send one queued message, if any (mirrors upstream `send_dequeue`:
+    /// pickup notifications fire here too, at actual send time).
     fn send_dequeue(&mut self) {
-        if let Some(msg) = self.send_queue.pop_front() {
-            self.channel.send(&msg);
+        if let Some((msg, pickup_nodes)) = self.send_queue.pop_front() {
+            self.send_ctl(msg, pickup_nodes);
         }
     }
 
     /// Create and enqueue a shell command for execution through the channel.
+    ///
+    /// Mirrors upstream `PropagationChannel.shell`: the target nodes are
+    /// registered for pickup notification, which fires only when the CTL is
+    /// actually written on the wire (#594).
     pub fn shell(&mut self, nodes: &str, command: &[u8], worker_id: u64) {
         let mut ctl = Message::control(worker_id);
         if let Message::Control {
@@ -458,7 +532,12 @@ impl PropagationChannel {
             *target = nodes.to_string();
         }
         ctl.data_encode(command);
-        self.send_queued(ctl);
+        // Pass nodes so the pickup notification fires only when the CTL
+        // actually leaves the local process (upstream #594).
+        let pickup_nodes = NodeSet::parse(nodes)
+            .map(|ns| ns.iter().collect())
+            .unwrap_or_else(|_| vec![nodes.to_string()]);
+        self.send_queued_pickup(ctl, pickup_nodes);
     }
 
     /// Create and enqueue a write operation through the channel.
@@ -495,31 +574,79 @@ impl PropagationChannel {
         self.send_queued(ctl);
     }
 
+    /// Report `buf` as stderr of `nodeset`, as seen from the gateway.
+    ///
+    /// Mirrors upstream `PropagationChannel._report_stderr`: a trailing
+    /// newline is appended before splitting so that an empty buffer still
+    /// yields one (empty) line (#249), and each line is reported separately
+    /// for every node of the nodeset.
+    fn report_stderr(&self, nodeset: &NodeSet, buf: &[u8]) -> Vec<PropagationResult> {
+        let mut terminated = buf.to_vec();
+        terminated.push(b'\n');
+        let mut results = Vec::new();
+        for line in split_lines(&terminated) {
+            for node in nodeset.iter() {
+                results.push(PropagationResult::StdErr {
+                    node,
+                    data: line.clone(),
+                });
+            }
+        }
+        results
+    }
+
     /// Process an incoming message according to the current FSM state.
     ///
     /// Returns any propagation results generated by this message.
-    pub fn recv(&mut self, msg: Message) -> Result<Vec<PropagationResult>, MessageProcessingError> {
+    pub fn recv(&mut self, msg: Message) -> Result<Vec<PropagationResult>, RecvError> {
         let mut new_results = Vec::new();
 
-        match msg.ident() {
-            "END" => {
-                self.state = ChannelState::Closed;
-                return Ok(new_results);
-            }
-            "CHA" => {
-                self.channel.opened = true;
-                return Ok(new_results);
-            }
-            _ => {}
+        // EndMessage: close the channel (upstream: got EndMessage; closing)
+        if msg.ident() == "END" {
+            self.state = ChannelState::Closed;
+            self.channel.close();
+            return Ok(new_results);
+        }
+
+        // Non-routed stderr (srcid == 0): error messages received when the
+        // channel is not established yet, or gateway-related messages, are
+        // reported as stderr of the given nodes in ANY state — upstream
+        // handles this before the setup dispatch (90d3195-range).
+        if msg.ident() == "SER" && msg.srcid() == Some(0) {
+            let decoded = msg.data_decode()?;
+            let nodeset = NodeSet::parse(msg.nodes().unwrap_or_default()).unwrap_or_default();
+            let results = self.report_stderr(&nodeset, &decoded);
+            self.results.extend(results.clone());
+            return Ok(results);
+        }
+
+        // StartMessage: gateway greeting opens the channel
+        if msg.ident() == "CHA" {
+            self.channel.opened = true;
+            return Ok(new_results);
         }
 
         match self.state {
             ChannelState::Config => {
                 // Waiting for ACK to configuration
-                if msg.ident() == "ACK" {
-                    self.channel.setup = true;
-                    self.state = ChannelState::Gather;
-                    self.send_dequeue();
+                match msg.ident() {
+                    "ACK" => {
+                        self.channel.setup = true;
+                        self.state = ChannelState::Gather;
+                        self.send_dequeue();
+                    }
+                    "ERR" => {
+                        // Gateway error before setup (eg. invalid CFG
+                        // payload): report the reason as gateway stderr
+                        // instead of dropping it (upstream 90d3195).
+                        if let Message::Error { reason, .. } = &msg {
+                            let gw = NodeSet::parse(&self.gateway).unwrap_or_default();
+                            let results = self.report_stderr(&gw, reason.as_bytes());
+                            self.results.extend(results.clone());
+                            return Ok(results);
+                        }
+                    }
+                    _ => {}
                 }
             }
             ChannelState::Control | ChannelState::Gather => {
@@ -550,16 +677,12 @@ impl PropagationChannel {
                         }
                     }
                     "SER" => {
+                        // Routed stderr: reported per line, like upstream
+                        // recv_ctl's `decoded + b'\n'` splitlines() loop.
                         if let Some(nodes_str) = msg.nodes() {
                             if let Ok(decoded) = msg.data_decode() {
                                 let ns = NodeSet::parse(nodes_str).unwrap_or_default();
-                                for node in ns.iter() {
-                                    let result = PropagationResult::StdErr {
-                                        node,
-                                        data: decoded.clone(),
-                                    };
-                                    new_results.push(result);
-                                }
+                                new_results.extend(self.report_stderr(&ns, &decoded));
                             }
                         }
                     }
@@ -595,8 +718,13 @@ impl PropagationChannel {
                         }
                     }
                     "ERR" => {
+                        // Tree runtime error after setup: fatal to the
+                        // channel (upstream raises TopologyError(
+                        // "%s: %s" % (gateway, reason))).
                         if let Message::Error { reason, .. } = &msg {
-                            return Err(MessageProcessingError::ParseError(format!(
+                            self.channel.close();
+                            self.state = ChannelState::Closed;
+                            return Err(RecvError::Gateway(format!(
                                 "{}: {}",
                                 self.gateway, reason
                             )));
@@ -1049,5 +1177,283 @@ mod tests {
 
         // Should have accumulated 4 results (2 stdout + 2 retcode)
         assert_eq!(ch.results.len(), 4);
+    }
+
+    // -- Upstream 1.10.1 ports (90d3195, Propagation._send_ctl/_report_stderr)
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_gw_error_before_setup:
+    /// an ErrorMessage received before the gateway ACK is reported as stderr
+    /// of the gateway node (instead of being dropped).
+    #[test]
+    fn test_head_channel_gw_error_before_setup() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+        assert_eq!(ch.state, ChannelState::Config);
+
+        let err = Message::error(
+            "Message CFG has an invalid payload (unsupported pickle protocol: 5)",
+        );
+        let results = ch.recv(err).unwrap();
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            PropagationResult::StdErr { node, data } => {
+                assert_eq!(node, "gw1");
+                assert_eq!(
+                    data,
+                    b"Message CFG has an invalid payload (unsupported pickle protocol: 5)"
+                );
+            }
+            other => panic!("expected StdErr, got {:?}", other),
+        }
+        // not a fatal error at this stage: channel stays in Config
+        assert_eq!(ch.state, ChannelState::Config);
+    }
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_gw_error_empty_reason:
+    /// an empty reason is still reported as one (empty) stderr line (#249).
+    #[test]
+    fn test_head_channel_gw_error_empty_reason() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+
+        let results = ch.recv(Message::error("")).unwrap();
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            PropagationResult::StdErr { node, data } => {
+                assert_eq!(node, "gw1");
+                assert_eq!(data, b"");
+            }
+            other => panic!("expected StdErr, got {:?}", other),
+        }
+    }
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_gw_error_after_setup:
+    /// an ErrorMessage after setup raises a TopologyError-style failure
+    /// ("gw: reason") and produces NO stderr results.
+    #[test]
+    fn test_head_channel_gw_error_after_setup() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+        ch.recv(Message::ack(0)).unwrap();
+        assert!(ch.channel.setup);
+
+        let result = ch.recv(Message::error("bad news"));
+        match result.unwrap_err() {
+            RecvError::Gateway(text) => assert_eq!(text, "gw1: bad news"),
+            other => panic!("expected Gateway error, got {:?}", other),
+        }
+        // no stderr results were produced
+        assert!(ch.results.is_empty());
+        // fatal: channel is closed
+        assert!(ch.channel.closed);
+    }
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_err_invalid_tag
+    /// (logic-level): a malformed tag on the wire becomes a synthetic SER
+    /// message (srcid 0) which the channel reports as gateway stderr; the
+    /// channel is closed (fatal).
+    #[test]
+    fn test_head_channel_err_invalid_tag_reported_as_stderr() {
+        let mut ch = PropagationChannel::new("gw1");
+        // gateway greeting opens the channel
+        let msgs = ch.channel.feed("<channel version=\"1.10.1\">").unwrap();
+        for m in msgs {
+            ch.recv(m).unwrap();
+        }
+        assert!(ch.channel.opened);
+
+        // invalid tag on the wire: parse fails, initiator side converts to
+        // a synthetic stderr message (6f45bf5), then closes the channel
+        let err = ch.channel.feed("<foo></foo>").unwrap_err();
+        let synthetic = ch
+            .channel
+            .handle_channel_error("gw1", &err)
+            .expect("initiator must produce a synthetic stderr message");
+        assert!(ch.channel.closed);
+
+        let results = ch.recv(synthetic).unwrap();
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            PropagationResult::StdErr { node, data } => {
+                assert_eq!(node, "gw1");
+                assert_eq!(data, b"Invalid starting tag foo");
+            }
+            other => panic!("expected StdErr, got {:?}", other),
+        }
+    }
+
+    /// Mirror of TreeHeadChannelErrorTest::test_head_channel_err_parse_error:
+    /// malformed XML is reported as gateway stderr containing "not
+    /// well-formed", then the channel closes.
+    #[test]
+    fn test_head_channel_err_parse_error_reported_as_stderr() {
+        let mut ch = PropagationChannel::new("gw1");
+        let msgs = ch.channel.feed("<channel version=\"1.10.1\">").unwrap();
+        for m in msgs {
+            ch.recv(m).unwrap();
+        }
+
+        let err = ch.channel.feed("<message type=\"ABC\"</message>").unwrap_err();
+        let synthetic = ch
+            .channel
+            .handle_channel_error("gw1", &err)
+            .expect("initiator must produce a synthetic stderr message");
+        assert!(ch.channel.closed);
+
+        let results = ch.recv(synthetic).unwrap();
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            PropagationResult::StdErr { node, data } => {
+                assert_eq!(node, "gw1");
+                assert!(
+                    String::from_utf8_lossy(data).contains("not well-formed"),
+                    "expected 'not well-formed' in {:?}",
+                    data
+                );
+            }
+            other => panic!("expected StdErr, got {:?}", other),
+        }
+    }
+
+    /// Non-routed stderr (SER with srcid 0) is reported per line in ANY
+    /// state — here in Gather (upstream: handled before setup dispatch).
+    #[test]
+    fn test_channel_recv_nonrouted_stderr_srcid0() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+        ch.recv(Message::ack(0)).unwrap();
+
+        let mut ser = Message::stderr("node[1-2]", 0);
+        ser.data_encode(b"line a\nline b");
+        let results = ch.recv(ser).unwrap();
+
+        // 2 lines x 2 nodes, per-line ordering (line outer, node inner)
+        let collected: Vec<(&str, &[u8])> = results
+            .iter()
+            .map(|r| match r {
+                PropagationResult::StdErr { node, data } => (node.as_str(), data.as_slice()),
+                other => panic!("expected StdErr, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            collected,
+            vec![
+                ("node1", b"line a".as_slice()),
+                ("node2", b"line a".as_slice()),
+                ("node1", b"line b".as_slice()),
+                ("node2", b"line b".as_slice()),
+            ]
+        );
+    }
+
+    /// Routed stderr is also reported per line (upstream recv_ctl's
+    /// `decoded + b'\n'` splitlines loop), without trailing newline kept.
+    #[test]
+    fn test_channel_recv_routed_stderr_per_line() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+        ch.recv(Message::ack(0)).unwrap();
+
+        let mut ser = Message::stderr("node1", 7);
+        ser.data_encode(b"first\nsecond\n");
+        let results = ch.recv(ser).unwrap();
+
+        // like upstream `decoded + b'\n'` + splitlines(): a payload already
+        // ending with '\n' yields a trailing empty line too
+        let datas: Vec<&[u8]> = results
+            .iter()
+            .map(|r| match r {
+                PropagationResult::StdErr { data, .. } => data.as_slice(),
+                other => panic!("expected StdErr, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(
+            datas,
+            vec![b"first".as_slice(), b"second".as_slice(), b"".as_slice()]
+        );
+    }
+
+    /// _report_stderr semantics: an empty buffer still yields one empty
+    /// line per node (upstream #249 — trailing newline before splitlines).
+    #[test]
+    fn test_report_stderr_empty_buffer_yields_empty_line() {
+        let ch = PropagationChannel::new("gw1");
+        let ns = NodeSet::parse("node1").unwrap();
+        let results = ch.report_stderr(&ns, b"");
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            PropagationResult::StdErr { node, data } => {
+                assert_eq!(node, "node1");
+                assert_eq!(data, b"");
+            }
+            other => panic!("expected StdErr, got {:?}", other),
+        }
+    }
+
+    /// CRLF and CR line boundaries split like Python's bytes.splitlines().
+    #[test]
+    fn test_split_lines_boundaries() {
+        assert_eq!(split_lines(b"a\r\nb\rc\n"), vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        assert_eq!(split_lines(b"no-newline"), vec![b"no-newline".to_vec()]);
+        assert_eq!(split_lines(b"\n"), vec![b"".to_vec()]);
+        assert!(split_lines(b"").is_empty());
+    }
+
+    /// #594 pickup semantics: shell() registers pickup nodes, but the
+    /// notification fires only when the CTL actually goes on the wire —
+    /// immediately when setup, or later via send_dequeue after the ACK.
+    #[test]
+    fn test_send_ctl_pickup_fires_on_actual_send() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+
+        // queued before setup: no pickup yet
+        ch.shell("node[1-2]", b"echo hi", 1);
+        assert!(ch.pickup_events.is_empty());
+
+        // ACK dequeues and sends the CTL: pickup fires now
+        ch.recv(Message::ack(0)).unwrap();
+        assert_eq!(ch.pickup_events, vec!["node1".to_string(), "node2".to_string()]);
+
+        // setup channel: shell sends immediately, pickup fires at once
+        ch.shell("node3", b"echo hi", 1);
+        assert_eq!(
+            ch.pickup_events,
+            vec!["node1".to_string(), "node2".to_string(), "node3".to_string()]
+        );
+    }
+
+    /// write() and set_write_eof() never carry pickup nodes (upstream:
+    /// "write()/set_write_eof() don't carry pickup args").
+    #[test]
+    fn test_write_and_eof_no_pickup() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+        ch.recv(Message::ack(0)).unwrap();
+
+        ch.write("node1", b"input", 1);
+        ch.set_write_eof("node1", 1);
+        assert!(ch.pickup_events.is_empty());
+    }
+
+    /// The queue preserves FIFO order with pickup metadata attached
+    /// (upstream appendleft/pop deque semantics).
+    #[test]
+    fn test_send_queue_fifo_with_pickup() {
+        let mut ch = PropagationChannel::new("gw1");
+        ch.start(b"topo");
+
+        ch.shell("node1", b"cmd1", 1);
+        ch.shell("node2", b"cmd2", 2);
+
+        let _cfg = ch.channel.take_outgoing().unwrap();
+        assert!(ch.channel.take_outgoing().is_none());
+
+        ch.recv(Message::ack(0)).unwrap();
+        let first = String::from_utf8(ch.channel.take_outgoing().unwrap()).unwrap();
+        assert!(first.contains("target=\"node1\""));
+        // only the first queued CTL was dequeued by the ACK
+        assert_eq!(ch.pickup_events, vec!["node1".to_string()]);
     }
 }
