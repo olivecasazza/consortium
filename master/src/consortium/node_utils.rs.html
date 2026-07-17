@@ -1067,95 +1067,94 @@
 <a href=#1067 id=1067 data-nosnippet>1067</a>            <span class="string">"printf 'a: n[1-2]\nb: n[3-4]\n' &amp;&amp; echo called &gt;&gt; {}"</span>,
 <a href=#1068 id=1068 data-nosnippet>1068</a>            count.path().display()
 <a href=#1069 id=1069 data-nosnippet>1069</a>        );
-<a href=#1070 id=1070 data-nosnippet>1070</a>        <span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)
-<a href=#1071 id=1071 data-nosnippet>1071</a>            .with_mapall_upcall(<span class="prelude-val">Some</span>(cmd));
-<a href=#1072 id=1072 data-nosnippet>1072</a>        <span class="kw">let </span>res = resolver_with(source);
-<a href=#1073 id=1073 data-nosnippet>1073</a>        <span class="kw">let </span><span class="kw-2">mut </span>all = Vec::new();
-<a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="kw">for </span>group <span class="kw">in </span>res.grouplist(<span class="prelude-val">None</span>).unwrap() {
-<a href=#1075 id=1075 data-nosnippet>1075</a>            all.extend(res.group_nodes(<span class="kw-2">&amp;</span>group, <span class="prelude-val">None</span>).unwrap());
-<a href=#1076 id=1076 data-nosnippet>1076</a>        }
-<a href=#1077 id=1077 data-nosnippet>1077</a>        <span class="macro">assert_eq!</span>(all, <span class="macro">vec!</span>[<span class="string">"n[1-2]"</span>, <span class="string">"n[3-4]"</span>]);
-<a href=#1078 id=1078 data-nosnippet>1078</a>        <span class="kw">let </span>calls = std::fs::read_to_string(count.path()).unwrap();
-<a href=#1079 id=1079 data-nosnippet>1079</a>        <span class="macro">assert_eq!</span>(calls.lines().count(), <span class="number">1</span>);
-<a href=#1080 id=1080 data-nosnippet>1080</a>    }
-<a href=#1081 id=1081 data-nosnippet>1081</a>
-<a href=#1082 id=1082 data-nosnippet>1082</a>    <span class="attr">#[test]
-<a href=#1083 id=1083 data-nosnippet>1083</a>    </span><span class="kw">fn </span>test_mapall_parse_error_retry() {
-<a href=#1084 id=1084 data-nosnippet>1084</a>        <span class="comment">// mapall output is not cached on parse error
-<a href=#1085 id=1085 data-nosnippet>1085</a>        </span><span class="kw">let </span>data = tempfile::NamedTempFile::new().unwrap();
-<a href=#1086 id=1086 data-nosnippet>1086</a>        std::fs::write(data.path(), <span class="string">"broken_no_colon\n"</span>).unwrap();
-<a href=#1087 id=1087 data-nosnippet>1087</a>        <span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)
-<a href=#1088 id=1088 data-nosnippet>1088</a>            .with_mapall_upcall(<span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"cat {}"</span>, data.path().display())));
-<a href=#1089 id=1089 data-nosnippet>1089</a>        <span class="kw">let </span>res = resolver_with(source);
-<a href=#1090 id=1090 data-nosnippet>1090</a>        <span class="macro">assert!</span>(res.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).is_err());
-<a href=#1091 id=1091 data-nosnippet>1091</a>        <span class="comment">// fixed output must be picked up by the next call, not a cached error
-<a href=#1092 id=1092 data-nosnippet>1092</a>        </span>std::fs::write(data.path(), <span class="string">"a: n1\n"</span>).unwrap();
-<a href=#1093 id=1093 data-nosnippet>1093</a>        <span class="macro">assert_eq!</span>(res.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n1"</span>]);
-<a href=#1094 id=1094 data-nosnippet>1094</a>    }
-<a href=#1095 id=1095 data-nosnippet>1095</a>
-<a href=#1096 id=1096 data-nosnippet>1096</a>    <span class="attr">#[test]
-<a href=#1097 id=1097 data-nosnippet>1097</a>    </span><span class="kw">fn </span>test_mapall_all_still_required() {
-<a href=#1098 id=1098 data-nosnippet>1098</a>        <span class="comment">// 'all' is not derived from mapall
-<a href=#1099 id=1099 data-nosnippet>1099</a>        </span><span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)
-<a href=#1100 id=1100 data-nosnippet>1100</a>            .with_mapall_upcall(<span class="prelude-val">Some</span>(<span class="string">"printf 'a: n1\nb: n2\n'"</span>.to_string()));
-<a href=#1101 id=1101 data-nosnippet>1101</a>        <span class="macro">assert!</span>(source.resolve_all().is_err());
-<a href=#1102 id=1102 data-nosnippet>1102</a>    }
-<a href=#1103 id=1103 data-nosnippet>1103</a>
-<a href=#1104 id=1104 data-nosnippet>1104</a>    <span class="attr">#[test]
-<a href=#1105 id=1105 data-nosnippet>1105</a>    </span><span class="kw">fn </span>test_config_mapall_only() {
-<a href=#1106 id=1106 data-nosnippet>1106</a>        <span class="comment">// config with mapall upcall and no map
-<a href=#1107 id=1107 data-nosnippet>1107</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
-<a href=#1108 id=1108 data-nosnippet>1108</a>        std::fs::write(
-<a href=#1109 id=1109 data-nosnippet>1109</a>            file.path(),
-<a href=#1110 id=1110 data-nosnippet>1110</a>            <span class="string">"[Main]\ndefault: bulk\n\n[bulk]\nmapall: printf 'g1: n[1-3]\\ng2: n[4-5]\\n'\n"</span>,
-<a href=#1111 id=1111 data-nosnippet>1111</a>        )
-<a href=#1112 id=1112 data-nosnippet>1112</a>        .unwrap();
-<a href=#1113 id=1113 data-nosnippet>1113</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
-<a href=#1114 id=1114 data-nosnippet>1114</a>        <span class="kw">let </span>resolver = config.resolver().unwrap();
-<a href=#1115 id=1115 data-nosnippet>1115</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"g1"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n[1-3]"</span>]);
-<a href=#1116 id=1116 data-nosnippet>1116</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"g2"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n[4-5]"</span>]);
-<a href=#1117 id=1117 data-nosnippet>1117</a>        <span class="kw">let </span><span class="kw-2">mut </span>groups = resolver.grouplist(<span class="prelude-val">None</span>).unwrap();
-<a href=#1118 id=1118 data-nosnippet>1118</a>        groups.sort();
-<a href=#1119 id=1119 data-nosnippet>1119</a>        <span class="macro">assert_eq!</span>(groups, <span class="macro">vec!</span>[<span class="string">"g1"</span>, <span class="string">"g2"</span>]);
-<a href=#1120 id=1120 data-nosnippet>1120</a>    }
-<a href=#1121 id=1121 data-nosnippet>1121</a>
-<a href=#1122 id=1122 data-nosnippet>1122</a>    <span class="attr">#[test]
-<a href=#1123 id=1123 data-nosnippet>1123</a>    </span><span class="kw">fn </span>test_config_mapall_query_failed() {
-<a href=#1124 id=1124 data-nosnippet>1124</a>        <span class="comment">// config with failing mapall upcall (not cached, retried)
-<a href=#1125 id=1125 data-nosnippet>1125</a>        </span><span class="kw">let </span>data = tempfile::NamedTempFile::new().unwrap(); <span class="comment">// stays empty for now
-<a href=#1126 id=1126 data-nosnippet>1126</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
-<a href=#1127 id=1127 data-nosnippet>1127</a>        std::fs::write(
-<a href=#1128 id=1128 data-nosnippet>1128</a>            file.path(),
-<a href=#1129 id=1129 data-nosnippet>1129</a>            <span class="macro">format!</span>(
-<a href=#1130 id=1130 data-nosnippet>1130</a>                <span class="string">"[Main]\ndefault: bulk\n\n[bulk]\nmapall: test -s {0} &amp;&amp; cat {0}\n"</span>,
-<a href=#1131 id=1131 data-nosnippet>1131</a>                data.path().display()
-<a href=#1132 id=1132 data-nosnippet>1132</a>            ),
-<a href=#1133 id=1133 data-nosnippet>1133</a>        )
-<a href=#1134 id=1134 data-nosnippet>1134</a>        .unwrap();
-<a href=#1135 id=1135 data-nosnippet>1135</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
-<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="kw">let </span>resolver = config.resolver().unwrap();
-<a href=#1137 id=1137 data-nosnippet>1137</a>        <span class="comment">// empty data file: mapall upcall exits non-zero
-<a href=#1138 id=1138 data-nosnippet>1138</a>        </span><span class="macro">assert!</span>(resolver.grouplist(<span class="prelude-val">None</span>).is_err());
-<a href=#1139 id=1139 data-nosnippet>1139</a>        <span class="comment">// upcall failure is not cached: fix the data file and retry
-<a href=#1140 id=1140 data-nosnippet>1140</a>        </span>std::fs::write(data.path(), <span class="string">"a: n1\n"</span>).unwrap();
-<a href=#1141 id=1141 data-nosnippet>1141</a>        <span class="macro">assert_eq!</span>(resolver.grouplist(<span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"a"</span>]);
-<a href=#1142 id=1142 data-nosnippet>1142</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n1"</span>]);
-<a href=#1143 id=1143 data-nosnippet>1143</a>    }
-<a href=#1144 id=1144 data-nosnippet>1144</a>
-<a href=#1145 id=1145 data-nosnippet>1145</a>    <span class="attr">#[test]
-<a href=#1146 id=1146 data-nosnippet>1146</a>    </span><span class="kw">fn </span>test_config_map_or_mapall_required() {
-<a href=#1147 id=1147 data-nosnippet>1147</a>        <span class="comment">// config without map or mapall raises a config error
-<a href=#1148 id=1148 data-nosnippet>1148</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
-<a href=#1149 id=1149 data-nosnippet>1149</a>        std::fs::write(
-<a href=#1150 id=1150 data-nosnippet>1150</a>            file.path(),
-<a href=#1151 id=1151 data-nosnippet>1151</a>            <span class="string">"[Main]\ndefault: nope\n\n[nope]\nlist: echo foo\n"</span>,
-<a href=#1152 id=1152 data-nosnippet>1152</a>        )
-<a href=#1153 id=1153 data-nosnippet>1153</a>        .unwrap();
-<a href=#1154 id=1154 data-nosnippet>1154</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
-<a href=#1155 id=1155 data-nosnippet>1155</a>        <span class="comment">// surfaces at (lazy) resolver initialization, like Python's
-<a href=#1156 id=1156 data-nosnippet>1156</a>        // GroupResolverConfigError at first use
-<a href=#1157 id=1157 data-nosnippet>1157</a>        </span><span class="kw">let </span>err = config.resolver().err().unwrap();
-<a href=#1158 id=1158 data-nosnippet>1158</a>        <span class="macro">assert!</span>(<span class="macro">format!</span>(<span class="string">"{:?}"</span>, err).contains(<span class="string">"map' or 'mapall'"</span>));
-<a href=#1159 id=1159 data-nosnippet>1159</a>    }
-<a href=#1160 id=1160 data-nosnippet>1160</a>}
+<a href=#1070 id=1070 data-nosnippet>1070</a>        <span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>).with_mapall_upcall(<span class="prelude-val">Some</span>(cmd));
+<a href=#1071 id=1071 data-nosnippet>1071</a>        <span class="kw">let </span>res = resolver_with(source);
+<a href=#1072 id=1072 data-nosnippet>1072</a>        <span class="kw">let </span><span class="kw-2">mut </span>all = Vec::new();
+<a href=#1073 id=1073 data-nosnippet>1073</a>        <span class="kw">for </span>group <span class="kw">in </span>res.grouplist(<span class="prelude-val">None</span>).unwrap() {
+<a href=#1074 id=1074 data-nosnippet>1074</a>            all.extend(res.group_nodes(<span class="kw-2">&amp;</span>group, <span class="prelude-val">None</span>).unwrap());
+<a href=#1075 id=1075 data-nosnippet>1075</a>        }
+<a href=#1076 id=1076 data-nosnippet>1076</a>        <span class="macro">assert_eq!</span>(all, <span class="macro">vec!</span>[<span class="string">"n[1-2]"</span>, <span class="string">"n[3-4]"</span>]);
+<a href=#1077 id=1077 data-nosnippet>1077</a>        <span class="kw">let </span>calls = std::fs::read_to_string(count.path()).unwrap();
+<a href=#1078 id=1078 data-nosnippet>1078</a>        <span class="macro">assert_eq!</span>(calls.lines().count(), <span class="number">1</span>);
+<a href=#1079 id=1079 data-nosnippet>1079</a>    }
+<a href=#1080 id=1080 data-nosnippet>1080</a>
+<a href=#1081 id=1081 data-nosnippet>1081</a>    <span class="attr">#[test]
+<a href=#1082 id=1082 data-nosnippet>1082</a>    </span><span class="kw">fn </span>test_mapall_parse_error_retry() {
+<a href=#1083 id=1083 data-nosnippet>1083</a>        <span class="comment">// mapall output is not cached on parse error
+<a href=#1084 id=1084 data-nosnippet>1084</a>        </span><span class="kw">let </span>data = tempfile::NamedTempFile::new().unwrap();
+<a href=#1085 id=1085 data-nosnippet>1085</a>        std::fs::write(data.path(), <span class="string">"broken_no_colon\n"</span>).unwrap();
+<a href=#1086 id=1086 data-nosnippet>1086</a>        <span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)
+<a href=#1087 id=1087 data-nosnippet>1087</a>            .with_mapall_upcall(<span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"cat {}"</span>, data.path().display())));
+<a href=#1088 id=1088 data-nosnippet>1088</a>        <span class="kw">let </span>res = resolver_with(source);
+<a href=#1089 id=1089 data-nosnippet>1089</a>        <span class="macro">assert!</span>(res.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).is_err());
+<a href=#1090 id=1090 data-nosnippet>1090</a>        <span class="comment">// fixed output must be picked up by the next call, not a cached error
+<a href=#1091 id=1091 data-nosnippet>1091</a>        </span>std::fs::write(data.path(), <span class="string">"a: n1\n"</span>).unwrap();
+<a href=#1092 id=1092 data-nosnippet>1092</a>        <span class="macro">assert_eq!</span>(res.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n1"</span>]);
+<a href=#1093 id=1093 data-nosnippet>1093</a>    }
+<a href=#1094 id=1094 data-nosnippet>1094</a>
+<a href=#1095 id=1095 data-nosnippet>1095</a>    <span class="attr">#[test]
+<a href=#1096 id=1096 data-nosnippet>1096</a>    </span><span class="kw">fn </span>test_mapall_all_still_required() {
+<a href=#1097 id=1097 data-nosnippet>1097</a>        <span class="comment">// 'all' is not derived from mapall
+<a href=#1098 id=1098 data-nosnippet>1098</a>        </span><span class="kw">let </span>source = UpcallGroupSource::new(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)
+<a href=#1099 id=1099 data-nosnippet>1099</a>            .with_mapall_upcall(<span class="prelude-val">Some</span>(<span class="string">"printf 'a: n1\nb: n2\n'"</span>.to_string()));
+<a href=#1100 id=1100 data-nosnippet>1100</a>        <span class="macro">assert!</span>(source.resolve_all().is_err());
+<a href=#1101 id=1101 data-nosnippet>1101</a>    }
+<a href=#1102 id=1102 data-nosnippet>1102</a>
+<a href=#1103 id=1103 data-nosnippet>1103</a>    <span class="attr">#[test]
+<a href=#1104 id=1104 data-nosnippet>1104</a>    </span><span class="kw">fn </span>test_config_mapall_only() {
+<a href=#1105 id=1105 data-nosnippet>1105</a>        <span class="comment">// config with mapall upcall and no map
+<a href=#1106 id=1106 data-nosnippet>1106</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
+<a href=#1107 id=1107 data-nosnippet>1107</a>        std::fs::write(
+<a href=#1108 id=1108 data-nosnippet>1108</a>            file.path(),
+<a href=#1109 id=1109 data-nosnippet>1109</a>            <span class="string">"[Main]\ndefault: bulk\n\n[bulk]\nmapall: printf 'g1: n[1-3]\\ng2: n[4-5]\\n'\n"</span>,
+<a href=#1110 id=1110 data-nosnippet>1110</a>        )
+<a href=#1111 id=1111 data-nosnippet>1111</a>        .unwrap();
+<a href=#1112 id=1112 data-nosnippet>1112</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
+<a href=#1113 id=1113 data-nosnippet>1113</a>        <span class="kw">let </span>resolver = config.resolver().unwrap();
+<a href=#1114 id=1114 data-nosnippet>1114</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"g1"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n[1-3]"</span>]);
+<a href=#1115 id=1115 data-nosnippet>1115</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"g2"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n[4-5]"</span>]);
+<a href=#1116 id=1116 data-nosnippet>1116</a>        <span class="kw">let </span><span class="kw-2">mut </span>groups = resolver.grouplist(<span class="prelude-val">None</span>).unwrap();
+<a href=#1117 id=1117 data-nosnippet>1117</a>        groups.sort();
+<a href=#1118 id=1118 data-nosnippet>1118</a>        <span class="macro">assert_eq!</span>(groups, <span class="macro">vec!</span>[<span class="string">"g1"</span>, <span class="string">"g2"</span>]);
+<a href=#1119 id=1119 data-nosnippet>1119</a>    }
+<a href=#1120 id=1120 data-nosnippet>1120</a>
+<a href=#1121 id=1121 data-nosnippet>1121</a>    <span class="attr">#[test]
+<a href=#1122 id=1122 data-nosnippet>1122</a>    </span><span class="kw">fn </span>test_config_mapall_query_failed() {
+<a href=#1123 id=1123 data-nosnippet>1123</a>        <span class="comment">// config with failing mapall upcall (not cached, retried)
+<a href=#1124 id=1124 data-nosnippet>1124</a>        </span><span class="kw">let </span>data = tempfile::NamedTempFile::new().unwrap(); <span class="comment">// stays empty for now
+<a href=#1125 id=1125 data-nosnippet>1125</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
+<a href=#1126 id=1126 data-nosnippet>1126</a>        std::fs::write(
+<a href=#1127 id=1127 data-nosnippet>1127</a>            file.path(),
+<a href=#1128 id=1128 data-nosnippet>1128</a>            <span class="macro">format!</span>(
+<a href=#1129 id=1129 data-nosnippet>1129</a>                <span class="string">"[Main]\ndefault: bulk\n\n[bulk]\nmapall: test -s {0} &amp;&amp; cat {0}\n"</span>,
+<a href=#1130 id=1130 data-nosnippet>1130</a>                data.path().display()
+<a href=#1131 id=1131 data-nosnippet>1131</a>            ),
+<a href=#1132 id=1132 data-nosnippet>1132</a>        )
+<a href=#1133 id=1133 data-nosnippet>1133</a>        .unwrap();
+<a href=#1134 id=1134 data-nosnippet>1134</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
+<a href=#1135 id=1135 data-nosnippet>1135</a>        <span class="kw">let </span>resolver = config.resolver().unwrap();
+<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="comment">// empty data file: mapall upcall exits non-zero
+<a href=#1137 id=1137 data-nosnippet>1137</a>        </span><span class="macro">assert!</span>(resolver.grouplist(<span class="prelude-val">None</span>).is_err());
+<a href=#1138 id=1138 data-nosnippet>1138</a>        <span class="comment">// upcall failure is not cached: fix the data file and retry
+<a href=#1139 id=1139 data-nosnippet>1139</a>        </span>std::fs::write(data.path(), <span class="string">"a: n1\n"</span>).unwrap();
+<a href=#1140 id=1140 data-nosnippet>1140</a>        <span class="macro">assert_eq!</span>(resolver.grouplist(<span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"a"</span>]);
+<a href=#1141 id=1141 data-nosnippet>1141</a>        <span class="macro">assert_eq!</span>(resolver.group_nodes(<span class="string">"a"</span>, <span class="prelude-val">None</span>).unwrap(), <span class="macro">vec!</span>[<span class="string">"n1"</span>]);
+<a href=#1142 id=1142 data-nosnippet>1142</a>    }
+<a href=#1143 id=1143 data-nosnippet>1143</a>
+<a href=#1144 id=1144 data-nosnippet>1144</a>    <span class="attr">#[test]
+<a href=#1145 id=1145 data-nosnippet>1145</a>    </span><span class="kw">fn </span>test_config_map_or_mapall_required() {
+<a href=#1146 id=1146 data-nosnippet>1146</a>        <span class="comment">// config without map or mapall raises a config error
+<a href=#1147 id=1147 data-nosnippet>1147</a>        </span><span class="kw">let </span>file = tempfile::NamedTempFile::new().unwrap();
+<a href=#1148 id=1148 data-nosnippet>1148</a>        std::fs::write(
+<a href=#1149 id=1149 data-nosnippet>1149</a>            file.path(),
+<a href=#1150 id=1150 data-nosnippet>1150</a>            <span class="string">"[Main]\ndefault: nope\n\n[nope]\nlist: echo foo\n"</span>,
+<a href=#1151 id=1151 data-nosnippet>1151</a>        )
+<a href=#1152 id=1152 data-nosnippet>1152</a>        .unwrap();
+<a href=#1153 id=1153 data-nosnippet>1153</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = GroupResolverConfig::new(<span class="macro">vec!</span>[file.path().to_path_buf()], HashSet::new());
+<a href=#1154 id=1154 data-nosnippet>1154</a>        <span class="comment">// surfaces at (lazy) resolver initialization, like Python's
+<a href=#1155 id=1155 data-nosnippet>1155</a>        // GroupResolverConfigError at first use
+<a href=#1156 id=1156 data-nosnippet>1156</a>        </span><span class="kw">let </span>err = config.resolver().err().unwrap();
+<a href=#1157 id=1157 data-nosnippet>1157</a>        <span class="macro">assert!</span>(<span class="macro">format!</span>(<span class="string">"{:?}"</span>, err).contains(<span class="string">"map' or 'mapall'"</span>));
+<a href=#1158 id=1158 data-nosnippet>1158</a>    }
+<a href=#1159 id=1159 data-nosnippet>1159</a>}
 </code></pre></div></section></main></body></html>

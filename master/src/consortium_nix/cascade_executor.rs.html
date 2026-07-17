@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>//! subprocesses, runnable against actual nixlab hosts.
 <a href=#3 id=3 data-nosnippet>3</a>//!
 <a href=#4 id=4 data-nosnippet>4</a>//! [`NixCopyExecutor`] is the realistic counterpart to
-<a href=#5 id=5 data-nosnippet>5</a>//! [`consortium_fanout_sim::DeterministicExecutor`]. The sim does
+<a href=#5 id=5 data-nosnippet>5</a>//! `consortium_fanout_sim::DeterministicExecutor`. The sim does
 <a href=#6 id=6 data-nosnippet>6</a>//! `closure_size / bandwidth + latency` math; this one shells out to
 <a href=#7 id=7 data-nosnippet>7</a>//! `nix copy --no-check-sigs --to ssh-ng://user@host store_path` for
 <a href=#8 id=8 data-nosnippet>8</a>//! every (src, tgt) edge in a round, in parallel via `std::thread`.
