@@ -42,7 +42,8 @@ _:
           echo "consortium dev shell ready"
           echo "  cargo test          — run Rust tests"
           echo "  cargo watch -x test — TDD loop"
-          echo "  pytest tests/       — run Python acceptance tests"
+          echo "  Python parity suite — moved to the consortium-tests repo"
+          echo "    (../consortium-tests: CONSORTIUM_BACKEND=python PYTHONPATH=lib pytest tests/)"
         '';
       };
     };

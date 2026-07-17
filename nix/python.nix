@@ -51,26 +51,14 @@
         consortiumPy
         ps.pytest
       ]);
-
-      # Run the original ClusterShell Python tests against Rust bindings
-      pythonTests = pkgs.runCommand "consortium-python-tests"
-        {
-          nativeBuildInputs = [ pythonTestEnv ];
-          src = ../.;
-        }
-        ''
-          cd $src
-          # Run tests — the import shim in consortium-py makes
-          # "from ClusterShell.RangeSet import RangeSet" resolve to Rust
-          python -m pytest tests/ -v --tb=short 2>&1 | tee $out
-        '';
     in
     {
       packages.consortium-py = consortiumPy;
 
-      checks = {
-        inherit pythonTests;
-      };
+      # NOTE: the Python parity suite (tests/, lib/) moved to the
+      # consortium-tests repo — the former `pythonTests` flake check now
+      # runs there (see consortium-tests/.github/workflows/parity.yml).
+      checks = { };
 
       devShells.python = pkgs.mkShell {
         packages = [

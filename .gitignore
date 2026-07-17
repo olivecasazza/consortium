@@ -43,9 +43,6 @@ yarn.lock
 test_ini.rs
 results/
 
-# Docker test artifacts
-tests/docker/ssh/
-tests/docker/docker-compose.generated.yml
 .pre-commit-config.yaml
 
 # autoresearch local config

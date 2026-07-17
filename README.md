@@ -94,15 +94,16 @@ The following man pages are also provided:
 Test Suite
 ----------
 
-Regression testing scripts are available in the 'tests' directory:
+The test infrastructure — the upstream ClusterShell Python parity suite
+(`tests/`, `lib/` oracle), the comparison harness, and the Docker-based
+integration tests — lives in the companion repo:
+[consortium-tests](https://github.com/olivecasazza/consortium-tests).
+Check it out as a sibling of this repo (`../consortium-tests`) and see its
+README for how to run the parity suite and Docker integration tests.
 
-    $ cd tests
-    $ nosetests -sv <Test.py>
-    $ nosetests -sv --all-modules
+Rust unit tests run right here:
 
-You have to allow 'ssh localhost' and 'ssh $HOSTNAME' without any warnings for
-"remote" tests to run as expected. $HOSTNAME should not be 127.0.0.1 nor ::1.
-Also some tests use the 'bc' command.
+    $ cargo test --workspace
 
 Python code (simple example)
 ----------------------------

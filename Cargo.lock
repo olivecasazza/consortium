@@ -278,8 +278,6 @@ name = "consortium-crate"
 version = "0.2.0"
 dependencies = [
  "configparser",
- "consortium-nix",
- "consortium-test-harness",
  "criterion",
  "dirs-next",
  "hostname",
@@ -354,16 +352,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "consortium-test-harness"
-version = "0.2.0"
-dependencies = [
- "consortium-crate",
- "consortium-nix",
- "serde",
- "serde_json",
 ]
 
 [[package]]

@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: "Upstream ClusterShell ref to test against (default: pinned in UPSTREAM_REF)"
+        description: "Upstream ClusterShell ref to test against (default: pinned in consortium-tests/UPSTREAM_REF)"
         required: false
         default: ""
 
@@ -29,6 +29,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The parity suite (tests/, lib/, harness/, TEST_MAPPING.toml,
+      # UPSTREAM_REF, tests/docker) moved to the consortium-tests repo —
+      # fetch it into a subdirectory and satisfy its ../consortium path
+      # deps with a self-symlink.
+      - name: Check out consortium-tests
+        uses: actions/checkout@v4
+        with:
+          repository: olivecasazza/consortium-tests
+          ref: master
+          path: consortium-tests
+
+      - name: Create sibling layout for consortium-tests path deps
+        run: ln -sfn . "$GITHUB_WORKSPACE/consortium"
 
       # ── Toolchains ─────────────────────────────────────────────
       - name: Install Rust
@@ -55,9 +69,9 @@ jobs:
         run: |
           REF="${{ github.event.inputs.upstream_ref }}"
           if [ -z "$REF" ]; then
-            bash harness/sync_upstream_tests.sh
+            bash consortium-tests/harness/sync_upstream_tests.sh
           else
-            bash harness/sync_upstream_tests.sh "$REF"
+            bash consortium-tests/harness/sync_upstream_tests.sh "$REF"
           fi
 
       # ── Build ──────────────────────────────────────────────────
@@ -71,30 +85,31 @@ jobs:
       - name: Run Rust unit tests
         continue-on-error: true
         run: |
-          mkdir -p results
+          mkdir -p consortium-tests/results
           source .venv/bin/activate
           cargo nextest run \
             -p consortium-crate \
             --profile ci \
             --no-fail-fast \
-            2>&1 | tee results/rust-raw.txt
+            2>&1 | tee consortium-tests/results/rust-raw.txt
 
           # Generate JUnit XML from cargo test output
           cargo test -p consortium-crate 2>&1 | \
-            python harness/cargo_to_junit.py > results/rust-unit.xml
+            python consortium-tests/harness/cargo_to_junit.py > consortium-tests/results/rust-unit.xml
 
       # ── Python tests: original backend ─────────────────────────
       - name: Run Python tests (original backend)
         continue-on-error: true
         env:
           CONSORTIUM_BACKEND: python
-          PYTHONPATH: ${{ github.workspace }}/lib
+          PYTHONPATH: ${{ github.workspace }}/consortium-tests/lib
+          LIB_CLUSTERSHELL: ${{ github.workspace }}/consortium-tests/lib
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -v \
+          python -m pytest consortium-tests/tests/ -v \
             --timeout=30 \
             --tb=short \
-            --junit-xml=results/python-original.xml \
+            --junit-xml=consortium-tests/results/python-original.xml \
             || true
 
       # ── Python tests: Rust backend ─────────────────────────────
@@ -102,20 +117,23 @@ jobs:
         continue-on-error: true
         env:
           CONSORTIUM_BACKEND: rust
+          LIB_CLUSTERSHELL: ${{ github.workspace }}/consortium-tests/lib
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -v \
+          python -m pytest consortium-tests/tests/ -v \
             --timeout=30 \
             --tb=short \
-            --junit-xml=results/python-rust.xml \
+            --junit-xml=consortium-tests/results/python-rust.xml \
             || true
 
       # ── Generate scorecard ─────────────────────────────────────
       - name: Generate test mapping
-        run: python harness/generate_test_mapping.py --update
+        env:
+          CONSORTIUM_REPO: .
+        run: python consortium-tests/harness/generate_test_mapping.py --update
 
       - name: Render scorecard
-        run: python harness/render_summary.py --results-dir=results >> $GITHUB_STEP_SUMMARY
+        run: python consortium-tests/harness/render_summary.py --results-dir=results >> $GITHUB_STEP_SUMMARY
 
       # ── Upload artifacts ───────────────────────────────────────
       - name: Upload test results
@@ -124,8 +142,8 @@ jobs:
         with:
           name: migration-results
           path: |
-            results/
-            TEST_MAPPING.toml
+            consortium-tests/results/
+            consortium-tests/TEST_MAPPING.toml
           retention-days: 30
 
   # ── Layer 2: Integration Tests (Docker, runs after unit tests) ────
@@ -137,6 +155,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out consortium-tests
+        uses: actions/checkout@v4
+        with:
+          repository: olivecasazza/consortium-tests
+          ref: master
+          path: consortium-tests
+
+      - name: Create sibling layout for consortium-tests path deps
+        run: ln -sfn . "$GITHUB_WORKSPACE/consortium"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -147,16 +175,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            consortium-tests/target
           key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Generate SSH keys for test containers
+        run: |
+          mkdir -p consortium-tests/tests/docker/ssh
+          ssh-keygen -t ed25519 -f consortium-tests/tests/docker/ssh/id_ed25519 -N "" -q
+          cp consortium-tests/tests/docker/ssh/id_ed25519.pub consortium-tests/tests/docker/ssh/authorized_keys
 
       - name: Build Docker SSH node image
         run: |
-          cd tests/docker
-          docker build -t consortium-ssh-node -f Dockerfile.ssh-node .
+          docker build -t consortium-ssh-node -f consortium-tests/tests/docker/Dockerfile.ssh-node consortium-tests/tests/docker/
 
       - name: Run integration tests (small cluster — 6 nodes)
         run: |
-          cargo test -p consortium-crate \
+          cargo test \
+            --manifest-path consortium-tests/Cargo.toml \
+            -p consortium-integration-tests \
             --features docker-tests \
             --test docker_integration \
             -- --test-threads=1 \
@@ -164,7 +200,9 @@ jobs:
 
       - name: Run integration tests (large cluster — 33 nodes)
         run: |
-          cargo test -p consortium-crate \
+          cargo test \
+            --manifest-path consortium-tests/Cargo.toml \
+            -p consortium-integration-tests \
             --features docker-tests \
             --test docker_integration \
             "test_scale" \

@@ -70,6 +70,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Docker assets and integration test crates moved to the
+      # consortium-tests repo — fetch it into a subdirectory and
+      # satisfy its ../consortium path deps with a self-symlink.
+      - name: Check out consortium-tests
+        uses: actions/checkout@v4
+        with:
+          repository: olivecasazza/consortium-tests
+          ref: master
+          path: consortium-tests
+
+      - name: Create sibling layout for consortium-tests path deps
+        run: ln -sfn . "$GITHUB_WORKSPACE/consortium"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -83,20 +96,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            consortium-tests/target
           key: ${{ runner.os }}-cargo-docker-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Generate SSH keys for test containers
         run: |
-          mkdir -p tests/docker/ssh
-          ssh-keygen -t ed25519 -f tests/docker/ssh/id_ed25519 -N "" -q
-          cp tests/docker/ssh/id_ed25519.pub tests/docker/ssh/authorized_keys
+          mkdir -p consortium-tests/tests/docker/ssh
+          ssh-keygen -t ed25519 -f consortium-tests/tests/docker/ssh/id_ed25519 -N "" -q
+          cp consortium-tests/tests/docker/ssh/id_ed25519.pub consortium-tests/tests/docker/ssh/authorized_keys
 
       - name: Build SSH node image
-        run: docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
+        run: docker build -t consortium-ssh-node -f consortium-tests/tests/docker/Dockerfile.ssh-node consortium-tests/tests/docker/
 
       - name: Run Docker integration tests
         run: |
-          cargo nextest run -p consortium-crate \
+          cargo nextest run \
+            --manifest-path consortium-tests/Cargo.toml \
+            -p consortium-integration-tests \
             --features docker-tests \
             --test docker_integration \
             --profile ci \
@@ -108,7 +124,7 @@ jobs:
         uses: mikepenz/action-junit-report@v5
         if: always()
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: consortium-tests/target/nextest/ci/junit.xml
           check_name: Docker Integration Results
           include_passed: true
 
@@ -127,6 +143,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out consortium-tests
+        uses: actions/checkout@v4
+        with:
+          repository: olivecasazza/consortium-tests
+          ref: master
+          path: consortium-tests
+
+      - name: Create sibling layout for consortium-tests path deps
+        run: ln -sfn . "$GITHUB_WORKSPACE/consortium"
+
       - name: Setup Rust toolchain
         run: |
           # Rust and cargo-nextest are in the runner's extraPackages (NixOS module).
@@ -142,25 +168,28 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            consortium-tests/target
           key: ${{ runner.os }}-cargo-tool-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Generate SSH keys for test containers
         run: |
-          mkdir -p tests/docker/ssh
-          if [ ! -f tests/docker/ssh/id_ed25519 ]; then
-            ssh-keygen -t ed25519 -f tests/docker/ssh/id_ed25519 -N "" -q
-            cp tests/docker/ssh/id_ed25519.pub tests/docker/ssh/authorized_keys
+          mkdir -p consortium-tests/tests/docker/ssh
+          if [ ! -f consortium-tests/tests/docker/ssh/id_ed25519 ]; then
+            ssh-keygen -t ed25519 -f consortium-tests/tests/docker/ssh/id_ed25519 -N "" -q
+            cp consortium-tests/tests/docker/ssh/id_ed25519.pub consortium-tests/tests/docker/ssh/authorized_keys
           fi
 
       - name: Build specialized Docker images
         run: |
-          docker build -t consortium-ssh-node -f tests/docker/Dockerfile.ssh-node tests/docker/
-          docker build -t consortium-nix-node -f tests/docker/Dockerfile.nix-node tests/docker/
-          docker build -t consortium-ansible-node -f tests/docker/Dockerfile.ansible-node tests/docker/
+          docker build -t consortium-ssh-node -f consortium-tests/tests/docker/Dockerfile.ssh-node consortium-tests/tests/docker/
+          docker build -t consortium-nix-node -f consortium-tests/tests/docker/Dockerfile.nix-node consortium-tests/tests/docker/
+          docker build -t consortium-ansible-node -f consortium-tests/tests/docker/Dockerfile.ansible-node consortium-tests/tests/docker/
 
       - name: Run tool integration tests
         run: |
-          cargo nextest run -p consortium-crate \
+          cargo nextest run \
+            --manifest-path consortium-tests/Cargo.toml \
+            -p consortium-integration-tests \
             --features docker-tests \
             --test tool_integration \
             --profile ci \
@@ -172,7 +201,7 @@ jobs:
         uses: mikepenz/action-junit-report@v5
         if: always()
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: consortium-tests/target/nextest/ci/junit.xml
           check_name: Tool Integration Results
           include_passed: true
 
