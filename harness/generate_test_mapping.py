@@ -42,7 +42,9 @@ def scan_python_tests() -> dict[str, list[str]]:
                 continue
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name.endswith("Test"):
+            # Match classes like RangeSetTest and also parameterized variants
+            # like CLIClushTest_A / CLINodesetGroupResolverTest1
+            if isinstance(node, ast.ClassDef) and "Test" in node.name:
                 methods = []
                 for item in node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -55,24 +57,24 @@ def scan_python_tests() -> dict[str, list[str]]:
 
 
 def scan_rust_tests() -> list[str]:
-    """Run `cargo test -- --list` and extract all test names."""
-    try:
-        proc = subprocess.run(
-            ["cargo", "test", "-p", "consortium", "--", "--list"],
-            capture_output=True,
-            text=True,
-            cwd=str(REPO_ROOT),
-            timeout=60,
-        )
-        tests = []
-        for line in proc.stdout.splitlines():
-            line = line.strip()
-            if line.endswith(": test"):
-                tests.append(line.removesuffix(": test"))
-        return sorted(tests)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        print("  WARN: Could not run cargo test --list", file=sys.stderr)
-        return []
+    """Run `cargo test -- --list` on the core and CLI crates, extract test names."""
+    tests = []
+    for package in ("consortium-crate", "consortium-cli"):
+        try:
+            proc = subprocess.run(
+                ["cargo", "test", "-p", package, "--", "--list"],
+                capture_output=True,
+                text=True,
+                cwd=str(REPO_ROOT),
+                timeout=60,
+            )
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.endswith(": test"):
+                    tests.append(line.removesuffix(": test"))
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            print(f"  WARN: Could not run cargo test --list for {package}", file=sys.stderr)
+    return sorted(set(tests))
 
 
 def python_to_rust_name(py_class: str, py_method: str) -> str:
@@ -154,8 +156,10 @@ def generate_mapping(update: bool = False):
             if py_class in existing and method in existing[py_class]:
                 existing_mapping = existing[py_class][method]
 
-            if existing_mapping is not None:
-                # Preserve manual mapping
+            if existing_mapping:
+                # Preserve non-empty manual mapping (empty arrays are treated
+                # as "not yet mapped" and re-run through auto-detection so the
+                # mapping improves as new Rust tests land)
                 rust_names = existing_mapping if isinstance(existing_mapping, list) else [existing_mapping]
             else:
                 # Auto-detect: check if the conventional Rust name exists
