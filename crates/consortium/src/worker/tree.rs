@@ -556,7 +556,9 @@ impl TreeWorker {
                 let mut targets: Vec<String> = gw_state.active_targets.iter().cloned().collect();
                 targets.sort();
                 let targets_str = nodeset_from_strings(&targets);
-                gw_state.channel.shell(&targets_str, cmd.as_bytes(), worker_id);
+                gw_state
+                    .channel
+                    .shell(&targets_str, cmd.as_bytes(), worker_id);
                 // ev_pickup is fired by sync_gateway_pickups() once the control
                 // message has actually been sent on the wire (#594).
                 gw_state.ctl_unsent_targets.extend(targets);
@@ -749,10 +751,10 @@ impl TreeWorker {
 
             if let Some(ref cmd) = command {
                 let targets_str = nodeset_from_strings(targets);
-                gw_state.channel.shell(&targets_str, cmd.as_bytes(), worker_id);
                 gw_state
-                    .ctl_unsent_targets
-                    .extend(targets.iter().cloned());
+                    .channel
+                    .shell(&targets_str, cmd.as_bytes(), worker_id);
+                gw_state.ctl_unsent_targets.extend(targets.iter().cloned());
             }
         }
         self.sync_gateway_pickups(gateway);
@@ -1088,9 +1090,10 @@ impl TreeWorker {
             return Ok(0);
         };
 
-        let dest = self.config.dest.clone().ok_or_else(|| {
-            WorkerError::General("missing dest parameter for rcopy".to_string())
-        })?;
+        let dest =
+            self.config.dest.clone().ok_or_else(|| {
+                WorkerError::General("missing dest parameter for rcopy".to_string())
+            })?;
 
         // Upstream flushes the raw leftover base64 tail into the archive
         // before extracting; mirror that (it is empty for well-formed
@@ -1820,12 +1823,8 @@ mod tests {
         assert!(worker.is_initialized());
         assert_eq!(worker.pending_pickup_count(), 0);
         assert!(matches!(worker.events()[0], TreeWorkerEvent::Started));
-        assert!(
-            matches!(&worker.events()[1], TreeWorkerEvent::Pickup { node } if node == "node1")
-        );
-        assert!(
-            matches!(&worker.events()[2], TreeWorkerEvent::Pickup { node } if node == "node2")
-        );
+        assert!(matches!(&worker.events()[1], TreeWorkerEvent::Pickup { node } if node == "node1"));
+        assert!(matches!(&worker.events()[2], TreeWorkerEvent::Pickup { node } if node == "node2"));
 
         // this part is called once (upstream _initialized gate)
         worker.check_ini();
@@ -1847,8 +1846,11 @@ mod tests {
         let tree = graph.to_tree("admin").unwrap();
 
         // node2 is behind gw1; node1 is not in any route -> direct
-        let mut worker =
-            TreeWorker::new(make_nodeset("node[1-2]"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node[1-2]"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         worker.set_topology("admin", &tree).unwrap();
         let hops = worker.start().unwrap();
         assert_eq!(hops.len(), 2);
@@ -1861,9 +1863,7 @@ mod tests {
         worker.notify_child_start();
         assert!(worker.is_initialized());
         assert!(matches!(worker.events()[0], TreeWorkerEvent::Started));
-        assert!(
-            matches!(&worker.events()[1], TreeWorkerEvent::Pickup { node } if node == "node1")
-        );
+        assert!(matches!(&worker.events()[1], TreeWorkerEvent::Pickup { node } if node == "node1"));
     }
 
     #[test]
@@ -2160,8 +2160,11 @@ mod tests {
         assert!(worker.stderr(), "rcopy must separate stderr");
 
         // command workers keep the requested setting
-        let worker =
-            TreeWorker::new(make_nodeset("node1"), "echo".to_string(), TreeWorkerConfig::default());
+        let worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         assert!(!worker.stderr());
     }
 
@@ -2179,10 +2182,7 @@ mod tests {
     fn test_untar_command_quoting() {
         assert_eq!(untar_command("/tmp/dest"), "tar -xf - -C '/tmp/dest'");
         // single quotes are escaped the upstream way: ' -> '"'"'
-        assert_eq!(
-            untar_command("/tmp/a'b"),
-            "tar -xf - -C '/tmp/a'\"'\"'b'"
-        );
+        assert_eq!(untar_command("/tmp/a'b"), "tar -xf - -C '/tmp/a'\"'\"'b'");
     }
 
     #[test]
@@ -2199,8 +2199,11 @@ mod tests {
     #[test]
     fn test_remote_shell_command_modes() {
         // command mode passes the user command through
-        let worker =
-            TreeWorker::new(make_nodeset("node1"), "uname -a".to_string(), TreeWorkerConfig::default());
+        let worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "uname -a".to_string(),
+            TreeWorkerConfig::default(),
+        );
         assert_eq!(worker.remote_shell_command().as_deref(), Some("uname -a"));
 
         // forward copy sends the untar pipeline
@@ -2248,10 +2251,11 @@ mod tests {
 
         // stderr still passes through as an event
         worker.on_remote_node_msgline("node1", b"oops", SNAME_STDERR, "gw1");
-        assert!(worker.events().iter().any(
-            |e| matches!(e, TreeWorkerEvent::StdErr { node, data, .. }
-                if node == "node1" && data == b"oops")
-        ));
+        assert!(worker
+            .events()
+            .iter()
+            .any(|e| matches!(e, TreeWorkerEvent::StdErr { node, data, .. }
+                if node == "node1" && data == b"oops")));
         // the tar stream itself is never reported as stdout
         assert!(!worker
             .events()
@@ -2261,12 +2265,19 @@ mod tests {
 
     #[test]
     fn test_msgline_passthrough_for_command_worker() {
-        let mut worker =
-            TreeWorker::new(make_nodeset("node1"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         worker.on_remote_node_msgline("node1", b"out", SNAME_STDOUT, "gw1");
         worker.on_remote_node_msgline("node1", b"err", SNAME_STDERR, "gw1");
-        assert!(matches!(&worker.events()[0], TreeWorkerEvent::StdOut { data, .. } if data == b"out"));
-        assert!(matches!(&worker.events()[1], TreeWorkerEvent::StdErr { data, .. } if data == b"err"));
+        assert!(
+            matches!(&worker.events()[0], TreeWorkerEvent::StdOut { data, .. } if data == b"out")
+        );
+        assert!(
+            matches!(&worker.events()[1], TreeWorkerEvent::StdErr { data, .. } if data == b"err")
+        );
     }
 
     #[test]
@@ -2293,11 +2304,7 @@ mod tests {
         let extracted = destdir.path().join("file.txt");
         assert_eq!(std::fs::read(&extracted).unwrap(), b"mode-check");
         assert_eq!(
-            std::fs::metadata(&extracted)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
+            std::fs::metadata(&extracted).unwrap().permissions().mode() & 0o777,
             0o664
         );
         assert!(worker.events().is_empty());
@@ -2394,8 +2401,11 @@ mod tests {
         assert!(worker.events().is_empty());
 
         // non-rcopy workers finalize as a no-op too
-        let mut worker =
-            TreeWorker::new(make_nodeset("node1"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         assert_eq!(worker.finalize_rcopy_node("node1", "gw1").unwrap(), 0);
     }
 
@@ -2406,8 +2416,11 @@ mod tests {
         // Mirror of upstream 90d3195: an ErrorMessage reason received
         // before the channel ACK is reported as the gateway's own stderr
         // instead of being logged and dropped.
-        let mut worker =
-            TreeWorker::new(make_nodeset("node1"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         worker.report_gateway_error("gw1", "invalid configuration data");
 
         assert_eq!(worker.events().len(), 1);
@@ -2429,8 +2442,11 @@ mod tests {
     fn test_report_gateway_stderr_splits_lines_and_keeps_empty() {
         // _report_stderr line semantics (upstream 90d3195 + #249):
         // per line, per node; an empty buffer still yields one empty line.
-        let mut worker =
-            TreeWorker::new(make_nodeset("node[1-2]"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node[1-2]"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
         let nodes = make_nodeset("node[1-2]");
         worker.report_gateway_stderr("gw1", &nodes, b"line1\nline2");
 
@@ -2455,7 +2471,9 @@ mod tests {
         worker.drain_events();
         worker.report_gateway_stderr("gw1", &make_nodeset("node1"), b"");
         assert_eq!(worker.events().len(), 1);
-        assert!(matches!(&worker.events()[0], TreeWorkerEvent::StdErr { data, .. } if data.is_empty()));
+        assert!(
+            matches!(&worker.events()[0], TreeWorkerEvent::StdErr { data, .. } if data.is_empty())
+        );
     }
 
     #[test]
@@ -2463,13 +2481,20 @@ mod tests {
         // Mirror of upstream a027c3e: a MessageProcessingError from
         // malformed gateway traffic is reported as gateway stderr; the
         // worker itself survives.
-        let mut worker =
-            TreeWorker::new(make_nodeset("node1"), "echo".to_string(), TreeWorkerConfig::default());
+        let mut worker = TreeWorker::new(
+            make_nodeset("node1"),
+            "echo".to_string(),
+            TreeWorkerConfig::default(),
+        );
 
         worker.process_channel_error("gw1", &MessageProcessingError::UnknownType("ABC".into()));
         worker.process_channel_error("gw1", &MessageProcessingError::NoType);
 
-        assert_eq!(worker.state(), WorkerState::Pending, "worker must not crash");
+        assert_eq!(
+            worker.state(),
+            WorkerState::Pending,
+            "worker must not crash"
+        );
         assert_eq!(worker.events().len(), 2);
         assert!(
             matches!(&worker.events()[0], TreeWorkerEvent::StdErr { node, data, .. }

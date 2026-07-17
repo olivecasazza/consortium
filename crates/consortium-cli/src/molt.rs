@@ -87,9 +87,9 @@ fn run(args: Args) -> anyhow::Result<()> {
     // An empty axis list behaves like Python's empty DEFAULTS.fold_axis
     // tuple (falsy → fold along all axes).
     let fold_axes = match &args.axis {
-        Some(axis) => Some(
-            fold::parse_fold_axis(axis).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?,
-        ),
+        Some(axis) => {
+            Some(fold::parse_fold_axis(axis).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?)
+        }
         None => None,
     };
     let fold_axis: Option<&[i64]> = fold_axes.as_deref().filter(|v| !v.is_empty());
@@ -155,10 +155,7 @@ fn parse_line<'a>(line: &'a str, separator: &str) -> Option<(&'a str, &'a str)> 
 /// as a NodeSet (nodeset keys expand to several nodes); in `auto` mode a
 /// parse failure permanently switches interpretation off (`enable_nodeset_key
 /// = False` upstream), here modeled by flipping the mode in place.
-fn expand_key(
-    key: &str,
-    mode: &mut InterpretKeys,
-) -> anyhow::Result<Vec<String>> {
+fn expand_key(key: &str, mode: &mut InterpretKeys) -> anyhow::Result<Vec<String>> {
     if *mode == InterpretKeys::Never {
         return Ok(vec![key.to_string()]);
     }

@@ -159,9 +159,9 @@ fn run(args: Args) -> anyhow::Result<i32> {
     // An empty axis list behaves like Python's empty DEFAULTS.fold_axis
     // tuple (falsy → fold along all axes).
     let fold_axes = match &args.axis {
-        Some(axis) => Some(fold::parse_fold_axis(axis).map_err(|e| {
-            anyhow::anyhow!("Parse error: {e}")
-        })?),
+        Some(axis) => {
+            Some(fold::parse_fold_axis(axis).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?)
+        }
         None => None,
     };
     let fold_axis: Option<&[i64]> = fold_axes.as_deref().filter(|v| !v.is_empty());
@@ -271,9 +271,7 @@ fn run(args: Args) -> anyhow::Result<i32> {
         }
         Some(Box::new(handler))
     } else {
-        progress
-            .2
-            .map(|h| Box::new(h) as Box<dyn EventHandler>)
+        progress.2.map(|h| Box::new(h) as Box<dyn EventHandler>)
     };
 
     task.schedule(Box::new(worker), user_handler, false);
@@ -497,7 +495,10 @@ fn display_dshbak(
     for (_rc, nodes) in &retcodes {
         for node in nodes {
             let buf = task.node_buffer(node).unwrap_or_default();
-            output_to_nodes.entry(buf).or_default().push(node.to_string());
+            output_to_nodes
+                .entry(buf)
+                .or_default()
+                .push(node.to_string());
         }
     }
 

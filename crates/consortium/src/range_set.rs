@@ -838,9 +838,9 @@ impl RangeSetND {
     /// product of its sorted RangeSets with the last dimension varying
     /// fastest (Python's `RangeSetND._iter()`).
     pub fn iter(&self) -> impl Iterator<Item = Vec<String>> + '_ {
-        self.vecrangesets.iter().flat_map(|rgvec| {
-            VecProductIter::new(rgvec.iter().map(RangeSet::sorted).collect())
-        })
+        self.vecrangesets
+            .iter()
+            .flat_map(|rgvec| VecProductIter::new(rgvec.iter().map(RangeSet::sorted).collect()))
     }
 
     /// Return the zero-based position of an index vector in iteration order,

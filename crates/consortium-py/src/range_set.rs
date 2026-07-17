@@ -4,17 +4,23 @@
 //! upstream `ClusterShell.RangeSet.RangeSet` (ClusterShell 1.10.1), backed by
 //! `consortium::range_set::RangeSet`.
 
-use pyo3::exceptions::{
-    PyAssertionError, PyIndexError, PyKeyError, PyTypeError, PyValueError,
-};
+use pyo3::exceptions::{PyAssertionError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyIterator, PyList, PySlice, PyTuple, PyType};
 
 use consortium::range_set::{RangeSet as RustRangeSet, RangeSetError, AUTOSTEP_DISABLED};
 
-pyo3::create_exception!(ClusterShell.RangeSet, RangeSetException, pyo3::exceptions::PyException);
+pyo3::create_exception!(
+    ClusterShell.RangeSet,
+    RangeSetException,
+    pyo3::exceptions::PyException
+);
 pyo3::create_exception!(ClusterShell.RangeSet, RangeSetParseError, RangeSetException);
-pyo3::create_exception!(ClusterShell.RangeSet, RangeSetPaddingError, RangeSetParseError);
+pyo3::create_exception!(
+    ClusterShell.RangeSet,
+    RangeSetPaddingError,
+    RangeSetParseError
+);
 
 /// RangeSet serial version number (matches upstream RangeSet._VERSION).
 const RANGESET_VERSION: i32 = 4;
@@ -121,9 +127,19 @@ fn parse_oracle(py: Python<'_>, pattern: &str, autostep: Option<u32>) -> PyResul
                         }
                     }
                     // "-0-3"
-                    3 => (parts[1].trim().to_string(), parts[2].trim().to_string(), -1, 1),
+                    3 => (
+                        parts[1].trim().to_string(),
+                        parts[2].trim().to_string(),
+                        -1,
+                        1,
+                    ),
                     // "-8--4"
-                    4 => (parts[1].trim().to_string(), parts[3].trim().to_string(), -1, -1),
+                    4 => (
+                        parts[1].trim().to_string(),
+                        parts[3].trim().to_string(),
+                        -1,
+                        -1,
+                    ),
                     _ => {
                         return Err(PyValueError::new_err(format!(
                             "too many values to unpack (expected 2): {}",
@@ -135,9 +151,7 @@ fn parse_oracle(py: Python<'_>, pattern: &str, autostep: Option<u32>) -> PyResul
 
         // compute padding and numeric bounds (Python int() tolerates
         // surrounding whitespace: inputs are pre-trimmed)
-        let int_conv = |txt: &str| -> Result<i64, ()> {
-            txt.trim().parse::<i64>().map_err(|_| ())
-        };
+        let int_conv = |txt: &str| -> Result<i64, ()> { txt.trim().parse::<i64>().map_err(|_| ()) };
         let conv_err = |py: Python<'_>| {
             if subrange.is_empty() {
                 parse_err(py, subrange, "empty range")
@@ -165,7 +179,11 @@ fn parse_oracle(py: Python<'_>, pattern: &str, autostep: Option<u32>) -> PyResul
         } else {
             end.as_str()
         };
-        let endpad = if end.len() - ends.len() > 0 { end.len() } else { 0 };
+        let endpad = if end.len() - ends.len() > 0 {
+            end.len()
+        } else {
+            0
+        };
         if (pad > 0 || endpad > 0) && begin.len() != end.len() {
             return Err(parse_err(py, subrange, "padding length mismatch"));
         }
@@ -297,7 +315,11 @@ fn slices_padding(sorted: &[String], autostep: f64, self_autostep: f64) -> Vec<F
                     cur_start = Some(last_idx);
                 }
 
-                cur_step = if step_mismatch { Some(idx - last_idx) } else { None };
+                cur_step = if step_mismatch {
+                    Some(idx - last_idx)
+                } else {
+                    None
+                };
                 last_idx = idx;
                 continue;
             }
@@ -474,7 +496,11 @@ impl PyRangeSet {
 impl PyRangeSet {
     #[new]
     #[pyo3(signature = (pattern=None, autostep=None))]
-    fn new(py: Python<'_>, pattern: Option<&Bound<'_, PyAny>>, autostep: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        pattern: Option<&Bound<'_, PyAny>>,
+        autostep: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
         // NB: like upstream, passing autostep=None disables stepping, even
         // when pattern is another RangeSet.
         let autostep = extract_autostep(autostep)?;
@@ -658,7 +684,8 @@ impl PyRangeSet {
         let folded = slices_padding(&sorted, autostep, autostep);
         let list = PyList::empty_bound(py);
         for sli in folded {
-            let slice = PySlice::new_bound(py, sli.start as isize, sli.stop as isize, sli.step as isize);
+            let slice =
+                PySlice::new_bound(py, sli.start as isize, sli.stop as isize, sli.step as isize);
             list.append(slice)?;
         }
         Ok(list.into())
@@ -761,21 +788,14 @@ impl PyRangeSet {
             }
             return Ok(sorted[real as usize].clone().into_py(py));
         }
-        Err(PyTypeError::new_err(
-            "RangeSet indices must be integers",
-        ))
+        Err(PyTypeError::new_err("RangeSet indices must be integers"))
     }
 
     /// Return the zero-based index of element in the sorted RangeSet.
     ///
     /// Reverse operation of __getitem__(), behaving like list.index().
     #[pyo3(signature = (elem, start=0, stop=None))]
-    fn index(
-        &self,
-        elem: &Bound<'_, PyAny>,
-        start: isize,
-        stop: Option<isize>,
-    ) -> PyResult<usize> {
+    fn index(&self, elem: &Bound<'_, PyAny>, start: isize, stop: Option<isize>) -> PyResult<usize> {
         let key = elem.str()?.to_string();
         match self.inner.index_str_within(&key, start, stop) {
             Some(pos) => Ok(pos),
@@ -1024,7 +1044,9 @@ impl PyRangeSet {
     fn intersection_update(&mut self, other: &Bound<'_, PyAny>) -> PyResult<()> {
         let snapshot = self.inner.sorted();
         let elems: std::collections::HashSet<String> =
-            setlike_to_strings_inplace(other, &snapshot)?.into_iter().collect();
+            setlike_to_strings_inplace(other, &snapshot)?
+                .into_iter()
+                .collect();
         let kept: Vec<String> = self
             .inner
             .sorted()
@@ -1043,7 +1065,9 @@ impl PyRangeSet {
     fn symmetric_difference_update(&mut self, other: &Bound<'_, PyAny>) -> PyResult<()> {
         let snapshot = self.inner.sorted();
         let other_elems: std::collections::HashSet<String> =
-            setlike_to_strings_inplace(other, &snapshot)?.into_iter().collect();
+            setlike_to_strings_inplace(other, &snapshot)?
+                .into_iter()
+                .collect();
         let self_elems: std::collections::HashSet<String> =
             self.inner.sorted().into_iter().collect();
         let sym: std::collections::HashSet<String> = self_elems
@@ -1074,7 +1098,9 @@ impl PyRangeSet {
             }
         }
         let elems: std::collections::HashSet<String> =
-            setlike_to_strings_inplace(other, &snapshot)?.into_iter().collect();
+            setlike_to_strings_inplace(other, &snapshot)?
+                .into_iter()
+                .collect();
         let kept: Vec<String> = self
             .inner
             .sorted()
@@ -1120,7 +1146,10 @@ impl PyRangeSet {
             s
         } else {
             let value: i64 = element.extract().map_err(|_| {
-                PyValueError::new_err(format!("invalid literal for int(): {}", element.str().unwrap()))
+                PyValueError::new_err(format!(
+                    "invalid literal for int(): {}",
+                    element.str().unwrap()
+                ))
             })?;
             if pad > 0 {
                 format!("{:0>width$}", value, width = pad as usize)
@@ -1230,8 +1259,14 @@ impl RangeSetStrIterator {
 /// Register range_set types into the parent module.
 pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     parent.add_class::<PyRangeSet>()?;
-    parent.add("RangeSetException", parent.py().get_type_bound::<RangeSetException>())?;
-    parent.add("RangeSetParseError", parent.py().get_type_bound::<RangeSetParseError>())?;
+    parent.add(
+        "RangeSetException",
+        parent.py().get_type_bound::<RangeSetException>(),
+    )?;
+    parent.add(
+        "RangeSetParseError",
+        parent.py().get_type_bound::<RangeSetParseError>(),
+    )?;
     parent.add(
         "RangeSetPaddingError",
         parent.py().get_type_bound::<RangeSetPaddingError>(),

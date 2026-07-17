@@ -1190,9 +1190,8 @@ mod tests {
         ch.start(b"topo");
         assert_eq!(ch.state, ChannelState::Config);
 
-        let err = Message::error(
-            "Message CFG has an invalid payload (unsupported pickle protocol: 5)",
-        );
+        let err =
+            Message::error("Message CFG has an invalid payload (unsupported pickle protocol: 5)");
         let results = ch.recv(err).unwrap();
 
         assert_eq!(results.len(), 1);
@@ -1294,7 +1293,10 @@ mod tests {
             ch.recv(m).unwrap();
         }
 
-        let err = ch.channel.feed("<message type=\"ABC\"</message>").unwrap_err();
+        let err = ch
+            .channel
+            .feed("<message type=\"ABC\"</message>")
+            .unwrap_err();
         let synthetic = ch
             .channel
             .handle_channel_error("gw1", &err)
@@ -1394,7 +1396,10 @@ mod tests {
     /// CRLF and CR line boundaries split like Python's bytes.splitlines().
     #[test]
     fn test_split_lines_boundaries() {
-        assert_eq!(split_lines(b"a\r\nb\rc\n"), vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        assert_eq!(
+            split_lines(b"a\r\nb\rc\n"),
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
         assert_eq!(split_lines(b"no-newline"), vec![b"no-newline".to_vec()]);
         assert_eq!(split_lines(b"\n"), vec![b"".to_vec()]);
         assert!(split_lines(b"").is_empty());
@@ -1414,13 +1419,20 @@ mod tests {
 
         // ACK dequeues and sends the CTL: pickup fires now
         ch.recv(Message::ack(0)).unwrap();
-        assert_eq!(ch.pickup_events, vec!["node1".to_string(), "node2".to_string()]);
+        assert_eq!(
+            ch.pickup_events,
+            vec!["node1".to_string(), "node2".to_string()]
+        );
 
         // setup channel: shell sends immediately, pickup fires at once
         ch.shell("node3", b"echo hi", 1);
         assert_eq!(
             ch.pickup_events,
-            vec!["node1".to_string(), "node2".to_string(), "node3".to_string()]
+            vec![
+                "node1".to_string(),
+                "node2".to_string(),
+                "node3".to_string()
+            ]
         );
     }
 

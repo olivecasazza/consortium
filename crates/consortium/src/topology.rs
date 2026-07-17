@@ -1225,7 +1225,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_parser_short_syntax() {
         let mut tmpfile = NamedTempFile::new().unwrap();

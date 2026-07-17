@@ -371,7 +371,10 @@ fn sort_veclist(veclist: &mut [Vec<RangeSet>]) {
     veclist.sort_by_key(|rgvec| rgvec_key(rgvec));
 }
 
-type RgvecKey = (std::cmp::Reverse<u128>, Vec<(std::cmp::Reverse<usize>, i64, i64)>);
+type RgvecKey = (
+    std::cmp::Reverse<u128>,
+    Vec<(std::cmp::Reverse<usize>, i64, i64)>,
+);
 
 fn rgvec_key(rgvec: &[RangeSet]) -> RgvecKey {
     let product: u128 = rgvec.iter().map(|rg| rg.len() as u128).product();
@@ -432,7 +435,10 @@ mod tests {
 
     #[test]
     fn fold_1d_default() {
-        assert_eq!(fold(&["node1", "node2", "node3", "node4"], None), "node[1-4]");
+        assert_eq!(
+            fold(&["node1", "node2", "node3", "node4"], None),
+            "node[1-4]"
+        );
     }
 
     #[test]
@@ -517,10 +523,7 @@ mod tests {
         // axis 3 on a 2D nodeset: filtered out (3 >= dimcnt) → no fold axis
         // (expansion order verified against the Python oracle)
         let names = ["foo1-1", "foo1-2", "foo2-1", "foo2-2"];
-        assert_eq!(
-            fold(&names, Some(&[2])),
-            "foo1-1,foo2-1,foo1-2,foo2-2"
-        );
+        assert_eq!(fold(&names, Some(&[2])), "foo1-1,foo2-1,foo1-2,foo2-2");
     }
 
     #[test]

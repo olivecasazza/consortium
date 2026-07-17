@@ -310,12 +310,7 @@ impl NodeSetBase {
     /// normalization, including the stepped-slice walk across multiple
     /// patterns (upstream fix 1b2509b: the next pick after each pattern is
     /// `sl_start + k*sl_step`, computed with floor division).
-    fn slice_base(
-        &self,
-        start: Option<i64>,
-        stop: Option<i64>,
-        step: i64,
-    ) -> Result<NodeSetBase> {
+    fn slice_base(&self, start: Option<i64>, stop: Option<i64>, step: i64) -> Result<NodeSetBase> {
         if step == 0 {
             return Err(NodeSetError::IndexError(
                 "slice step cannot be zero".to_string(),

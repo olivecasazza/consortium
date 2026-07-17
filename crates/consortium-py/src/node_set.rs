@@ -13,10 +13,18 @@ use consortium::node_set::{NodeSet as RustNodeSet, NodeSetError as RustNodeSetEr
 
 use crate::range_set::extract_autostep;
 
-pyo3::create_exception!(ClusterShell.NodeSet, NodeSetException, pyo3::exceptions::PyException);
+pyo3::create_exception!(
+    ClusterShell.NodeSet,
+    NodeSetException,
+    pyo3::exceptions::PyException
+);
 pyo3::create_exception!(ClusterShell.NodeSet, NodeSetError, NodeSetException);
 pyo3::create_exception!(ClusterShell.NodeSet, NodeSetParseError, NodeSetError);
-pyo3::create_exception!(ClusterShell.NodeSet, NodeSetParseRangeError, NodeSetParseError);
+pyo3::create_exception!(
+    ClusterShell.NodeSet,
+    NodeSetParseRangeError,
+    NodeSetParseError
+);
 pyo3::create_exception!(ClusterShell.NodeSet, NodeSetExternalError, NodeSetError);
 
 /// Convert a core NodeSetError into the matching Python exception,
@@ -63,9 +71,8 @@ impl PyNodeSet {
     /// Parse `other` as a single-node argument like upstream NodeSet.index()
     /// does; returns the position or raises ValueError.
     fn index_impl(&self, other: &str) -> PyResult<usize> {
-        let searched = RustNodeSet::parse(other).map_err(|_| {
-            PyValueError::new_err("index() argument must be a single node")
-        })?;
+        let searched = RustNodeSet::parse(other)
+            .map_err(|_| PyValueError::new_err("index() argument must be a single node"))?;
         if searched.len() != 1 {
             return Err(PyValueError::new_err(
                 "index() argument must be a single node",
@@ -85,15 +92,25 @@ impl PyNodeSet {
 impl PyNodeSet {
     #[new]
     #[pyo3(signature = (nodes=None, autostep=None))]
-    fn new(py: Python<'_>, nodes: Option<&Bound<'_, PyAny>>, autostep: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        nodes: Option<&Bound<'_, PyAny>>,
+        autostep: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
         let autostep = extract_autostep(autostep)?;
         let mut ns = RustNodeSet::new();
         match nodes {
-            None => Ok(Self { inner: ns, autostep }),
+            None => Ok(Self {
+                inner: ns,
+                autostep,
+            }),
             Some(obj) => {
                 if let Ok(other) = obj.downcast::<PyNodeSet>() {
                     ns.update(&other.borrow().inner);
-                    return Ok(Self { inner: ns, autostep });
+                    return Ok(Self {
+                        inner: ns,
+                        autostep,
+                    });
                 }
                 let pat: String = if let Ok(s) = obj.extract::<String>() {
                     s
@@ -111,7 +128,10 @@ impl PyNodeSet {
                 }
                 .map_err(|e| to_py_err(py, e))?;
                 ns.update(&parsed);
-                Ok(Self { inner: ns, autostep })
+                Ok(Self {
+                    inner: ns,
+                    autostep,
+                })
             }
         }
     }
@@ -173,9 +193,7 @@ impl PyNodeSet {
             return Ok(());
         }
         if let Ok(s) = other.extract::<String>() {
-            self.inner
-                .update_str(&s)
-                .map_err(|e| to_py_err(py, e))?;
+            self.inner.update_str(&s).map_err(|e| to_py_err(py, e))?;
             return Ok(());
         }
         Err(PyTypeError::new_err(format!(
@@ -394,9 +412,7 @@ impl PyNodeSet {
         if let Ok(idx) = index.extract::<i64>() {
             match slf.inner.get(idx) {
                 Some(node) => return Ok(node.into_py(py)),
-                None => {
-                    return Err(PyIndexError::new_err(format!("{} out of range", idx)))
-                }
+                None => return Err(PyIndexError::new_err(format!("{} out of range", idx))),
             }
         }
         Err(PyTypeError::new_err("NodeSet indices must be integers"))
@@ -512,7 +528,10 @@ pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = parent.py();
     parent.add("NodeSetException", py.get_type_bound::<NodeSetException>())?;
     parent.add("NodeSetError", py.get_type_bound::<NodeSetError>())?;
-    parent.add("NodeSetParseError", py.get_type_bound::<NodeSetParseError>())?;
+    parent.add(
+        "NodeSetParseError",
+        py.get_type_bound::<NodeSetParseError>(),
+    )?;
     parent.add(
         "NodeSetParseRangeError",
         py.get_type_bound::<NodeSetParseRangeError>(),

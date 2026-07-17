@@ -353,7 +353,9 @@ mod tests {
         let out = String::from_utf8(gw.channel.take_outgoing().unwrap()).unwrap();
         assert!(out.contains("type=\"ERR\""));
         assert!(
-            out.contains("reason=\"Message CFG has an invalid payload (unsupported pickle protocol: 7)\""),
+            out.contains(
+                "reason=\"Message CFG has an invalid payload (unsupported pickle protocol: 7)\""
+            ),
             "unexpected reason in: {}",
             out
         );

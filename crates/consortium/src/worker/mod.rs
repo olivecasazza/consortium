@@ -513,7 +513,10 @@ mod tests {
 
         // initial write goes through
         writers.write("test", b"initial");
-        assert_eq!(writers.handle_write("test").unwrap(), StreamWriteOutcome::Flushed);
+        assert_eq!(
+            writers.handle_write("test").unwrap(),
+            StreamWriteOutcome::Flushed
+        );
         let mut buf = [0u8; 16];
         let n = read_fd(rfd, &mut buf);
         assert_eq!(&buf[..n], b"initial");
@@ -546,7 +549,10 @@ mod tests {
         writers.write("test", b"more");
         assert_eq!(writers.buffered_len("test"), 0);
         writers.set_write_eof("test");
-        assert_eq!(writers.handle_write("test").unwrap(), StreamWriteOutcome::Unknown);
+        assert_eq!(
+            writers.handle_write("test").unwrap(),
+            StreamWriteOutcome::Unknown
+        );
 
         close_fd(wfd);
     }
@@ -561,7 +567,10 @@ mod tests {
 
         writers.write("stdin", b"payload");
         writers.set_write_eof("stdin");
-        assert_eq!(writers.handle_write("stdin").unwrap(), StreamWriteOutcome::Closed);
+        assert_eq!(
+            writers.handle_write("stdin").unwrap(),
+            StreamWriteOutcome::Closed
+        );
         assert!(!writers.contains("stdin"));
 
         let mut buf = [0u8; 16];
@@ -579,7 +588,10 @@ mod tests {
         let mut writers = StreamWriters::new();
         writers.set_writer("test", wfd);
         writers.set_write_eof("test");
-        assert_eq!(writers.handle_write("test").unwrap(), StreamWriteOutcome::Closed);
+        assert_eq!(
+            writers.handle_write("test").unwrap(),
+            StreamWriteOutcome::Closed
+        );
         assert!(!writers.contains("test"));
         close_fd(rfd);
         close_fd(wfd);
@@ -614,8 +626,14 @@ mod tests {
             }
         }
         assert!(saw_pending, "pipe should fill up and report EAGAIN");
-        assert!(writers.contains("test"), "stream must stay registered on EAGAIN");
-        assert!(writers.buffered_len("test") > 0, "unwritten data stays buffered");
+        assert!(
+            writers.contains("test"),
+            "stream must stay registered on EAGAIN"
+        );
+        assert!(
+            writers.buffered_len("test") > 0,
+            "unwritten data stays buffered"
+        );
 
         close_fd(rfd);
         close_fd(wfd);
@@ -631,7 +649,10 @@ mod tests {
         writers.set_write_eof("nope");
         assert_eq!(writers.buffered_len("nope"), 0);
         assert!(!writers.contains("nope"));
-        assert_eq!(writers.handle_write("nope").unwrap(), StreamWriteOutcome::Unknown);
+        assert_eq!(
+            writers.handle_write("nope").unwrap(),
+            StreamWriteOutcome::Unknown
+        );
     }
 
     /// Explicit removal mirrors Engine.remove_stream; later writes drop.
@@ -658,7 +679,10 @@ mod tests {
         assert!(writers.pending_fds().is_empty());
         writers.write("test", b"x");
         assert_eq!(writers.pending_fds(), vec![wfd]);
-        assert_eq!(writers.handle_write("test").unwrap(), StreamWriteOutcome::Flushed);
+        assert_eq!(
+            writers.handle_write("test").unwrap(),
+            StreamWriteOutcome::Flushed
+        );
         assert!(writers.pending_fds().is_empty());
         close_fd(rfd);
         close_fd(wfd);

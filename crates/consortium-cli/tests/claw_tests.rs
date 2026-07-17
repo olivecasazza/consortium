@@ -119,7 +119,15 @@ fn test_046_axis() {
     );
     // 1D nodeset still folds normally with --axis=1
     check(
-        &["--axis=1", "-R", "exec", "-w", "node[1-4]", "-b", "echo test"],
+        &[
+            "--axis=1",
+            "-R",
+            "exec",
+            "-w",
+            "node[1-4]",
+            "-b",
+            "echo test",
+        ],
         "---------------\nnode[1-4] (4)\n---------------\ntest\n",
     );
 }

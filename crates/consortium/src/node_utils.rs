@@ -1067,8 +1067,7 @@ reverse = echo web
             "printf 'a: n[1-2]\nb: n[3-4]\n' && echo called >> {}",
             count.path().display()
         );
-        let source = UpcallGroupSource::new(None, None, None, None)
-            .with_mapall_upcall(Some(cmd));
+        let source = UpcallGroupSource::new(None, None, None, None).with_mapall_upcall(Some(cmd));
         let res = resolver_with(source);
         let mut all = Vec::new();
         for group in res.grouplist(None).unwrap() {

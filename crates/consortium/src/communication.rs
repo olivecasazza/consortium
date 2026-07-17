@@ -559,8 +559,9 @@ impl Message {
                 let ident = self.ident().to_string();
                 let s = std::str::from_utf8(d)
                     .map_err(|_| MessageProcessingError::InvalidPayload(ident.clone()))?;
-                let raw = base64_decode_reason(s)
-                    .map_err(|reason| MessageProcessingError::InvalidPayloadDetail(ident.clone(), reason))?;
+                let raw = base64_decode_reason(s).map_err(|reason| {
+                    MessageProcessingError::InvalidPayloadDetail(ident.clone(), reason)
+                })?;
                 validate_payload_protocol(&ident, &raw)?;
                 Ok(raw)
             }
@@ -1982,9 +1983,7 @@ mod tests {
     #[test]
     fn test_xmlreader_parse_error_not_well_formed() {
         let mut reader = XmlReader::new();
-        let err = reader
-            .feed("<message type=\"ABC\"</message>")
-            .unwrap_err();
+        let err = reader.feed("<message type=\"ABC\"</message>").unwrap_err();
         assert!(matches!(err, MessageProcessingError::ParseError(_)));
         assert!(err.to_string().contains("not well-formed"));
     }
