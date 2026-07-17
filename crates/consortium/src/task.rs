@@ -22,6 +22,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::defaults::{config_paths, Defaults};
@@ -90,7 +92,8 @@ pub struct TaskDefaults {
     pub stdout_msgtree: bool,
     /// Whether to record stderr into a MsgTree (default: true).
     pub stderr_msgtree: bool,
-    /// Auto tree mode (use tree topology when available).
+    /// Auto tree mode (use tree topology when available; default: true,
+    /// matching upstream `_TASK_DEFAULT["auto_tree"]`).
     pub auto_tree: bool,
 }
 
@@ -101,7 +104,7 @@ impl Default for TaskDefaults {
             stdin: true,
             stdout_msgtree: true,
             stderr_msgtree: true,
-            auto_tree: false,
+            auto_tree: true,
         }
     }
 }
@@ -114,7 +117,7 @@ impl TaskDefaults {
             stdin: defaults.stdin(),
             stdout_msgtree: true,
             stderr_msgtree: true,
-            auto_tree: false,
+            auto_tree: defaults.get("auto_tree").map_or(true, |v| v.as_bool()),
         }
     }
 }
@@ -128,7 +131,8 @@ pub struct TaskInfo {
     pub debug: bool,
     /// Maximum fanout (concurrent workers).
     pub fanout: usize,
-    /// Grooming delay for message traffic shaping (seconds).
+    /// Grooming delay for message traffic shaping (seconds; default: 0.25,
+    /// matching upstream `_TASK_INFO["grooming_delay"]`).
     pub grooming_delay: f64,
     /// Connection timeout (seconds).
     pub connect_timeout: f64,
@@ -141,7 +145,7 @@ impl Default for TaskInfo {
         Self {
             debug: false,
             fanout: 64,
-            grooming_delay: 0.5,
+            grooming_delay: 0.25,
             connect_timeout: 10.0,
             command_timeout: 0.0,
         }
@@ -154,10 +158,9 @@ impl TaskInfo {
         Self {
             debug: false,
             fanout: defaults.fanout() as usize,
-            grooming_delay: 0.5,
+            grooming_delay: defaults.grooming_delay(),
             connect_timeout: defaults.connect_timeout(),
             command_timeout: defaults.command_timeout(),
-            ..Default::default()
         }
     }
 }
@@ -283,6 +286,35 @@ impl EventHandler for TaskGatheringHandler {
     }
 }
 
+/// A thread-safe handle for aborting a [`Task`] from another thread.
+///
+/// Obtained via [`Task::abort_handle`]. Cloning the handle is cheap; all
+/// clones signal the same task. This mirrors Python ClusterShell's ability
+/// to abort a running task from any thread (`task.abort()`,
+/// `task_cleanup()`), which the single-owner Rust `Task` cannot do through
+/// `&mut self` while `resume()` is running.
+#[derive(Debug, Clone)]
+pub struct TaskAbortHandle {
+    /// Shared abort-request flag (mirrors `Task._quit`).
+    quit: Arc<AtomicBool>,
+    /// Shared kill flag latched when an abort requests killing workers.
+    kill: Arc<AtomicBool>,
+}
+
+impl TaskAbortHandle {
+    /// Request task abort. If `kill` is true, running workers are killed.
+    ///
+    /// The request is observed by the task's run loop, which then performs
+    /// the (idempotent) terminate pass; calling `abort()` multiple times is
+    /// safe and does not double-fire worker termination (#110).
+    pub fn abort(&self, kill: bool) {
+        if kill {
+            self.kill.store(true, Ordering::SeqCst);
+        }
+        self.quit.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A Task manages a set of workers and their results.
 ///
 /// The Task is the primary orchestrator in consortium. It schedules workers
@@ -304,6 +336,19 @@ pub struct Task {
     info: TaskInfo,
     /// Global task timeout (set via resume/run).
     timeout: Option<Duration>,
+
+    // -- Termination state (mirrors Python Task._quit / engine-released) --
+    /// Abort request flag, shared with any `TaskAbortHandle` so a running
+    /// task can be aborted from another thread (mirrors `Task._quit`).
+    quit: Arc<AtomicBool>,
+    /// Kill flag latched alongside `quit` when an abort requests killing
+    /// workers (mirrors the `kill` argument of `EngineAbortException`).
+    kill_requested: Arc<AtomicBool>,
+    /// Set once the task has been fully terminated with kill=True
+    /// (mirrors `self._engine = None` after a kill-terminate upstream).
+    /// Guards against double termination (#110): any further terminate
+    /// pass is a no-op once this is set.
+    terminated_kill: bool,
 
     // -- Worker management --
     /// Next worker ID to assign.
@@ -368,6 +413,9 @@ impl Task {
             defaults,
             info,
             timeout: None,
+            quit: Arc::new(AtomicBool::new(false)),
+            kill_requested: Arc::new(AtomicBool::new(false)),
+            terminated_kill: false,
             next_worker_id: 0,
             workers: Vec::new(),
             stdout_tree,
@@ -631,6 +679,16 @@ impl Task {
         // Poll workers until all are done
         let start = std::time::Instant::now();
         loop {
+            // Abort requested while running — either from a prior abort()
+            // call or from another thread via TaskAbortHandle (mirrors
+            // EngineAbortException handling in Python Task._resume()):
+            // terminate once and unwind the run normally.
+            if self.quit.load(Ordering::SeqCst) {
+                let kill = self.kill_requested.load(Ordering::SeqCst);
+                self.terminate(kill);
+                return Ok(());
+            }
+
             let mut any_running = false;
             for (_wid, mw) in &mut self.workers {
                 if !mw.autoclose && !mw.worker.is_done() {
@@ -679,12 +737,62 @@ impl Task {
     }
 
     /// Abort the task, stopping all running workers.
+    ///
+    /// If `kill` is true, running worker processes are killed and the task
+    /// is fully terminated: any further `abort()`/`terminate()` call is a
+    /// no-op (upstream ClusterShell #110 — "only terminate Task once").
+    ///
+    /// Aborting clears the task's result stores, mirroring Python
+    /// `Task._terminate()` which calls `Task._reset()`.
     pub fn abort(&mut self, kill: bool) {
+        // Signal any in-progress run loop (mirrors `Task._quit = True`),
+        // so a resume() executing on another thread terminates too.
+        if kill {
+            self.kill_requested.store(true, Ordering::SeqCst);
+        }
+        self.quit.store(true, Ordering::SeqCst);
+        self.terminate(kill);
+    }
+
+    /// Return a thread-safe handle that can abort this task from another
+    /// thread while `resume()`/`run()` is blocked in the run loop.
+    ///
+    /// This is the Rust equivalent of calling `task.abort()` (or
+    /// `task_cleanup()`) from a different thread in Python ClusterShell.
+    pub fn abort_handle(&self) -> TaskAbortHandle {
+        TaskAbortHandle {
+            quit: Arc::clone(&self.quit),
+            kill: Arc::clone(&self.kill_requested),
+        }
+    }
+
+    /// Abort completion subroutine — mirrors Python `Task._terminate(kill)`.
+    ///
+    /// Idempotence guard (#110): once the task has been terminated with
+    /// kill=True (upstream: `self._engine is None` after release), repeated
+    /// terminate passes return early so events are not double-fired and
+    /// task state is not corrupted.
+    fn terminate(&mut self, kill: bool) {
+        // already fully terminated by a prior abort pass (#110)
+        if self.terminated_kill {
+            return;
+        }
+
+        // stop workers (upstream: `self._engine.clear(clear_ports=kill)`)
         for (_wid, mw) in &mut self.workers {
             if !mw.worker.is_done() {
                 mw.worker.abort(kill);
             }
         }
+
+        if kill {
+            // upstream: `self._engine.release(); self._engine = None`
+            self.terminated_kill = true;
+        }
+
+        // clear result objects (upstream: `self._reset()`)
+        self.reset();
+
         self.state = TaskState::Aborted;
     }
 
@@ -961,7 +1069,7 @@ impl Default for Task {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     // -- TaskState tests --
@@ -1026,7 +1134,8 @@ mod tests {
         assert!(d.stdin);
         assert!(d.stdout_msgtree);
         assert!(d.stderr_msgtree);
-        assert!(!d.auto_tree);
+        // upstream _TASK_DEFAULT["auto_tree"] is True
+        assert!(d.auto_tree);
     }
 
     #[test]
@@ -1035,6 +1144,7 @@ mod tests {
         let d = TaskDefaults::from_defaults(&defaults);
         assert!(!d.stderr);
         assert!(d.stdin);
+        assert!(d.auto_tree);
     }
 
     // -- TaskInfo tests --
@@ -1044,7 +1154,8 @@ mod tests {
         let info = TaskInfo::default();
         assert!(!info.debug);
         assert_eq!(info.fanout, 64);
-        assert_eq!(info.grooming_delay, 0.5);
+        // upstream _TASK_INFO["grooming_delay"] is 0.25
+        assert_eq!(info.grooming_delay, 0.25);
         assert_eq!(info.connect_timeout, 10.0);
         assert_eq!(info.command_timeout, 0.0);
     }
@@ -1054,6 +1165,7 @@ mod tests {
         let defaults = Defaults::new();
         let info = TaskInfo::from_defaults(&defaults);
         assert_eq!(info.fanout, defaults.fanout() as usize);
+        assert_eq!(info.grooming_delay, defaults.grooming_delay());
         assert_eq!(info.connect_timeout, defaults.connect_timeout());
         assert_eq!(info.command_timeout, defaults.command_timeout());
     }
@@ -1208,7 +1320,7 @@ mod tests {
 
         let retcodes = task.iter_retcodes(None);
         // All should be rc=0
-        for (rc, nodes) in &retcodes {
+        for (rc, _nodes) in &retcodes {
             assert_eq!(*rc, 0);
         }
     }
@@ -1266,6 +1378,231 @@ mod tests {
         // Don't run, just abort
         task.abort(true);
         assert_eq!(task.state(), TaskState::Aborted);
+    }
+
+    /// Test worker double that counts abort() invocations.
+    ///
+    /// `never_done` simulates a worker that never reports completion on its
+    /// own (e.g. an autoclose port worker), so a missing task-level
+    /// terminate guard would be visible as repeated abort() calls.
+    struct CountingWorker {
+        abort_count: Arc<AtomicUsize>,
+        aborted: bool,
+        never_done: bool,
+        retcodes: HashMap<String, i32>,
+    }
+
+    impl CountingWorker {
+        fn new(abort_count: Arc<AtomicUsize>, never_done: bool) -> Self {
+            Self {
+                abort_count,
+                aborted: false,
+                never_done,
+                retcodes: HashMap::new(),
+            }
+        }
+    }
+
+    impl Worker for CountingWorker {
+        fn start(&mut self) -> crate::worker::Result<()> {
+            Ok(())
+        }
+
+        fn abort(&mut self, _kill: bool) {
+            self.abort_count.fetch_add(1, Ordering::SeqCst);
+            self.aborted = true;
+        }
+
+        fn state(&self) -> WorkerState {
+            if self.aborted {
+                WorkerState::Aborted
+            } else {
+                WorkerState::Running
+            }
+        }
+
+        fn set_handler(&mut self, _handler: Box<dyn EventHandler>) {}
+
+        fn read_fds(&self) -> Vec<std::os::unix::io::RawFd> {
+            Vec::new()
+        }
+
+        fn write_fds(&self) -> Vec<std::os::unix::io::RawFd> {
+            Vec::new()
+        }
+
+        fn handle_read(&mut self, _fd: std::os::unix::io::RawFd) -> crate::worker::Result<()> {
+            Ok(())
+        }
+
+        fn handle_write(&mut self, _fd: std::os::unix::io::RawFd) -> crate::worker::Result<()> {
+            Ok(())
+        }
+
+        fn is_done(&self) -> bool {
+            !self.never_done && self.aborted
+        }
+
+        fn retcodes(&self) -> &HashMap<String, i32> {
+            &self.retcodes
+        }
+
+        fn num_nodes(&self) -> usize {
+            1
+        }
+
+        fn take_handler(&mut self) -> Option<Box<dyn EventHandler>> {
+            None
+        }
+    }
+
+    #[test]
+    fn test_task_terminate_only_once_on_repeated_abort() {
+        // Mirrors upstream ClusterShell #110 ("Task: only terminate Task
+        // once"): repeated terminate/abort calls after a kill-terminate
+        // must be no-ops and must not double-fire worker termination.
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut task = Task::new();
+        task.schedule(
+            Box::new(CountingWorker::new(count.clone(), true)),
+            None,
+            false,
+        );
+
+        task.abort(true);
+        assert_eq!(task.state(), TaskState::Aborted);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(task.terminated_kill);
+
+        // A running task aborted with kill=True terminated twice upstream
+        // (via _resume() and _thread_start()); the second pass must be
+        // suppressed by the terminate-once guard.
+        task.abort(true);
+        task.abort(false);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(task.state(), TaskState::Aborted);
+    }
+
+    #[test]
+    fn test_task_terminate_guard_direct() {
+        // Directly exercise Task::terminate() the way Python's #110
+        // regression triggered it: two terminate passes, one worker that
+        // never reports done. The guard must prevent the second abort.
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut task = Task::new();
+        task.schedule(
+            Box::new(CountingWorker::new(count.clone(), true)),
+            None,
+            false,
+        );
+
+        task.terminate(true);
+        task.terminate(true);
+        task.terminate(false);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_task_repeated_soft_abort_then_kill() {
+        // kill=False terminate passes do not release the engine upstream,
+        // so a later kill=True pass still runs; but an already-aborted
+        // worker must not be aborted again (engine.clear() removed it).
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut task = Task::new();
+        task.schedule(
+            Box::new(CountingWorker::new(count.clone(), false)),
+            None,
+            false,
+        );
+
+        task.abort(false);
+        assert_eq!(task.state(), TaskState::Aborted);
+        assert!(!task.terminated_kill);
+        task.abort(false);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        task.abort(true);
+        assert!(task.terminated_kill);
+        task.abort(true);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(task.state(), TaskState::Aborted);
+    }
+
+    #[test]
+    fn test_task_abort_clears_results() {
+        // Python Task._terminate() calls Task._reset(): aborting wipes the
+        // collected result stores.
+        let mut task = Task::new();
+        task.shell("echo hello", None, None);
+        task.run(None).unwrap();
+        assert_eq!(task.max_retcode(), Some(0));
+        assert!(!task.node_buffer("localhost").unwrap().is_empty());
+
+        task.abort(false);
+        assert_eq!(task.max_retcode(), None);
+        assert!(task.node_buffer("localhost").unwrap().is_empty());
+        assert_eq!(task.num_timeout(), 0);
+    }
+
+    #[test]
+    fn test_task_terminate_once_on_running_abort() {
+        // Mirrors tests/TaskThreadJoinTest.py
+        // ::testThreadTaskTerminateOnceOnRunningAbort (#110): several task
+        // threads are aborted (task_cleanup() equivalent) while inside
+        // their run loops; every thread must unwind cleanly — joinable, no
+        // panic, terminated exactly once.
+        let mut abort_handles = Vec::new();
+        let mut join_handles = Vec::new();
+
+        for i in 1..=4u64 {
+            let mut task = Task::new();
+            task.shell(&format!("sleep {}", 4 + i), None, None);
+            abort_handles.push(task.abort_handle());
+            join_handles.push(std::thread::spawn(move || {
+                let result = task.run(None);
+                (result, task.state())
+            }));
+        }
+
+        // Give the task threads time to actually enter their run loops.
+        std::thread::sleep(Duration::from_millis(300));
+
+        // task_cleanup() equivalent: abort every running task with kill.
+        for handle in &abort_handles {
+            handle.abort(true);
+        }
+
+        // Python joins each task thread and asserts no AttributeError /
+        // Traceback leaked to stderr; the Rust equivalent is a clean join
+        // (no panic payload) with an unwound, aborted task.
+        for join in join_handles {
+            let (result, state) = join.join().expect("task thread panicked on abort");
+            assert!(result.is_ok(), "aborted run should unwind normally");
+            assert_eq!(state, TaskState::Aborted);
+        }
+    }
+
+    #[test]
+    fn test_task_abort_handle_repeated_abort_during_run() {
+        // Repeated abort signals while a task is running must terminate it
+        // exactly once and leave it in a clean, joinable state.
+        let mut task = Task::new();
+        task.shell("sleep 8", None, None);
+        let handle = task.abort_handle();
+
+        let join = std::thread::spawn(move || {
+            let result = task.run(None);
+            (result, task.state())
+        });
+
+        std::thread::sleep(Duration::from_millis(300));
+        handle.abort(true);
+        handle.abort(true);
+        handle.abort(false);
+
+        let (result, state) = join.join().expect("task thread panicked on abort");
+        assert!(result.is_ok());
+        assert_eq!(state, TaskState::Aborted);
     }
 
     // -- Timeout tests --

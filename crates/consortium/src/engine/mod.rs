@@ -570,6 +570,11 @@ impl<B: PollBackend> Engine<B> {
     ///
     /// # Arguments
     /// * `timeout` - Optional timeout in seconds (None for no limit)
+    ///
+    /// Backend (poll) error handling mirrors upstream EPoll/Select
+    /// runloops: `Interrupted` (EINTR) errors are retried, while any other
+    /// backend error terminates the run loop cleanly and is propagated to
+    /// the caller as `EngineError::Io` (upstream ClusterShell 7a39bd8).
     pub fn run(&mut self, timeout: Option<f64>) -> Result<(), EngineError> {
         if self.running {
             return Err(EngineError::AlreadyRunning);
@@ -601,6 +606,8 @@ impl<B: PollBackend> Engine<B> {
                 (Some(max), Some(timer_delay)) => {
                     let remaining = max - self.timerq.current_time;
                     if remaining <= EPSILON {
+                        self.running = false;
+                        self.exited = true;
                         return Err(EngineError::Timeout);
                     }
                     // Use f64::min by comparing manually since f64 doesn't implement Ord
@@ -613,6 +620,8 @@ impl<B: PollBackend> Engine<B> {
                 (Some(max), None) => {
                     let remaining = max - self.timerq.current_time;
                     if remaining <= EPSILON {
+                        self.running = false;
+                        self.exited = true;
                         return Err(EngineError::Timeout);
                     }
                     Some(remaining)
@@ -622,7 +631,22 @@ impl<B: PollBackend> Engine<B> {
             };
 
             // Wait for events
-            let events = self.poll_backend.wait(poll_timeout.map(|t| t.max(0.0)))?;
+            let events = match self.poll_backend.wait(poll_timeout.map(|t| t.max(0.0))) {
+                Ok(events) => events,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                    // EINTR: might get interrupted by a signal — retry,
+                    // like the EPoll and Select runloops do.
+                    continue;
+                }
+                Err(err) => {
+                    // Non-EINTR backend errors must surface to the caller
+                    // instead of being swallowed (which would spin on a
+                    // stale event list) — terminate the loop cleanly.
+                    self.running = false;
+                    self.exited = true;
+                    return Err(EngineError::Io(err));
+                }
+            };
 
             // Process events — dispatch read/write handlers
             for (_fd, events_mask, client_id) in events {
@@ -639,6 +663,8 @@ impl<B: PollBackend> Engine<B> {
             // Check timeout
             if let Some(max) = max_time {
                 if self.timerq.current_time >= max {
+                    self.running = false;
+                    self.exited = true;
                     return Err(EngineError::Timeout);
                 }
             }
@@ -1117,6 +1143,170 @@ mod tests {
         let cid = engine.add_client(Box::new(DummyClient::new())).unwrap();
         // DummyClient has no fd, so this is a no-op but shouldn't error
         engine.update_client_events(cid).unwrap();
+    }
+
+    // -- Backend error propagation tests ------------------------------------
+    //
+    // Rust mirror of upstream tests/EngineErrorTest.py (test_epoll_error,
+    // test_select_error): a non-EINTR backend error must propagate out of
+    // the run loop as an engine error — no hang, no panic, no spin — and
+    // EINTR must be retried (upstream ClusterShell 7a39bd8).
+
+    /// Backend whose `wait()` always fails with the given errno, mirroring
+    /// the BadPoller/BadSelect fixtures of tests/EngineErrorTest.py.
+    struct FailBackend {
+        errno: i32,
+        wait_calls: usize,
+    }
+
+    impl FailBackend {
+        fn new(errno: i32) -> Self {
+            Self {
+                errno,
+                wait_calls: 0,
+            }
+        }
+    }
+
+    impl PollBackend for FailBackend {
+        fn register(&mut self, _fd: RawFd, _events: u32, _client_id: ClientId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn modify(&mut self, _fd: RawFd, _events: u32, _client_id: ClientId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn unregister(&mut self, _fd: RawFd) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn wait(&mut self, _timeout: Option<f64>) -> io::Result<Vec<(RawFd, u32, ClientId)>> {
+            self.wait_calls += 1;
+            Err(io::Error::from_raw_os_error(self.errno))
+        }
+
+        fn name(&self) -> &str {
+            "fail"
+        }
+    }
+
+    /// Backend that fails with EINTR `eintr_count` times, then with
+    /// `final_errno`, to verify EINTR is retried like upstream EPoll.
+    struct IntrThenFailBackend {
+        eintr_count: usize,
+        final_errno: i32,
+        wait_calls: usize,
+    }
+
+    impl PollBackend for IntrThenFailBackend {
+        fn register(&mut self, _fd: RawFd, _events: u32, _client_id: ClientId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn modify(&mut self, _fd: RawFd, _events: u32, _client_id: ClientId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn unregister(&mut self, _fd: RawFd) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn wait(&mut self, _timeout: Option<f64>) -> io::Result<Vec<(RawFd, u32, ClientId)>> {
+            self.wait_calls += 1;
+            if self.wait_calls <= self.eintr_count {
+                Err(io::Error::from_raw_os_error(libc::EINTR))
+            } else {
+                Err(io::Error::from_raw_os_error(self.final_errno))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "intr-then-fail"
+        }
+    }
+
+    #[test]
+    fn test_engine_poll_error_propagates() {
+        // Mirror of EngineErrorTest.test_epoll_error / test_select_error:
+        // inject EBADF into the backend; runloop must return the error.
+        let mut engine = Engine::with_backend(FailBackend::new(libc::EBADF), 0);
+        engine.evloop_acquire();
+
+        let result = engine.run(None);
+        match result {
+            Err(EngineError::Io(err)) => {
+                assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+            }
+            other => panic!("expected EngineError::Io(EBADF), got: {:?}", other),
+        }
+
+        // The run loop must terminate cleanly: not running, exited once.
+        assert!(!engine.is_running());
+        assert!(engine.exited());
+
+        // State must not be corrupted: a subsequent run() surfaces the
+        // backend error again instead of AlreadyRunning.
+        match engine.run(None) {
+            Err(EngineError::Io(err)) => {
+                assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+            }
+            other => panic!("expected EngineError::Io(EBADF), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_engine_select_style_errors_propagate() {
+        // The upstream Select runloop logs "Increase RLIMIT_NOFILE?" for
+        // EINVAL/EBADF/ENOMEM and then re-raises; the Rust engine has no
+        // logging facade, so the errno surfaces via EngineError::Io.
+        for errno in [libc::EINVAL, libc::EBADF, libc::ENOMEM] {
+            let mut engine = Engine::with_backend(FailBackend::new(errno), 0);
+            match engine.run(None) {
+                Err(EngineError::Io(err)) => {
+                    assert_eq!(err.raw_os_error(), Some(errno));
+                }
+                other => panic!("expected EngineError::Io({}), got: {:?}", errno, other),
+            }
+            assert!(!engine.is_running());
+            assert!(engine.exited());
+        }
+    }
+
+    #[test]
+    fn test_engine_eintr_is_retried() {
+        // EINTR ("interrupted by a signal") must be swallowed and the poll
+        // retried; only the subsequent non-EINTR error may propagate.
+        let backend = IntrThenFailBackend {
+            eintr_count: 2,
+            final_errno: libc::EBADF,
+            wait_calls: 0,
+        };
+        let mut engine = Engine::with_backend(backend, 0);
+
+        match engine.run(None) {
+            Err(EngineError::Io(err)) => {
+                assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+            }
+            other => panic!("expected EngineError::Io(EBADF), got: {:?}", other),
+        }
+        // 2 retried EINTR calls + 1 final failing call
+        assert_eq!(engine.poll_backend.wait_calls, 3);
+        assert!(!engine.is_running());
+        assert!(engine.exited());
+    }
+
+    #[test]
+    fn test_engine_timeout_leaves_clean_state() {
+        // A timeout exit must also leave the engine re-runnable (upstream
+        // Engine.run() resets running state in its finally clause).
+        let mut engine = Engine::with_backend(NullBackend, 0);
+        match engine.run(Some(0.0)) {
+            Err(EngineError::Timeout) => {}
+            other => panic!("expected EngineError::Timeout, got: {:?}", other),
+        }
+        assert!(!engine.is_running());
+        assert!(engine.exited());
     }
 
     // -- EngineTimer tests --------------------------------------------------
