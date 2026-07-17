@@ -208,16 +208,6 @@ fn internal_autostep(rs: &RustRangeSet) -> f64 {
     }
 }
 
-/// Sort key matching Python's RangeSet._sortkey().
-fn sort_key(s: &str) -> (i64, i64, String) {
-    if s.starts_with('-') {
-        let ival: i64 = s.parse().unwrap_or(0);
-        (-(s.len() as i64), ival, String::new())
-    } else {
-        (s.len() as i64, 0, s.to_string())
-    }
-}
-
 /// A (start, stop, step, pad) folded slice, mirroring Python's slice+pad pairs.
 #[derive(Debug, Clone)]
 struct FoldedSlice {
@@ -692,7 +682,7 @@ impl PyRangeSet {
     }
 
     /// Called upon unpickling: restore state, converting legacy formats.
-    fn __setstate__(&mut self, py: Python<'_>, dic: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn __setstate__(&mut self, _py: Python<'_>, dic: &Bound<'_, PyDict>) -> PyResult<()> {
         // restore internal autostep value
         if let Some(val) = dic.get_item("_autostep")? {
             let internal: f64 = val.extract()?;

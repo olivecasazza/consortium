@@ -10,6 +10,9 @@ description = "Python bindings for consortium (ClusterShell-compatible API)"
 name = "_consortium"
 crate-type = ["cdylib"]
 
+[build-dependencies]
+pyo3-build-config = { version = "0.22", default-features = false }
+
 [dependencies]
 consortium.workspace = true
 pyo3.workspace = true
