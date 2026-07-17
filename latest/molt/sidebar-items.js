@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["main","parse_line","read_input","run","run_dshbak","run_line_mode","run_passthrough"],"struct":["Args"]};
+window.SIDEBAR_ITEMS = {"enum":["InterpretKeys"],"fn":["expand_key","main","parse_line","read_input","run","run_dshbak","run_line_mode","run_passthrough"],"struct":["Args"]};

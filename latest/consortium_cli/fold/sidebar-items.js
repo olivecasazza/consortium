@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["fold_nodes","parse_fold_axis"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ChannelState","PropagationResult","RouteResolvingError"],"struct":["PropagationChannel","PropagationTreeRouter","RouteEntry"]};
+window.SIDEBAR_ITEMS = {"enum":["ChannelState","PropagationResult","RecvError","RouteResolvingError"],"struct":["PropagationChannel","PropagationTreeRouter","RouteEntry"]};

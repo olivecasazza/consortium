@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["gather_input","main","parse_autostep","pick_random","run","run_rangeset"],"struct":["Args"]};
+window.SIDEBAR_ITEMS = {"fn":["apply_format","gather_input","main","parse_autostep","pick_random","run","run_rangeset","slice_nodeset","slice_rangeset"],"struct":["Args"]};

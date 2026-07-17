@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Gateway"]};
+window.SIDEBAR_ITEMS = {"struct":["GatewayChannel","RoutingEvent","TreeWorkerResponder"]};
