@@ -2,7 +2,7 @@
 //! subprocesses, runnable against actual nixlab hosts.
 //!
 //! [`NixCopyExecutor`] is the realistic counterpart to
-//! [`consortium_fanout_sim::DeterministicExecutor`]. The sim does
+//! `consortium_fanout_sim::DeterministicExecutor`. The sim does
 //! `closure_size / bandwidth + latency` math; this one shells out to
 //! `nix copy --no-check-sigs --to ssh-ng://user@host store_path` for
 //! every (src, tgt) edge in a round, in parallel via `std::thread`.
