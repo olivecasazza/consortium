@@ -2,16 +2,28 @@
 
 This sub-package is a symlink/copy bridge so that any symbol not yet
 ported to Rust can be imported from `ClusterShell._py.ModuleName`.
-The actual source lives in the repo root at `lib/ClusterShell/`.
+The actual source lives in the sibling consortium-tests repo at
+`lib/ClusterShell/` (legacy monorepo layout: repo-root `lib/`).
 """
 
 import sys
 import os
 
 # Add the original lib/ directory to sys.path so imports resolve.
-_lib_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "lib"))
-if _lib_dir not in sys.path:
-    sys.path.insert(0, _lib_dir)
+# Search order: $LIB_CLUSTERSHELL, ../consortium-tests/lib (split-repo
+# layout), then the legacy in-repo lib/.
+_repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+_candidates = [
+    os.environ.get("LIB_CLUSTERSHELL"),
+    os.path.join(os.path.dirname(_repo_root), "consortium-tests", "lib"),
+    os.path.join(_repo_root, "lib"),
+]
+for _cand in _candidates:
+    if _cand and os.path.isdir(_cand):
+        _lib_dir = os.path.normpath(_cand)
+        if _lib_dir not in sys.path:
+            sys.path.insert(0, _lib_dir)
+        break
 
 # Re-export everything from the original package under the _py namespace.
 # Each wrapper module (e.g. ClusterShell/RangeSet.py) imports from

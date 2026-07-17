@@ -206,7 +206,10 @@
               fi
               source .venv/bin/activate
 
-              export PYTHONPATH="$PWD/lib:$PYTHONPATH"
+              # Python oracle/parity suite lives in the sibling consortium-tests repo
+              if [ -d ../consortium-tests/lib ]; then
+                export PYTHONPATH="$PWD/../consortium-tests/lib:$PYTHONPATH"
+              fi
               ${config.pre-commit.installationScript}
 
               echo ""
@@ -215,8 +218,10 @@
               echo "  cargo test                    — Rust tests"
               echo "  cargo watch -x test           — Rust TDD"
               echo "  maturin develop               — build Rust→Python bindings"
-              echo "  pytest tests/ -v              — Python tests (original ClusterShell)"
-              echo "  pytest tests/ -v              — Python tests (Rust-backed)"
+              echo "  (cd ../consortium-tests && CONSORTIUM_BACKEND=python pytest tests/ -v)"
+              echo "                                — Python parity tests (original ClusterShell)"
+              echo "  (cd ../consortium-tests && CONSORTIUM_BACKEND=rust pytest tests/ -v)"
+              echo "                                — Python parity tests (Rust-backed)"
               echo ""
             '';
           };

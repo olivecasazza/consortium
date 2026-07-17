@@ -13,16 +13,13 @@ Get the latest :ref:`install-source` code first.
    testing is performed to test that an intentional change has had the desired
    effect." (from `Wikipedia`_)
 
-The *tests* directory of the source archive (not the RPM) contains all
-regression and non-regression tests. To run all tests with Python 2, use the
-following commands::
+The regression and non-regression tests (the upstream *tests* directory and
+the pure-Python oracle under *lib/ClusterShell*) live in the companion
+`consortium-tests <https://github.com/olivecasazza/consortium-tests>`_ repo.
+Check it out as a sibling of this repo and run the suite there, e.g.::
 
-    $ cd tests
-    $ nosetests -sv --all-modules .
-
-Or run all tests with Python 3 by using the following command instead::
-
-    $ nosetests-3 -sv --all-modules .
+    $ cd ../consortium-tests
+    $ python -m pytest tests/ -v
 
 Some tests assume that *ssh(1)* to localhost is allowed for the current user.
 Some tests use *bc(1)*. And some tests need *pdsh(1)* installed.

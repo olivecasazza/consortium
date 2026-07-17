@@ -3,6 +3,12 @@
 Goal: upstream tests (RangeSetTest, RangeSetNDTest, NodeSetTest, NodeSetGroupTest)
 pass with CONSORTIUM_BACKEND=rust. Baseline: 0 pass (collection errors), oracle: 309.
 
+> Context update (repo split): the upstream tests (`tests/`), the pure-Python
+> oracle tree (`lib/ClusterShell`), the test `harness/`, and `TEST_MAPPING.toml`
+> now live in the sibling `consortium-tests` repo, not in this repo. The
+> bindings are still built with maturin from `crates/consortium-py`; "oracle"
+> below refers to `lib/ClusterShell` in consortium-tests.
+
 ## Layering
 - `_consortium` (PyO3/Rust): full `RangeSet` (core-backed: parse/ops/index/getitem/
   slices/pickle), scalar `NodeSet` (core-backed: parse/ops/index/get/slice/split),
