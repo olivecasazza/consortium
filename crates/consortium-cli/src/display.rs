@@ -2,6 +2,7 @@
 //!
 //! Provides nh-inspired progress reporting and output formatting.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -142,16 +143,24 @@ pub fn finish_progress(bar: &ProgressBar, state: &ProgressState, elapsed: Durati
 
 /// Print gathered output with a node header.
 ///
+/// Mirrors `Display.format_header()` from the Python oracle: the node count
+/// is appended as ` (N)` only when more than one node is gathered
+/// (`node_count` at standard verbosity).
+///
 /// ```text
 /// ---------------
-/// node[1-3]
+/// node[1-3] (3)
 /// ---------------
 /// hello world
 /// ```
-pub fn print_gathered_header(nodes: &str, out: &mut impl Write) -> io::Result<()> {
+pub fn print_gathered_header(nodes: &str, count: usize, out: &mut impl Write) -> io::Result<()> {
     let sep = "-".repeat(15);
     writeln!(out, "{sep}")?;
-    writeln!(out, "{nodes}")?;
+    if count > 1 {
+        writeln!(out, "{nodes} ({count})")?;
+    } else {
+        writeln!(out, "{nodes}")?;
+    }
     writeln!(out, "{sep}")?;
     Ok(())
 }
@@ -159,4 +168,123 @@ pub fn print_gathered_header(nodes: &str, out: &mut impl Write) -> io::Result<()
 /// Print a single line with node prefix: `node1: output`
 pub fn print_line_with_label(node: &str, line: &str, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{node}: {line}")
+}
+
+// ── Streaming line output (GH#528/GH#597 port) ──────────────────────────────
+
+/// Streaming per-line output handler: prints each completed output line as
+/// soon as it arrives instead of buffering everything until command exit.
+///
+/// Ports the upstream line-buffering fix (ClusterShell commits 65e5433 /
+/// GH#528/GH#597): in Python, `Display` reconfigures `sys.stdout` /
+/// `sys.stderr` with `line_buffering=True` so that piped consumers observe
+/// lines in real time. Rust's `io::Stdout` is already a `LineWriter`, and
+/// this handler additionally flushes after every completed line, giving the
+/// same observable behavior: lines arrive as they are produced, not in one
+/// block at process exit.
+///
+/// Partial lines are buffered per node and flushed on `on_close`, so no
+/// output is lost even when a node's final line lacks a trailing newline.
+/// Lines print to stdout with the usual `node: ` label unless disabled.
+///
+/// Note: the core `ExecWorker` currently reports raw pipe fds in `on_read`
+/// (never normalized to 1/2), so stderr chunks cannot be told apart from
+/// stdout here — consistent with `TaskGatheringHandler`, which also folds
+/// them into the stdout buffers. Once the core normalizes fds, a `fd == 2`
+/// branch can route stderr lines to stderr like Python's `print_line_error`.
+///
+/// An optional inner handler (e.g. [`ProgressHandler`]) is chained after
+/// every callback.
+pub struct LineStreamHandler {
+    label: bool,
+    partial: HashMap<String, Vec<u8>>,
+    inner: Option<Box<dyn EventHandler>>,
+}
+
+impl LineStreamHandler {
+    /// Create a handler; `label` controls the `node: ` prefix on lines.
+    pub fn new(label: bool) -> Self {
+        Self {
+            label,
+            partial: HashMap::new(),
+            inner: None,
+        }
+    }
+
+    /// Chain another handler (called after this one on every event).
+    pub fn with_inner(mut self, inner: Box<dyn EventHandler>) -> Self {
+        self.inner = Some(inner);
+        self
+    }
+
+    /// Print one completed line to stdout and flush.
+    fn emit_line(&self, node: &str, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        let mut out = io::stdout().lock();
+        if self.label {
+            let _ = writeln!(out, "{node}: {text}");
+        } else {
+            let _ = writeln!(out, "{text}");
+        }
+        // Line-buffering semantics: make each line visible to piped
+        // consumers immediately (Stdout is a LineWriter; flush anyway).
+        let _ = out.flush();
+    }
+
+    /// Append a chunk to the node's partial buffer and emit completed lines.
+    fn feed(&self, node: &str, buf: &mut Vec<u8>, chunk: &[u8]) {
+        buf.extend_from_slice(chunk);
+        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..pos).collect();
+            let _ = buf.drain(..1); // drop the newline
+            self.emit_line(node, &line);
+        }
+    }
+
+    /// Flush any remaining partial line for a node (called on close).
+    fn flush_partial(&mut self, node: &str) {
+        if let Some(buf) = self.partial.remove(node) {
+            if !buf.is_empty() {
+                self.emit_line(node, &buf);
+            }
+        }
+    }
+}
+
+impl EventHandler for LineStreamHandler {
+    fn on_start(&mut self, worker: &dyn consortium::worker::Worker) {
+        if let Some(ref mut h) = self.inner {
+            h.on_start(worker);
+        }
+    }
+
+    fn on_read(&mut self, node: &str, fd: std::os::unix::io::RawFd, msg: &[u8]) {
+        let _ = fd; // see struct note: raw pipe fds, not normalized to 1/2
+        let mut buf = self.partial.remove(node).unwrap_or_default();
+        self.feed(node, &mut buf, msg);
+        self.partial.insert(node.to_string(), buf);
+        if let Some(ref mut h) = self.inner {
+            h.on_read(node, fd, msg);
+        }
+    }
+
+    fn on_close(&mut self, node: &str, rc: i32) {
+        self.flush_partial(node);
+        if let Some(ref mut h) = self.inner {
+            h.on_close(node, rc);
+        }
+    }
+
+    fn on_timeout(&mut self, node: &str) {
+        self.flush_partial(node);
+        if let Some(ref mut h) = self.inner {
+            h.on_timeout(node);
+        }
+    }
+
+    fn on_error(&mut self, node: &str, error: &consortium::worker::WorkerError) {
+        if let Some(ref mut h) = self.inner {
+            h.on_error(node, error);
+        }
+    }
 }

@@ -20,7 +20,9 @@ use consortium::node_utils::GroupResolverConfig;
 use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
+use consortium::worker::EventHandler;
 use consortium_cli::display;
+use consortium_cli::fold;
 use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// claw — execute commands in parallel across cluster nodes.
@@ -113,6 +115,10 @@ struct Args {
     #[arg(short = 'S', long = "maxrc")]
     maxrc: bool,
 
+    /// Fold along these axis only (axis 1..n for nD nodeset).
+    #[arg(long = "axis", value_name = "RANGESET")]
+    axis: Option<String>,
+
     #[command(flatten)]
     output: OutputArgs,
 
@@ -148,6 +154,17 @@ fn main() {
 
 fn run(args: Args) -> anyhow::Result<i32> {
     let cli_out = CliOutput::from_args(&args.output);
+
+    // User-specified nD-nodeset fold axis for output display (#356).
+    // An empty axis list behaves like Python's empty DEFAULTS.fold_axis
+    // tuple (falsy → fold along all axes).
+    let fold_axes = match &args.axis {
+        Some(axis) => Some(fold::parse_fold_axis(axis).map_err(|e| {
+            anyhow::anyhow!("Parse error: {e}")
+        })?),
+        None => None,
+    };
+    let fold_axis: Option<&[i64]> = fold_axes.as_deref().filter(|v| !v.is_empty());
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -235,14 +252,33 @@ fn run(args: Args) -> anyhow::Result<i32> {
     let num_nodes = node_list.len();
     let show_progress = !args.quiet && is_terminal::is_terminal(io::stderr()) && num_nodes > 1;
 
-    let (pb, state) = if show_progress {
+    // In standard (non-gather, non-quiet) mode, stream output lines as they
+    // arrive (GH#528/GH#597 line-buffering port): a LineStreamHandler prints
+    // each completed line immediately instead of buffering until exit.
+    let stream_lines = !args.dshbak && !args.quiet;
+
+    let progress = if show_progress {
         let (bar, state, handler) = display::create_progress(num_nodes);
-        task.schedule(Box::new(worker), Some(Box::new(handler)), false);
-        (Some(bar), Some(state))
+        (Some(bar), Some(state), Some(handler))
     } else {
-        task.schedule(Box::new(worker), None, false);
-        (None, None)
+        (None, None, None)
     };
+
+    let user_handler: Option<Box<dyn EventHandler>> = if stream_lines {
+        let mut handler = display::LineStreamHandler::new(!args.no_label);
+        if let Some(progress_handler) = progress.2 {
+            handler = handler.with_inner(Box::new(progress_handler));
+        }
+        Some(Box::new(handler))
+    } else {
+        progress
+            .2
+            .map(|h| Box::new(h) as Box<dyn EventHandler>)
+    };
+
+    task.schedule(Box::new(worker), user_handler, false);
+    let pb = progress.0;
+    let state = progress.1;
 
     let start = Instant::now();
     let task_timeout = args.command_timeout.map(|t| Duration::from_secs(t + 5));
@@ -262,7 +298,7 @@ fn run(args: Args) -> anyhow::Result<i32> {
     }
 
     // ── Collect and display output ─────────────────────────────────────
-    let max_rc = display_results(&task, &args, &mut out)?;
+    let max_rc = display_results(&task, &args, fold_axis, stream_lines, &mut out)?;
 
     if args.maxrc {
         Ok(max_rc.unwrap_or(0))
@@ -396,16 +432,24 @@ fn build_ssh_options(args: &Args) -> SshOptions {
 }
 
 /// Display results from a completed task.
-fn display_results(task: &Task, args: &Args, out: &mut impl Write) -> anyhow::Result<Option<i32>> {
+fn display_results(
+    task: &Task,
+    args: &Args,
+    fold_axis: Option<&[i64]>,
+    streamed: bool,
+    out: &mut impl Write,
+) -> anyhow::Result<Option<i32>> {
     if args.quiet {
         return Ok(task.max_retcode());
     }
 
     if args.dshbak {
-        display_dshbak(task, out)?;
-    } else {
+        display_dshbak(task, fold_axis, out)?;
+    } else if !streamed {
         display_standard(task, args, out)?;
     }
+    // When `streamed`, standard output was already printed line by line
+    // during execution by the LineStreamHandler.
 
     // Show return codes for non-zero exits
     let retcodes = task.iter_retcodes(None);
@@ -434,22 +478,39 @@ fn display_results(task: &Task, args: &Args, out: &mut impl Write) -> anyhow::Re
 }
 
 /// Display output in dshbak (gathered) mode.
-fn display_dshbak(task: &Task, out: &mut impl Write) -> anyhow::Result<()> {
+///
+/// Groups nodes by identical output, then prints one header block per group.
+/// Groups sort like upstream clush (`bufnodeset_cmpkey`): larger groups
+/// first, then by first node name. Headers fold with the nD-aware folder
+/// honoring the `--axis` constraint (#356) and carry the ` (N)` node count
+/// like upstream `Display.format_header()`.
+fn display_dshbak(
+    task: &Task,
+    fold_axis: Option<&[i64]>,
+    out: &mut impl Write,
+) -> anyhow::Result<()> {
     // Group nodes by their output
-    let mut output_to_nodes: HashMap<Vec<u8>, NodeSet> = HashMap::new();
+    let mut output_to_nodes: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
 
     // Iterate over all nodes that ran
     let retcodes = task.iter_retcodes(None);
     for (_rc, nodes) in &retcodes {
         for node in nodes {
             let buf = task.node_buffer(node).unwrap_or_default();
-            let ns = output_to_nodes.entry(buf).or_insert_with(NodeSet::new);
-            let _ = ns.update_str(node);
+            output_to_nodes.entry(buf).or_default().push(node.to_string());
         }
     }
 
-    for (output, ns) in &output_to_nodes {
-        display::print_gathered_header(&ns.to_string(), out)?;
+    let mut groups: Vec<(Vec<u8>, Vec<String>)> = output_to_nodes.into_iter().collect();
+    for (_buf, names) in groups.iter_mut() {
+        names.sort();
+    }
+    // larger nodeset first, then sorted by first node index
+    groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.1[0].cmp(&b.1[0])));
+
+    for (output, names) in &groups {
+        let folded = fold::fold_nodes(names, fold_axis);
+        display::print_gathered_header(&folded, names.len(), out)?;
         out.write_all(output)?;
         if !output.is_empty() && !output.ends_with(b"\n") {
             writeln!(out)?;

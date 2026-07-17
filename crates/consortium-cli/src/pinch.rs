@@ -95,6 +95,18 @@ struct Args {
     #[arg(long = "pick")]
     pick: Option<usize>,
 
+    /// Pick node(s) at the given index position(s) (reverse of --index).
+    #[arg(short = 'I', long = "slice", value_name = "RANGESET")]
+    slice: Option<String>,
+
+    /// Output the index of NODE in the nodeset.
+    #[arg(long = "index", value_name = "NODE")]
+    index: Option<String>,
+
+    /// Output format string (%-style, applied to --index result).
+    #[arg(short = 'O', long = "output-format", value_name = "FORMAT")]
+    output_format: Option<String>,
+
     // ── Positional ─────────────────────────────────────────────────────
     /// Input node sets or node names. Reads from stdin if none given.
     nodesets: Vec<String>,
@@ -113,6 +125,25 @@ fn main() {
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
+    // ── Command validation (mirrors CLI/Nodeset.py parser.error paths) ──
+    // --index counts as a command; combined with another command upstream
+    // reports "Multiple commands not allowed." and exits 2.
+    let cmdcount = args.count as u32
+        + args.expand as u32
+        + args.fold as u32
+        + u32::from(args.list > 0)
+        + args.regroup as u32
+        + args.groupsources as u32
+        + u32::from(args.index.is_some());
+    if cmdcount > 1 {
+        eprintln!("Multiple commands not allowed.");
+        process::exit(2);
+    }
+    if args.index.is_some() && args.pick.is_some() {
+        eprintln!("--index cannot be combined with --pick");
+        process::exit(2);
+    }
+
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -137,9 +168,39 @@ fn run(args: Args) -> anyhow::Result<()> {
         ns.symmetric_difference_update(&other);
     }
 
+    // ── Slice transform (-I), applied before --pick and --index ────────
+    if let Some(ref slice_pat) = args.slice {
+        ns = slice_nodeset(&ns, slice_pat)?;
+    }
+
     // ── Pick random subset ─────────────────────────────────────────────
     if let Some(n) = args.pick {
         ns = pick_random(&ns, n);
+    }
+
+    let fmt = args.output_format.as_deref().unwrap_or("%s");
+
+    // ── --index: position of a node in the set (reverse of -I/--slice) ──
+    if let Some(ref node_arg) = args.index {
+        // a single node is required (like list.index())
+        match NodeSet::parse(node_arg) {
+            Ok(parsed) if parsed.len() == 1 => {}
+            Ok(_) => {
+                eprintln!("ERROR: index() argument must be a single node");
+                process::exit(1);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        return match ns.index(node_arg) {
+            Some(i) => {
+                writeln!(out, "{}", apply_format(fmt, &i.to_string()))?;
+                Ok(())
+            }
+            None => {
+                eprintln!("ERROR: '{node_arg}' is not in nodeset");
+                process::exit(1);
+            }
+        };
     }
 
     // ── Output ─────────────────────────────────────────────────────────
@@ -236,6 +297,27 @@ fn run_rangeset(args: &Args, out: &mut impl Write) -> anyhow::Result<()> {
         rs.symmetric_difference_update(&other);
     }
 
+    // Slice transform (-I), applied before --index like upstream
+    if let Some(ref slice_pat) = args.slice {
+        rs = slice_rangeset(&rs, slice_pat)?;
+    }
+
+    let fmt = args.output_format.as_deref().unwrap_or("%s");
+
+    // --index: position of an element in the rangeset (padding significant)
+    if let Some(ref elem_arg) = args.index {
+        return match rs.index_str(elem_arg) {
+            Some(i) => {
+                writeln!(out, "{}", apply_format(fmt, &i.to_string()))?;
+                Ok(())
+            }
+            None => {
+                eprintln!("ERROR: {elem_arg} is not in RangeSet");
+                process::exit(1);
+            }
+        };
+    }
+
     let sep = args.separator.as_deref().unwrap_or(" ");
 
     if args.count {
@@ -258,6 +340,58 @@ fn parse_autostep(s: &Option<String>) -> Option<u32> {
         "auto" => Some(0), // 0 means auto-detect
         _ => s.parse::<u32>().ok(),
     }
+}
+
+/// Apply the `-I/--slice` transform: keep the elements at the positions
+/// selected by the slice rangeset (upstream `xset[sli]` for each slice of
+/// `RangeSet(options.slice_rangeset).slices()`; out-of-range positions are
+/// clamped away like Python slicing).
+fn slice_nodeset(ns: &NodeSet, slice_pat: &str) -> anyhow::Result<NodeSet> {
+    let positions = RangeSet::parse(slice_pat, None)?;
+    let elems: Vec<String> = ns.iter().collect();
+    let mut sliced = NodeSet::new();
+    for pos in positions.intiter() {
+        if pos >= 0 && (pos as usize) < elems.len() {
+            sliced.update_str(&elems[pos as usize])?;
+        }
+    }
+    Ok(sliced)
+}
+
+/// RangeSet mode equivalent of [`slice_nodeset`].
+fn slice_rangeset(rs: &RangeSet, slice_pat: &str) -> anyhow::Result<RangeSet> {
+    let positions = RangeSet::parse(slice_pat, None)?;
+    let elems = rs.sorted();
+    let mut sliced = RangeSet::new();
+    for pos in positions.intiter() {
+        if pos >= 0 && (pos as usize) < elems.len() {
+            sliced.add_str(&elems[pos as usize]);
+        }
+    }
+    Ok(sliced)
+}
+
+/// Apply a Python `%`-style output format string to a single value
+/// (`%s`/`%d`/`%i` substitute the value, `%%` is a literal percent).
+fn apply_format(fmt: &str, value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('s') | Some('d') | Some('i') => out.push_str(value),
+                Some('%') => out.push('%'),
+                Some(other) => {
+                    out.push('%');
+                    out.push(other);
+                }
+                None => out.push('%'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Pick N random nodes from a NodeSet.

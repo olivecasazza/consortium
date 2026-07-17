@@ -26,6 +26,11 @@ pub enum NodeSetError {
 
     #[error("external error: {0}")]
     ExternalError(String),
+
+    /// Mirrors Python's `IndexError`/`ValueError` raised by `__getitem__`
+    /// slice handling (eg. illegal slice parameters).
+    #[error("index error: {0}")]
+    IndexError(String),
 }
 
 pub type Result<T> = std::result::Result<T, NodeSetError>;
@@ -227,10 +232,23 @@ impl NodeSetBase {
         false
     }
 
+    /// Patterns in iteration order: sorted by pattern string, matching
+    /// Python's `sorted(self._patterns.items())`.
+    fn sorted_patterns(&self) -> Vec<(&String, &Option<RangeSet>)> {
+        let mut sorted_pats: Vec<_> = self.patterns.iter().collect();
+        sorted_pats.sort_by(|a, b| a.0.cmp(b.0));
+        sorted_pats
+    }
+
     /// Iterate all individual node names in sorted order.
+    ///
+    /// Matches Python's `NodeSet.__iter__`: patterns sorted by pattern
+    /// string, each expanded in `RangeSet` order (numeric-aware, so eg.
+    /// `cde9` comes before `cde11`). The whole list is NOT re-sorted
+    /// lexicographically.
     fn iter(&self) -> Vec<String> {
         let mut nodes = Vec::new();
-        for (pat, rs_opt) in &self.patterns {
+        for (pat, rs_opt) in self.sorted_patterns() {
             match rs_opt {
                 Some(rs) => {
                     for s in rs.striter() {
@@ -242,19 +260,149 @@ impl NodeSetBase {
                 }
             }
         }
-        nodes.sort();
         nodes
+    }
+
+    /// Position of the single node `name` in iteration order, or `None` if
+    /// it is not present (or if `name` does not resolve to exactly one
+    /// node). Mirrors `NodeSetBase.index()`: the argument is parsed like a
+    /// nodeset (it must hold exactly one node), then the node is matched
+    /// against the stored pattern shapes with zero-padding significant.
+    fn position_of(&self, name: &str) -> Option<usize> {
+        let searched = parse_nodeset_string(name, self.autostep).ok()?;
+        let nodes = searched.iter();
+        if nodes.len() != 1 {
+            // like list.index(), the argument must be a single node
+            return None;
+        }
+        let node = &nodes[0];
+
+        let mut base = 0usize;
+        for (pat, rs_opt) in self.sorted_patterns() {
+            match rs_opt {
+                Some(rs) => {
+                    if let Some(digits) = match_pattern_index(pat, node) {
+                        // pattern shape matched: the position of this
+                        // (possibly zero-padded) index decides
+                        if let Some(offset) = rs.sorted().iter().position(|s| s == &digits) {
+                            return Some(base + offset);
+                        }
+                    }
+                }
+                // unnumbered node (eg. 'server')
+                None => {
+                    if pat.as_str() == node {
+                        return Some(base);
+                    }
+                }
+            }
+            base += match rs_opt {
+                Some(rs) => rs.len(),
+                None => 1,
+            };
+        }
+        None
+    }
+
+    /// Build the sub-nodeset selected by a Python-style slice
+    /// `start:stop:step` over iteration order. Mirrors
+    /// `NodeSet.__getitem__` with a slice argument and `_extractslice()`
+    /// normalization, including the stepped-slice walk across multiple
+    /// patterns (upstream fix 1b2509b: the next pick after each pattern is
+    /// `sl_start + k*sl_step`, computed with floor division).
+    fn slice_base(
+        &self,
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: i64,
+    ) -> Result<NodeSetBase> {
+        if step == 0 {
+            return Err(NodeSetError::IndexError(
+                "slice step cannot be zero".to_string(),
+            ));
+        }
+        let length = self.len() as i64;
+        // _extractslice(): start/stop normalization
+        let mut sl_start = match start {
+            None => 0,
+            Some(s) if s < 0 => (length + s).max(0),
+            Some(s) => s,
+        };
+        let sl_stop = match stop {
+            None => i64::MAX,
+            Some(s) if s < 0 => (length + s).max(0),
+            Some(s) => s,
+        };
+        let sl_step = if step < 0 {
+            // We support negative step slicing with no start/stop, ie. ns[::-n].
+            if start.is_some() || stop.is_some() {
+                return Err(NodeSetError::IndexError(
+                    "illegal start and stop when negative step is used".to_string(),
+                ));
+            }
+            // As elements are ordered internally, adjust sl_start to fake
+            // backward stepping in case of negative slice step.
+            let abs_step = -step;
+            let stepmod = (length + abs_step - 1) % abs_step;
+            if stepmod > 0 {
+                sl_start += stepmod;
+            }
+            abs_step
+        } else {
+            step
+        };
+
+        let mut inst = NodeSetBase::with_autostep(self.autostep);
+        if sl_stop <= sl_start {
+            return Ok(inst);
+        }
+
+        // Global indices to pick are exactly sl_start, sl_start+sl_step, ...
+        // below sl_stop; walk patterns in iteration order and, for each one,
+        // collect the elements whose global index is picked (this is the
+        // observable result of Python's pattern walk with floor division).
+        let mut next_pick = sl_start;
+        let mut base = 0i64;
+        for (pat, rs_opt) in self.sorted_patterns() {
+            let cnt = match rs_opt {
+                Some(rs) => rs.len() as i64,
+                None => 1,
+            };
+            match rs_opt {
+                Some(rs) => {
+                    if next_pick < base + cnt {
+                        // sub-rangeset preserving zero-padding
+                        let mut sub = RangeSet::new();
+                        sub.set_autostep(self.autostep);
+                        let sorted = rs.sorted();
+                        while next_pick < base + cnt && next_pick < sl_stop {
+                            sub.add_str(&sorted[(next_pick - base) as usize]);
+                            next_pick += sl_step;
+                        }
+                        inst.add(pat, Some(sub));
+                    }
+                }
+                None => {
+                    if next_pick == base && next_pick < sl_stop {
+                        inst.add(pat, None);
+                        next_pick += sl_step;
+                    }
+                }
+            }
+            if next_pick >= sl_stop {
+                break;
+            }
+            base += cnt;
+        }
+        Ok(inst)
     }
 }
 
 impl fmt::Display for NodeSetBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts: Vec<String> = Vec::new();
-        // Sort patterns for deterministic output
-        let mut sorted_pats: Vec<_> = self.patterns.iter().collect();
-        sorted_pats.sort_by(|a, b| a.0.cmp(b.0));
-
-        for (pat, rs_opt) in sorted_pats {
+        // Sort patterns for deterministic output (same order as iteration)
+        for (pat, rs_opt) in self.sorted_patterns() {
             match rs_opt {
                 Some(rs) => {
                     let rs_str = format!("{}", rs);
@@ -669,6 +817,26 @@ fn expand_dimensions(rangesets: &[RangeSet]) -> Vec<Vec<String>> {
     result
 }
 
+/// Match a node name against a stored pattern shape holding exactly one
+/// `%s` placeholder. Returns the index digit-string substituted for `%s`
+/// (zero-padding preserved) when the node matches, `None` otherwise.
+///
+/// Stored patterns hold at most one `%s` (multi-dimensional inputs are
+/// expanded at parse time), but the placeholder may sit anywhere in the
+/// pattern (eg. `da%sp2` for `da[70-77]p2`), so matching is done by
+/// prefix/suffix anchoring rather than by re-parsing the node.
+fn match_pattern_index(pat: &str, node: &str) -> Option<String> {
+    let (prefix, suffix) = pat.split_once("%s")?;
+    if suffix.contains("%s") {
+        return None; // defensive: stored patterns hold at most one %s
+    }
+    let middle = node.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    if middle.is_empty() || !middle.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(middle.to_string())
+}
+
 /// Extract the last run of digits from a node string, preserving padding.
 /// e.g., "node001" → "001", "rack2-node05" → "05"
 fn extract_last_digit_str(node: &str) -> String {
@@ -886,6 +1054,88 @@ impl NodeSet {
     /// Iterate all individual node names in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = String> + '_ {
         self.base.iter().into_iter()
+    }
+
+    /// Return the zero-based position of the node `name` when iterating
+    /// over this nodeset, or `None` if the node is not present.
+    ///
+    /// This is the list-like `index()` method (upstream commit 484d230):
+    /// the reverse operation of [`NodeSet::get`]. Zero-padding is
+    /// significant (`prune003` matches, `prune3` does not).
+    ///
+    /// ```
+    /// use consortium::node_set::NodeSet;
+    ///
+    /// let ns = NodeSet::parse("node[0-9,20]").unwrap();
+    /// assert_eq!(ns.index("node20"), Some(10));
+    /// assert_eq!(ns.index("node42"), None);
+    /// ```
+    pub fn index(&self, name: &str) -> Option<usize> {
+        self.index_in(name, 0, None)
+    }
+
+    /// `list.index()`-like search restricted to the `[start, stop)` window
+    /// of iteration order. Negative `start`/`stop` count from the end, like
+    /// Python. Returns `None` when the node is absent or its position falls
+    /// outside the window.
+    fn index_in(&self, name: &str, start: i64, stop: Option<i64>) -> Option<usize> {
+        let found = self.base.position_of(name)? as i64;
+        if start != 0 || stop.is_some() {
+            let length = self.len() as i64;
+            let start = if start < 0 {
+                (length + start).max(0)
+            } else {
+                start
+            };
+            let stop = match stop {
+                None => length,
+                Some(s) if s < 0 => (length + s).max(0),
+                Some(s) => s,
+            };
+            if !(start <= found && found < stop) {
+                return None;
+            }
+        }
+        Some(found as usize)
+    }
+
+    /// Return the node at position `index` in iteration order. Negative
+    /// `index` counts from the end, like Python's `nodeset[index]`.
+    /// Returns `None` when out of range (Python raises `IndexError`).
+    pub fn get(&self, index: i64) -> Option<String> {
+        let length = self.len() as i64;
+        let idx = if index < 0 {
+            if index >= -length {
+                length + index
+            } else {
+                return None;
+            }
+        } else {
+            index
+        };
+        if idx >= length {
+            return None;
+        }
+        self.base.iter().into_iter().nth(idx as usize)
+    }
+
+    /// Python-style slice `nodeset[start:stop:step]` over iteration order,
+    /// returned as a new nodeset. `start`/`stop` may be negative (counted
+    /// from the end); a negative `step` is only allowed with no `start` and
+    /// no `stop` (mirroring `NodeSet._extractslice`). Stepped slices span
+    /// multiple patterns exactly like upstream (commit 1b2509b).
+    ///
+    /// ```
+    /// use consortium::node_set::NodeSet;
+    ///
+    /// let ns = NodeSet::parse("stone[1-9],wood[1-9]").unwrap();
+    /// assert_eq!(ns.slice(None, None, 2).unwrap().to_string(),
+    ///            "stone[1,3,5,7,9],wood[2,4,6,8]");
+    /// ```
+    pub fn slice(&self, start: Option<i64>, stop: Option<i64>, step: i64) -> Result<NodeSet> {
+        Ok(NodeSet {
+            base: self.base.slice_base(start, stop, step)?,
+        })
     }
 
     /// Split the nodeset into `nbr` sub-nodesets (at most).
@@ -1300,5 +1550,205 @@ mod tests {
         assert_eq!(ns.len(), 1);
         let nodes: Vec<String> = ns.iter().collect();
         assert_eq!(nodes, vec!["CK2Q9LN7PM-MBA.tb"]);
+    }
+
+    // ── list-like index() and slicing ────────────────────────────────────
+    // Mirrors tests/NodeSetTest.py methods added upstream by commits
+    // 484d230 (index) and 1b2509b (stepped slice across multiple patterns).
+
+    #[test]
+    fn test_index() {
+        // mirror NodeSetTest.py::NodeSetTest::test_index
+        let ns = NodeSet::parse("yeti[30,34-51,59-60]").unwrap();
+        // index() is the reverse of iteration for every node
+        for (i, node) in ns.iter().enumerate() {
+            assert_eq!(ns.index(&node), Some(i));
+        }
+        assert_eq!(ns.index("yeti30"), Some(0));
+        assert_eq!(ns.index("yeti34"), Some(1));
+        assert_eq!(ns.index("yeti51"), Some(18));
+        assert_eq!(ns.index("yeti60"), Some(20));
+        // missing node -> None (Python raises ValueError, like list.index())
+        assert_eq!(ns.index("yeti31"), None);
+        assert_eq!(ns.index("foo1"), None);
+        // a single node is required
+        assert_eq!(ns.index("yeti[30,34]"), None);
+
+        // several patterns, including unindexed nodes
+        let ns = NodeSet::parse("abc,cde[3-9,11],fgh").unwrap();
+        for (i, node) in ns.iter().enumerate() {
+            assert_eq!(ns.index(&node), Some(i));
+        }
+        assert_eq!(ns.index("abc"), Some(0));
+        assert_eq!(ns.index("cde3"), Some(1));
+        assert_eq!(ns.index("cde11"), Some(8));
+        assert_eq!(ns.index("fgh"), Some(9));
+
+        // zero-padding must match exactly
+        let ns = NodeSet::parse("prune[003-034,349-353/2]").unwrap();
+        assert_eq!(ns.index("prune003"), Some(0));
+        assert_eq!(ns.index("prune034"), Some(31));
+        assert_eq!(ns.index("prune349"), Some(32));
+        assert_eq!(ns.index("prune353"), Some(34));
+        assert_eq!(ns.index("prune3"), None);
+        assert_eq!(ns.index("prune35"), None);
+
+        // optional start/stop search window (list.index() semantics)
+        let ns = NodeSet::parse("node[0-9]").unwrap();
+        assert_eq!(ns.index_in("node5", 3, None), Some(5));
+        assert_eq!(ns.index_in("node5", 5, None), Some(5));
+        assert_eq!(ns.index_in("node5", 6, None), None);
+        assert_eq!(ns.index_in("node8", -3, None), Some(8));
+        assert_eq!(ns.index_in("node5", 0, Some(6)), Some(5));
+        assert_eq!(ns.index_in("node5", 0, Some(5)), None);
+        assert_eq!(ns.index_in("node9", 0, Some(-1)), None);
+    }
+
+    #[test]
+    fn test_nd_index() {
+        // mirror NodeSetTest.py::NodeSetTest::test_nd_index
+        let ns = NodeSet::parse("da[30,34-51,59-60]p[1-2]").unwrap();
+        for (i, node) in ns.iter().enumerate() {
+            assert_eq!(ns.index(&node), Some(i));
+        }
+        assert_eq!(ns.index("da30p1"), Some(0));
+        assert_eq!(ns.index("da30p2"), Some(1));
+        assert_eq!(ns.index("da34p1"), Some(2));
+        assert_eq!(ns.index("da30p3"), None);
+
+        let ns = NodeSet::parse("da[30,34-51,59-60]p[1-2],da[70-77]p2").unwrap();
+        for (i, node) in ns.iter().enumerate() {
+            assert_eq!(ns.index(&node), Some(i));
+        }
+    }
+
+    #[test]
+    fn test_get_int() {
+        // int indexing: reverse relation with index() (Python __getitem__)
+        let ns = NodeSet::parse("node[0-9]").unwrap();
+        assert_eq!(ns.get(0).as_deref(), Some("node0"));
+        assert_eq!(ns.get(9).as_deref(), Some("node9"));
+        assert_eq!(ns.get(-1).as_deref(), Some("node9"));
+        assert_eq!(ns.get(-10).as_deref(), Some("node0"));
+        assert_eq!(ns.get(10), None);
+        assert_eq!(ns.get(-11), None);
+
+        let ns = NodeSet::parse("yeti[30,34-51,59-60]").unwrap();
+        for i in 0..ns.len() as i64 {
+            let node = ns.get(i).unwrap();
+            assert_eq!(ns.index(&node), Some(i as usize));
+        }
+    }
+
+    /// Slice `ns[start:stop:step]` and return the folded string.
+    fn sl(ns: &NodeSet, start: Option<i64>, stop: Option<i64>, step: i64) -> String {
+        ns.slice(start, stop, step).unwrap().to_string()
+    }
+
+    #[test]
+    fn test_getslice() {
+        // mirror NodeSetTest.py::NodeSetTest::test_getslice (including the
+        // stepped multi-pattern assertions added by upstream 1b2509b)
+        let ns = NodeSet::parse("yeti[30,34-51,59-60]").unwrap();
+        assert_eq!(ns.len(), 21);
+        assert_eq!(ns.slice(Some(0), Some(2), 1).unwrap().len(), 2);
+        assert_eq!(sl(&ns, Some(0), Some(2), 1), "yeti[30,34]");
+        assert_eq!(ns.slice(Some(1), Some(3), 1).unwrap().len(), 2);
+        assert_eq!(sl(&ns, Some(1), Some(3), 1), "yeti[34-35]");
+        assert_eq!(ns.slice(Some(19), Some(21), 1).unwrap().len(), 2);
+        assert_eq!(sl(&ns, Some(19), Some(21), 1), "yeti[59-60]");
+        assert_eq!(ns.slice(Some(20), Some(22), 1).unwrap().len(), 1);
+        assert_eq!(sl(&ns, Some(20), Some(22), 1), "yeti60");
+        assert_eq!(ns.slice(Some(21), Some(24), 1).unwrap().len(), 0);
+        assert_eq!(sl(&ns, Some(21), Some(24), 1), "");
+        // negative indices
+        assert_eq!(sl(&ns, None, Some(-1), 1), "yeti[30,34-51,59]");
+        assert_eq!(sl(&ns, None, Some(-2), 1), "yeti[30,34-51]");
+        assert_eq!(sl(&ns, Some(1), Some(-2), 1), "yeti[34-51]");
+        assert_eq!(sl(&ns, Some(2), Some(-2), 1), "yeti[35-51]");
+        assert_eq!(sl(&ns, Some(9), Some(-3), 1), "yeti[42-50]");
+        assert_eq!(sl(&ns, Some(10), Some(-9), 1), "yeti[43-44]");
+        assert_eq!(sl(&ns, Some(10), Some(-10), 1), "yeti43");
+        assert_eq!(sl(&ns, Some(11), Some(-10), 1), "");
+        assert_eq!(sl(&ns, Some(11), Some(-11), 1), "");
+        assert_eq!(
+            sl(&ns, None, None, -2),
+            "yeti[30,35,37,39,41,43,45,47,49,51,60]"
+        );
+        assert_eq!(sl(&ns, None, None, -3), "yeti[35,38,41,44,47,50,60]");
+        // advanced
+        assert_eq!(sl(&ns, Some(0), Some(10), 2), "yeti[30,35,37,39,41]");
+        assert_eq!(sl(&ns, Some(1), Some(11), 2), "yeti[34,36,38,40,42]");
+        assert_eq!(sl(&ns, None, Some(11), 3), "yeti[30,36,39,42]");
+        assert_eq!(sl(&ns, Some(11), None, 4), "yeti[44,48,59]");
+        assert_eq!(sl(&ns, Some(14), None, 1), "yeti[47-51,59-60]");
+        assert_eq!(sl(&ns, None, None, 1), "yeti[30,34-51,59-60]");
+        assert_eq!(sl(&ns, None, None, 5), "yeti[30,38,43,48,60]");
+        // with unindexed nodes
+        let ns = NodeSet::parse("foo,bar,bur").unwrap();
+        assert_eq!(ns.len(), 3);
+        assert_eq!(ns.slice(Some(0), Some(2), 1).unwrap().len(), 2);
+        assert_eq!(sl(&ns, Some(0), Some(2), 1), "bar,bur");
+        assert_eq!(sl(&ns, Some(1), Some(2), 1), "bur");
+        assert_eq!(sl(&ns, Some(1), Some(3), 1), "bur,foo");
+        assert_eq!(sl(&ns, Some(2), Some(4), 1), "foo");
+        let ns = NodeSet::parse("foo,bar,bur3,bur1").unwrap();
+        assert_eq!(ns.len(), 4);
+        assert_eq!(ns.slice(Some(0), Some(2), 1).unwrap().len(), 2);
+        assert_eq!(ns.slice(Some(1), Some(3), 1).unwrap().len(), 2);
+        assert_eq!(ns.slice(Some(2), Some(4), 1).unwrap().len(), 2);
+        assert_eq!(ns.slice(Some(3), Some(5), 1).unwrap().len(), 1);
+        assert_eq!(sl(&ns, Some(2), Some(3), 1), "bur3");
+        assert_eq!(sl(&ns, Some(3), Some(4), 1), "foo");
+        assert_eq!(sl(&ns, Some(0), Some(2), 1), "bar,bur1");
+        assert_eq!(sl(&ns, Some(1), Some(3), 1), "bur[1,3]");
+        // using range step
+        let ns = NodeSet::parse("yeti[10-98/2]").unwrap();
+        assert_eq!(sl(&ns, Some(1), Some(9), 3), "yeti[12,18,24]");
+        assert_eq!(sl(&ns, None, None, 17), "yeti[10,44,78]");
+        let ns = NodeSet::parse_with_autostep("yeti[10-98/2]", Some(2)).unwrap();
+        assert_eq!(sl(&ns, Some(22), Some(29), 1), "yeti[54-66/2]");
+        // stepping scalability
+        let ns = NodeSet::parse_with_autostep("yeti[10-9800/2]", Some(2)).unwrap();
+        assert_eq!(sl(&ns, Some(22), Some(2900), 1), "yeti[54-5808/2]");
+        assert_eq!(sl(&ns, Some(22), Some(2900), 3), "yeti[54-5808/6]");
+        let ns = NodeSet::parse("yeti[10-14,20-26,30-33]").unwrap();
+        assert_eq!(sl(&ns, Some(2), Some(6), 1), "yeti[12-14,20]");
+        // multiple patterns
+        let ns = NodeSet::parse("stone[1-9],wood[1-9]").unwrap();
+        assert_eq!(sl(&ns, None, None, 1), "stone[1-9],wood[1-9]");
+        assert_eq!(sl(&ns, Some(1), Some(2), 1), "stone2");
+        assert_eq!(sl(&ns, Some(8), Some(9), 1), "stone9");
+        assert_eq!(sl(&ns, Some(8), Some(10), 1), "stone9,wood1");
+        assert_eq!(sl(&ns, Some(9), Some(10), 1), "wood1");
+        assert_eq!(sl(&ns, Some(9), None, 1), "wood[1-9]");
+        // multiple patterns with stepped slices (upstream 1b2509b)
+        assert_eq!(sl(&ns, None, None, 2), "stone[1,3,5,7,9],wood[2,4,6,8]");
+        assert_eq!(sl(&ns, Some(1), None, 2), "stone[2,4,6,8],wood[1,3,5,7,9]");
+        assert_eq!(sl(&ns, Some(2), Some(15), 4), "stone[3,7],wood[2,6]");
+        assert_eq!(sl(&ns, None, None, -2), "stone[2,4,6,8],wood[1,3,5,7,9]");
+        let ns = NodeSet::parse("stone[1-9],water[10-12],wood[1-9]").unwrap();
+        assert_eq!(sl(&ns, Some(8), Some(10), 1), "stone9,water10");
+        assert_eq!(sl(&ns, Some(11), Some(15), 1), "water12,wood[1-3]");
+        let ns = NodeSet::parse("stone[1-9],water,wood[1-9]").unwrap();
+        assert_eq!(sl(&ns, Some(8), Some(10), 1), "stone9,water");
+        assert_eq!(sl(&ns, Some(8), Some(11), 1), "stone9,water,wood1");
+        assert_eq!(sl(&ns, Some(9), Some(11), 1), "water,wood1");
+        assert_eq!(sl(&ns, Some(9), Some(12), 1), "water,wood[1-2]");
+        assert_eq!(sl(&ns, Some(8), None, 2), "stone9,wood[1,3,5,7,9]");
+    }
+
+    #[test]
+    fn test_slice_bad_params() {
+        // mirror the error conditions of NodeSet._extractslice (Python
+        // raises IndexError/ValueError; Rust returns Err)
+        let ns = NodeSet::parse("cluster[1-30]c[1-2]").unwrap();
+        // slice step cannot be zero
+        assert!(ns.slice(None, None, 0).is_err());
+        // illegal start and stop when negative step is used
+        assert!(ns.slice(Some(1), None, -1).is_err());
+        assert!(ns.slice(None, Some(2), -2).is_err());
+        // negative step without start/stop is supported
+        assert!(ns.slice(None, None, -1).is_ok());
     }
 }
