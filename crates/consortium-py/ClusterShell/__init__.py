@@ -20,7 +20,7 @@ if BACKEND == "python":
     # We do this by inserting lib/ at the front of sys.path and removing
     # this package's directory so Python resolves to the original.
     _this_dir = os.path.dirname(os.path.abspath(__file__))
-    _lib_dir = os.path.normpath(os.path.join(_this_dir, "..", "..", "..", "..", "lib"))
+    _lib_dir = os.path.normpath(os.path.join(_this_dir, "..", "..", "..", "lib"))
 
     if not os.path.isdir(_lib_dir):
         # CI may set LIB_CLUSTERSHELL to point to the upstream lib/
@@ -52,3 +52,15 @@ if BACKEND == "python":
             f"CONSORTIUM_BACKEND=python but cannot find original ClusterShell at {_lib_dir}. "
             f"Set LIB_CLUSTERSHELL env var to the lib/ directory containing the original."
         )
+else:
+    # Rust backend: let modules/subpackages that have no rust-backed shim yet
+    # (CLI, Engine, Worker, Task, MsgTree, ...) resolve from the original
+    # lib/ tree. Shims in this directory take precedence (they are listed
+    # first in __path__), so ported modules always hit the rust backend and
+    # unported ones fall back to the oracle implementation.
+    _this_dir = os.path.dirname(os.path.abspath(__file__))
+    _lib_pkg = os.path.normpath(
+        os.path.join(_this_dir, "..", "..", "..", "lib", "ClusterShell")
+    )
+    if os.path.isdir(_lib_pkg) and _lib_pkg not in __path__:
+        __path__.append(_lib_pkg)
