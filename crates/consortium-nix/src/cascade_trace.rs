@@ -388,6 +388,7 @@ impl CascadeTrace {
         let mut out = String::new();
 
         // Recursive renderer
+        #[allow(clippy::too_many_arguments)]
         fn render_node(
             id: u32,
             prefix: &str,
@@ -534,8 +535,8 @@ impl CascadeTrace {
 mod tests {
     use super::*;
     use crate::cascade::{
-        Cascade, CascadeError, CascadeNode, CascadePlan, CascadeState, CascadeStrategy, Log2FanOut,
-        NetworkProfile, NodeId, NodeIdAlloc, RoundExecutor, RoundSnapshot,
+        Cascade, CascadeError, CascadeNode, CascadePlan, Log2FanOut, NetworkProfile, NodeId,
+        NodeIdAlloc, RoundExecutor, RoundSnapshot,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;

@@ -1,7 +1,9 @@
 //! Closure copying — transfer built closures to deployment targets.
 
 use std::collections::HashMap;
-use std::process::Command;
+
+use consortium_integration::exec::{Executor, ProcessExecutor};
+use consortium_integration::staging::{self, StagingError};
 
 use crate::config::DeploymentPlan;
 use crate::error::{NixError, Result};
@@ -15,7 +17,7 @@ pub struct CopyResults {
 }
 
 /// Copy closures to all targets in the deployment plan.
-pub fn copy_closures(plan: &DeploymentPlan) -> Result<CopyResults> {
+pub fn copy_closures(exec: &dyn Executor, plan: &DeploymentPlan) -> Result<CopyResults> {
     let mut results = CopyResults {
         succeeded: Vec::new(),
         errors: HashMap::new(),
@@ -33,7 +35,7 @@ pub fn copy_closures(plan: &DeploymentPlan) -> Result<CopyResults> {
             target.node.target_user, target.node.target_host
         );
 
-        match copy_closure(&target.toplevel_path, &store_uri) {
+        match copy_closure_with(exec, &target.toplevel_path, &store_uri) {
             Ok(()) => {
                 results.succeeded.push(target.node.name.clone());
             }
@@ -46,27 +48,69 @@ pub fn copy_closures(plan: &DeploymentPlan) -> Result<CopyResults> {
     Ok(results)
 }
 
-/// Copy a single closure to a remote store.
+/// Copy a single closure to a remote store, via an [`Executor`].
 ///
 /// Uses `--no-check-sigs` because locally-built closures aren't signed
 /// by a key the remote trusts. We're deploying as root over SSH, so
 /// the trust boundary is the SSH connection itself.
-pub fn copy_closure(store_path: &str, store_uri: &str) -> Result<()> {
-    let output = Command::new("nix")
-        .args(["copy", "--no-check-sigs", "--to", store_uri, store_path])
-        .output()
-        .map_err(|e| NixError::CopyFailed {
+///
+/// Thin adapter over [`staging::copy_closure`] mapping errors into
+/// [`NixError`].
+pub fn copy_closure_with(exec: &dyn Executor, store_path: &str, store_uri: &str) -> Result<()> {
+    staging::copy_closure(exec, store_path, store_uri).map_err(|e| match e {
+        StagingError::CopyFailed { message, .. } => NixError::CopyFailed {
             host: store_uri.to_string(),
-            message: format!("failed to run nix copy: {}", e),
-        })?;
+            message,
+        },
+        StagingError::Exec(source) => NixError::CopyFailed {
+            host: store_uri.to_string(),
+            message: format!("failed to run nix copy: {}", source),
+        },
+        // Unreachable from `nix copy`, mapped for exhaustiveness.
+        other => NixError::CopyFailed {
+            host: store_uri.to_string(),
+            message: other.to_string(),
+        },
+    })
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NixError::CopyFailed {
-            host: store_uri.to_string(),
-            message: stderr.to_string(),
-        });
+/// Copy a single closure to a remote store.
+///
+/// Runs the copy on a local [`ProcessExecutor`].
+#[deprecated(note = "use the Executor-based variant")]
+pub fn copy_closure(store_path: &str, store_uri: &str) -> Result<()> {
+    copy_closure_with(&ProcessExecutor::new(), store_path, store_uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use consortium_integration::exec::{ExecOutput, ScriptedExecutor};
+
+    #[test]
+    fn test_copy_closure_records_nix_copy_command() {
+        let exec = ScriptedExecutor::new().on("nix copy", ExecOutput::ok(""));
+        copy_closure_with(&exec, "/nix/store/abc-env", "ssh-ng://root@hp01").unwrap();
+        exec.assert_invoked_containing(
+            "nix copy --no-check-sigs --to ssh-ng://root@hp01 /nix/store/abc-env",
+        );
+        assert_eq!(exec.invocation_count(), 1);
     }
 
-    Ok(())
+    #[test]
+    fn test_copy_closure_failure_surfaces_stderr() {
+        let exec = ScriptedExecutor::new().on(
+            "nix copy",
+            ExecOutput::new(1, "", "ssh: connect to host hp01 port 22: Connection refused"),
+        );
+        let err =
+            copy_closure_with(&exec, "/nix/store/abc-env", "ssh-ng://root@hp01").unwrap_err();
+        match err {
+            NixError::CopyFailed { host, message } => {
+                assert_eq!(host, "ssh-ng://root@hp01");
+                assert!(message.contains("Connection refused"), "{}", message);
+            }
+            other => panic!("expected CopyFailed, got: {}", other),
+        }
+    }
 }

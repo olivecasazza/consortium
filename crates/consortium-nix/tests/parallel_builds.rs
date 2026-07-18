@@ -1,14 +1,13 @@
 //! Integration tests for parallel build execution via DAG.
 
+use std::sync::Arc;
+
+use consortium_integration::exec::{ExecOutput, Executor, ScriptedExecutor};
 use consortium_nix::build::{build_closures, BuildResults};
 use consortium_nix::config::{
     DeployAction, DeploymentNode, DeploymentPlan, DeploymentTarget, ProfileType,
 };
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-/// Mock build function that tracks execution.
-/// Returns a simple mock path if successful.
 fn create_mock_plan_with_3_nodes() -> DeploymentPlan {
     let nodes = vec![
         DeploymentNode {
@@ -76,10 +75,6 @@ fn test_parallel_builds_with_3_nodes() {
     assert_eq!(plan.target_count(), 3);
     assert_eq!(plan.build_count(), 3);
     assert_eq!(plan.max_parallel, 3);
-
-    // Note: This test is primarily a structural test. A real test would require
-    // a mock build system or a test environment with Nix available.
-    // The actual parallelization is verified by the DAG executor's task scheduling.
 }
 
 #[test]
@@ -113,4 +108,49 @@ fn test_build_results_structure() {
 
     assert!(results.paths.is_empty());
     assert!(results.errors.is_empty());
+}
+
+#[test]
+fn test_build_closures_runs_through_scripted_executor() {
+    // Every build in the plan shells out through the injected executor;
+    // a ScriptedExecutor proves the whole DAG ran `nix build` per host.
+    let scripted = Arc::new(
+        ScriptedExecutor::new().on("nix build", ExecOutput::ok("/nix/store/mock-toplevel\n")),
+    );
+    let exec: Arc<dyn Executor> = scripted.clone();
+
+    let plan = create_mock_plan_with_3_nodes();
+    let results = build_closures(exec, &plan, ".", None).unwrap();
+
+    assert!(results.errors.is_empty());
+    assert_eq!(results.paths.len(), 3);
+    for name in ["hp01", "hp02", "hp03"] {
+        assert_eq!(
+            results.paths.get(name).map(String::as_str),
+            Some("/nix/store/mock-toplevel")
+        );
+        scripted.assert_invoked_containing(&format!(
+            "nix build .#nixosConfigurations.{}.config.system.build.toplevel",
+            name
+        ));
+    }
+    assert_eq!(scripted.invocation_count(), 3);
+}
+
+#[test]
+fn test_build_closures_skips_up_to_date_targets() {
+    let scripted = Arc::new(
+        ScriptedExecutor::new().on("nix build", ExecOutput::ok("/nix/store/mock-toplevel\n")),
+    );
+    let exec: Arc<dyn Executor> = scripted.clone();
+
+    let mut plan = create_mock_plan_with_3_nodes();
+    plan.targets[0].needs_build = false;
+
+    let results = build_closures(exec, &plan, ".", None).unwrap();
+
+    // hp01 is recorded from the plan without invoking nix; hp02/hp03 build.
+    assert_eq!(results.paths.len(), 3);
+    assert!(results.errors.is_empty());
+    assert_eq!(scripted.invocation_count(), 2);
 }

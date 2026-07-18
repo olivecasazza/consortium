@@ -9,11 +9,13 @@
 
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use consortium::node_set::NodeSet;
 use consortium_cli::output::{CliOutput, OutputArgs};
+use consortium_integration::exec::ProcessExecutor;
 use consortium_nix::config::{DeployAction, FleetConfig};
 use consortium_nix::health;
 
@@ -283,6 +285,7 @@ fn cmd_deploy(
         println!("  {}", name);
     }
 
+    let exec = Arc::new(ProcessExecutor::new());
     let report = if cascade && action != DeployAction::Build {
         // Determine seed addr — the host running cast IS the seed
         // (closure was built locally, or fetched here). The display
@@ -292,6 +295,7 @@ fn cmd_deploy(
             .map(|u| format!("{}@localhost", u))
             .unwrap_or_else(|_| "localhost".into());
         consortium_nix::deploy_with_cascade(
+            exec,
             config,
             &targets,
             action,
@@ -302,7 +306,7 @@ fn cmd_deploy(
             None, // event sink — deferred until LiveTreeRenderer wiring
         )?
     } else {
-        consortium_nix::deploy(config, &targets, action, fanout, use_builders)?
+        consortium_nix::deploy(exec, config, &targets, action, fanout, use_builders)?
     };
 
     println!();
@@ -380,7 +384,11 @@ fn cmd_status(config: &FleetConfig, on: Option<&str>, tags: &[String]) -> anyhow
 
     for name in &targets {
         let node = &config.nodes[name];
-        match consortium_nix::eval::query_current_system(&node.target_host, &node.target_user) {
+        match consortium_nix::eval::query_current_system(
+            &ProcessExecutor::new(),
+            &node.target_host,
+            &node.target_user,
+        ) {
             Ok(Some(path)) => println!("  {} → {}", name, path),
             Ok(None) => println!("  {} → (unknown)", name),
             Err(e) => println!("  {} → error: {}", name, e),

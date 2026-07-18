@@ -2,14 +2,27 @@
 //!
 //! Each task reads its inputs from DagContext (predecessor outputs and
 //! shared fleet config) and writes its outputs for dependent tasks.
+//!
+//! All command execution runs through the `Arc<dyn Executor>` stored in
+//! the context under the `"executor"` state key (see `deploy()`); a task
+//! fails with `executor not in context` when the key is absent.
+
+use std::sync::Arc;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
+use consortium_integration::exec::Executor;
 
 use crate::activate;
 use crate::build;
 use crate::config::{DeployAction, FleetConfig};
 use crate::copy;
 use crate::eval;
+
+/// Fetch the shared executor from the DAG context.
+fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, TaskOutcome> {
+    ctx.get_state::<Arc<dyn Executor>>("executor")
+        .ok_or_else(|| TaskOutcome::Failed("executor not in context".into()))
+}
 
 /// Evaluate a single host — resolve its toplevel store path.
 ///
@@ -28,12 +41,17 @@ impl NixEvalTask {
 
 impl DagTask for NixEvalTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
+        let exec = match executor_from(ctx) {
+            Ok(e) => e,
+            Err(outcome) => return outcome,
+        };
+
         let config: FleetConfig = match ctx.get_state("fleet_config") {
             Some(c) => c,
             None => return TaskOutcome::Failed("fleet_config not in context".into()),
         };
 
-        match eval::eval_toplevel(&config.flake_uri, &self.host) {
+        match eval::eval_toplevel(&*exec, &config.flake_uri, &self.host) {
             Ok(path) => {
                 ctx.set_output(TaskId(format!("eval:{}", self.host)), path);
                 TaskOutcome::Success
@@ -66,6 +84,11 @@ impl NixBuildTask {
 
 impl DagTask for NixBuildTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
+        let exec = match executor_from(ctx) {
+            Ok(e) => e,
+            Err(outcome) => return outcome,
+        };
+
         let config: FleetConfig = match ctx.get_state("fleet_config") {
             Some(c) => c,
             None => return TaskOutcome::Failed("fleet_config not in context".into()),
@@ -73,7 +96,12 @@ impl DagTask for NixBuildTask {
 
         let machines_file: Option<String> = ctx.get_state("machines_file");
 
-        match build::build_host(&config.flake_uri, &self.host, machines_file.as_deref()) {
+        match build::build_host(
+            &*exec,
+            &config.flake_uri,
+            &self.host,
+            machines_file.as_deref(),
+        ) {
             Ok(path) => {
                 ctx.set_output(TaskId(format!("build:{}", self.host)), path);
                 TaskOutcome::Success
@@ -105,6 +133,11 @@ impl NixCopyTask {
 
 impl DagTask for NixCopyTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
+        let exec = match executor_from(ctx) {
+            Ok(e) => e,
+            Err(outcome) => return outcome,
+        };
+
         let config: FleetConfig = match ctx.get_state("fleet_config") {
             Some(c) => c,
             None => return TaskOutcome::Failed("fleet_config not in context".into()),
@@ -124,7 +157,7 @@ impl DagTask for NixCopyTask {
 
         let store_uri = format!("ssh-ng://{}@{}", node.target_user, node.target_host);
 
-        match copy::copy_closure(&toplevel_path, &store_uri) {
+        match copy::copy_closure_with(&*exec, &toplevel_path, &store_uri) {
             Ok(()) => {
                 ctx.set_output(TaskId(format!("copy:{}", self.host)), toplevel_path);
                 TaskOutcome::Success
@@ -156,6 +189,11 @@ impl NixActivateTask {
 
 impl DagTask for NixActivateTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
+        let exec = match executor_from(ctx) {
+            Ok(e) => e,
+            Err(outcome) => return outcome,
+        };
+
         let config: FleetConfig = match ctx.get_state("fleet_config") {
             Some(c) => c,
             None => return TaskOutcome::Failed("fleet_config not in context".into()),
@@ -184,6 +222,7 @@ impl DagTask for NixActivateTask {
         };
 
         match activate::activate_host(
+            &*exec,
             &node.target_host,
             &node.target_user,
             &toplevel_path,
@@ -197,5 +236,102 @@ impl DagTask for NixActivateTask {
 
     fn describe(&self) -> String {
         format!("activate {}", self.host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DeploymentNode, ProfileType};
+    use consortium_integration::exec::{ExecOutput, ScriptedExecutor};
+    use std::collections::HashMap;
+
+    fn test_fleet_config() -> FleetConfig {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "hp01".to_string(),
+            DeploymentNode {
+                name: "hp01".to_string(),
+                target_host: "192.168.1.121".to_string(),
+                target_user: "root".to_string(),
+                target_port: None,
+                system: "x86_64-linux".to_string(),
+                profile_type: ProfileType::Nixos,
+                build_on_target: false,
+                tags: vec![],
+                drv_path: None,
+                toplevel: None,
+            },
+        );
+        FleetConfig {
+            nodes,
+            builders: HashMap::new(),
+            flake_uri: ".".to_string(),
+            ansible_config: None,
+            slurm_config: None,
+            ray_config: None,
+            skypilot_config: None,
+        }
+    }
+
+    #[test]
+    fn test_eval_task_fails_without_executor_in_context() {
+        let ctx = DagContext::new();
+        ctx.set_state("fleet_config", test_fleet_config());
+        match NixEvalTask::new("hp01").execute(&ctx) {
+            TaskOutcome::Failed(msg) => assert!(msg.contains("executor not in context")),
+            _ => panic!("expected Failed outcome"),
+        }
+    }
+
+    #[test]
+    fn test_build_task_fails_without_executor_in_context() {
+        let ctx = DagContext::new();
+        ctx.set_state("fleet_config", test_fleet_config());
+        match NixBuildTask::new("hp01").execute(&ctx) {
+            TaskOutcome::Failed(msg) => assert!(msg.contains("executor not in context")),
+            _ => panic!("expected Failed outcome"),
+        }
+    }
+
+    #[test]
+    fn test_copy_task_runs_scripted_nix_copy() {
+        let scripted = Arc::new(ScriptedExecutor::new().on("nix copy", ExecOutput::ok("")));
+        let exec: Arc<dyn Executor> = scripted.clone();
+        let ctx = DagContext::new();
+        ctx.set_state("fleet_config", test_fleet_config());
+        ctx.set_state("executor", exec);
+        ctx.set_output(
+            TaskId("build:hp01".to_string()),
+            "/nix/store/abc-toplevel".to_string(),
+        );
+
+        let outcome = NixCopyTask::new("hp01").execute(&ctx);
+        assert!(matches!(outcome, TaskOutcome::Success));
+        scripted.assert_invoked_containing(
+            "nix copy --no-check-sigs --to ssh-ng://root@192.168.1.121 /nix/store/abc-toplevel",
+        );
+        let copied: Option<String> = ctx.get_output(&TaskId("copy:hp01".to_string()));
+        assert_eq!(copied.as_deref(), Some("/nix/store/abc-toplevel"));
+    }
+
+    #[test]
+    fn test_activate_task_runs_scripted_ssh_switch() {
+        let scripted = Arc::new(ScriptedExecutor::new().on("ssh", ExecOutput::ok("")));
+        let exec: Arc<dyn Executor> = scripted.clone();
+        let ctx = DagContext::new();
+        ctx.set_state("fleet_config", test_fleet_config());
+        ctx.set_state("action", DeployAction::Switch);
+        ctx.set_state("executor", exec);
+        ctx.set_output(
+            TaskId("copy:hp01".to_string()),
+            "/nix/store/abc-toplevel".to_string(),
+        );
+
+        let outcome = NixActivateTask::new("hp01").execute(&ctx);
+        assert!(matches!(outcome, TaskOutcome::Success));
+        scripted.assert_invoked_containing(
+            "/nix/store/abc-toplevel/bin/switch-to-configuration switch",
+        );
     }
 }

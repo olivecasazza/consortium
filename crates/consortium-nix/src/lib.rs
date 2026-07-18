@@ -40,7 +40,10 @@ pub mod tasks;
 pub use config::{DeployAction, DeploymentNode, DeploymentPlan, FleetConfig, ProfileType};
 pub use error::{NixError, Result};
 
+use std::sync::Arc;
+
 use consortium::dag::{DagContext, DagReport, ErrorPolicy, StageBuilder, TaskId};
+use consortium_integration::exec::Executor;
 
 use crate::cascade_events::EventSink;
 use crate::cascade_integration::{cascade_copy_grouped, CascadeCopyConfig, CascadeCopyTarget};
@@ -50,7 +53,73 @@ use crate::cascade_integration::{cascade_copy_grouped, CascadeCopyConfig, Cascad
 /// Each host progresses independently through eval → build → copy → activate,
 /// with per-stage concurrency limits. A host that fails at any stage is
 /// cancelled for subsequent stages without blocking other hosts.
+///
+/// Every external command (`nix eval` / `nix build` / `nix copy` / ssh
+/// activation) runs through `exec`, which is also shared with the DAG tasks
+/// via the `"executor"` context state key.
+///
+/// # Example
+///
+/// ```
+/// use std::collections::HashMap;
+/// use std::sync::Arc;
+///
+/// use consortium_integration::exec::{ExecOutput, Executor, ScriptedExecutor};
+/// use consortium_nix::config::{DeploymentNode, FleetConfig, ProfileType};
+/// use consortium_nix::{deploy, DeployAction};
+///
+/// let mut nodes = HashMap::new();
+/// nodes.insert(
+///     "web1".to_string(),
+///     DeploymentNode {
+///         name: "web1".to_string(),
+///         target_host: "10.0.0.1".to_string(),
+///         target_user: "root".to_string(),
+///         target_port: None,
+///         system: "x86_64-linux".to_string(),
+///         profile_type: ProfileType::Nixos,
+///         build_on_target: false,
+///         tags: vec![],
+///         drv_path: None,
+///         toplevel: None,
+///     },
+/// );
+/// let config = FleetConfig {
+///     nodes,
+///     builders: HashMap::new(),
+///     flake_uri: ".".to_string(),
+///     ansible_config: None,
+///     slurm_config: None,
+///     ray_config: None,
+///     skypilot_config: None,
+/// };
+///
+/// let scripted = Arc::new(
+///     ScriptedExecutor::new()
+///         .on("nix eval", ExecOutput::ok("/nix/store/abc-toplevel\n"))
+///         .on("nix build", ExecOutput::ok("/nix/store/abc-toplevel\n"))
+///         .on("nix copy", ExecOutput::ok(""))
+///         .on("ssh", ExecOutput::ok("")),
+/// );
+/// let exec: Arc<dyn Executor> = scripted.clone();
+///
+/// let report = deploy(
+///     exec,
+///     &config,
+///     &["web1".to_string()],
+///     DeployAction::Switch,
+///     4,
+///     false,
+/// )?;
+/// assert!(report.is_success());
+/// scripted.assert_invoked_containing(
+///     "nix build .#nixosConfigurations.web1.config.system.build.toplevel",
+/// );
+/// scripted.assert_invoked_containing("switch-to-configuration switch");
+/// # Ok::<(), consortium_nix::NixError>(())
+/// ```
 pub fn deploy(
+    exec: Arc<dyn Executor>,
     config: &FleetConfig,
     target_nodes: &[String],
     action: DeployAction,
@@ -59,7 +128,7 @@ pub fn deploy(
 ) -> Result<DeployReport> {
     // Phase 0: Health check builders and prepare machines file
     let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
-        let statuses = health::check_builders(config);
+        let statuses = health::check_builders_with(&*exec, config);
         let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
         if healthy.is_empty() {
             eprintln!("warning: no healthy builders available, building locally");
@@ -81,6 +150,7 @@ pub fn deploy(
     let ctx = DagContext::new();
     ctx.set_state("fleet_config", config.clone());
     ctx.set_state("action", action);
+    ctx.set_state("executor", exec);
     if let Some(ref path) = machines_file {
         ctx.set_state("machines_file", path.clone());
     }
@@ -161,7 +231,9 @@ pub fn deploy(
 /// - `action == DeployAction::Build`: nothing to copy. Use `deploy()`.
 /// - First-time use against an untrusted fleet: prefer `deploy()` first
 ///   to validate SSH + signing trust path, then switch.
+#[allow(clippy::too_many_arguments)]
 pub fn deploy_with_cascade(
+    exec: Arc<dyn Executor>,
     config: &FleetConfig,
     target_nodes: &[String],
     action: DeployAction,
@@ -173,12 +245,12 @@ pub fn deploy_with_cascade(
 ) -> Result<DeployReport> {
     // Build-only path: no copy, no cascade — defer to deploy().
     if action == DeployAction::Build {
-        return deploy(config, target_nodes, action, max_parallel, use_builders);
+        return deploy(exec, config, target_nodes, action, max_parallel, use_builders);
     }
 
     // Phase 0: builder health check (same as deploy()).
     let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
-        let statuses = health::check_builders(config);
+        let statuses = health::check_builders_with(&*exec, config);
         let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
         if healthy.is_empty() {
             eprintln!("warning: no healthy builders available, building locally");
@@ -200,6 +272,7 @@ pub fn deploy_with_cascade(
     let ctx1 = DagContext::new();
     ctx1.set_state("fleet_config", config.clone());
     ctx1.set_state("action", action);
+    ctx1.set_state("executor", exec.clone());
     if let Some(ref path) = machines_file {
         ctx1.set_state("machines_file", path.clone());
     }
@@ -252,7 +325,7 @@ pub fn deploy_with_cascade(
     if let Some(sink) = event_sink {
         cfg = cfg.events(sink);
     }
-    let cascade_result = cascade_copy_grouped(cfg);
+    let cascade_result = cascade_copy_grouped(&exec, cfg);
 
     // Build a synthetic Phase-2 DagContext that pre-loads the cascade
     // results into "copy:{host}" outputs so NixActivateTask can read
@@ -260,6 +333,7 @@ pub fn deploy_with_cascade(
     let ctx2 = DagContext::new();
     ctx2.set_state("fleet_config", config.clone());
     ctx2.set_state("action", action);
+    ctx2.set_state("executor", exec);
 
     // Carry the toplevels forward so activate can find them. Hosts
     // whose copy failed are excluded — they won't be in the activate
@@ -316,11 +390,7 @@ pub fn deploy_with_cascade(
         .cloned()
         .collect();
 
-    let copy_failures: Vec<(String, String)> = cascade_result
-        .failed
-        .into_iter()
-        .map(|(h, e)| (h, e))
-        .collect();
+    let copy_failures: Vec<(String, String)> = cascade_result.failed.into_iter().collect();
 
     Ok(DeployReport {
         built,

@@ -8,6 +8,7 @@ description = "CLI tools for consortium — claw, molt, pinch"
 
 [dependencies]
 consortium.workspace = true
+consortium-integration.workspace = true
 consortium-nix.workspace = true
 consortium-ansible.workspace = true
 consortium-slurm.workspace = true

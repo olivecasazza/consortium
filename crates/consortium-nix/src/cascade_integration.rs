@@ -23,7 +23,10 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
+
+use consortium_integration::exec::Executor;
 
 use crate::cascade::{Cascade, CascadeNode, NetworkProfile, NodeId, NodeIdAlloc};
 use crate::cascade_events::{EventSink, NullSink};
@@ -98,7 +101,8 @@ impl<'a> CascadeCopyConfig<'a> {
 }
 
 /// Group `targets` by their `toplevel_path`, then run one cascade per
-/// group. Returns the union of results across all groups.
+/// group. Returns the union of results across all groups. Every `nix copy`
+/// (and the ssh wrap for relayed edges) runs through `exec`.
 ///
 /// # Behavior
 ///
@@ -114,7 +118,10 @@ impl<'a> CascadeCopyConfig<'a> {
 /// / `SteinerGreedy` strategies require a populated `NetworkProfile`
 /// which we don't gather for production deploys (would need an active
 /// bandwidth probe step). When that lands, swap the strategy here.
-pub fn cascade_copy_grouped(cfg: CascadeCopyConfig<'_>) -> CascadeCopyResult {
+pub fn cascade_copy_grouped(
+    exec: &Arc<dyn Executor>,
+    cfg: CascadeCopyConfig<'_>,
+) -> CascadeCopyResult {
     let mut result = CascadeCopyResult::default();
     if cfg.targets.is_empty() {
         return result;
@@ -132,6 +139,7 @@ pub fn cascade_copy_grouped(cfg: CascadeCopyConfig<'_>) -> CascadeCopyResult {
 
     for (toplevel, group) in groups {
         run_one_group(
+            exec,
             &cfg.seed_addr,
             &toplevel,
             group,
@@ -145,7 +153,9 @@ pub fn cascade_copy_grouped(cfg: CascadeCopyConfig<'_>) -> CascadeCopyResult {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_one_group(
+    exec: &Arc<dyn Executor>,
     seed_addr: &str,
     toplevel: &str,
     group: Vec<CascadeCopyTarget>,
@@ -175,7 +185,9 @@ fn run_one_group(
     let mut seeded = HashSet::new();
     seeded.insert(seed_id);
 
-    let executor = NixCopyExecutor::new(addrs, toplevel.to_string(), seed_id).with_timeout(timeout);
+    let executor =
+        NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id)
+            .with_timeout(timeout);
 
     let cascade_result = Cascade::new()
         .nodes(cascade_nodes)
@@ -214,27 +226,40 @@ fn run_one_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn t(name: &str, addr: &str, tl: &str) -> CascadeCopyTarget {
-        CascadeCopyTarget {
-            host_name: name.into(),
-            ssh_addr: addr.into(),
-            toplevel_path: tl.into(),
-        }
-    }
+    use consortium_integration::exec::{ExecOutput, ScriptedExecutor};
 
     #[test]
     fn empty_targets_returns_empty() {
+        let exec: Arc<dyn Executor> = Arc::new(ScriptedExecutor::new());
         let cfg = CascadeCopyConfig::new("root@seed", vec![]);
-        let r = cascade_copy_grouped(cfg);
+        let r = cascade_copy_grouped(&exec, cfg);
         assert!(r.copied.is_empty());
         assert!(r.failed.is_empty());
     }
 
-    // End-to-end behavior is exercised by the cascade_executor tests
-    // (which spawn real subprocesses). Group bookkeeping is exercised
-    // by the empty-targets case + manual smoke via cascade-copy bin.
-    // A pure-bookkeeping test would need a faked NixCopyExecutor —
-    // leaving for when somebody hits the "what if nix copy returned
-    // <weird thing>" question and needs the seam.
+    #[test]
+    fn single_target_group_runs_one_direct_copy() {
+        // One target = a cascade with a single seed→target edge, i.e. one
+        // local `nix copy` through the injected executor.
+        let scripted = Arc::new(ScriptedExecutor::new().on("nix copy", ExecOutput::ok("")));
+        let exec: Arc<dyn Executor> = scripted.clone();
+        let cfg = CascadeCopyConfig::new(
+            "root@seed",
+            vec![CascadeCopyTarget {
+                host_name: "hp01".into(),
+                ssh_addr: "root@hp01".into(),
+                toplevel_path: "/nix/store/abc-top".into(),
+            }],
+        );
+        let r = cascade_copy_grouped(&exec, cfg);
+        assert_eq!(r.copied, vec!["hp01".to_string()]);
+        assert!(r.failed.is_empty());
+        scripted.assert_invoked_containing(
+            "nix copy --no-check-sigs --to ssh-ng://root@hp01 /nix/store/abc-top",
+        );
+    }
+
+    // Heterogeneous multi-group bookkeeping and relayed-edge behavior are
+    // covered by the cascade_executor tests (which drive a ScriptedExecutor
+    // through NixCopyExecutor directly).
 }

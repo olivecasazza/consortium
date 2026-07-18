@@ -96,7 +96,7 @@ impl CascadeStrategy for MaxBottleneckSpanning {
                 candidates.push((bw, src, tgt));
             }
         }
-        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
 
         // Greedy max-weight matching: each src and tgt used at most once.
         let mut used_src: HashSet<NodeId> = HashSet::new();
@@ -173,7 +173,7 @@ impl CascadeStrategy for SteinerGreedy {
                 candidates.push((bw, src, tgt));
             }
         }
-        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
 
         // Greedy pick: each src may serve N targets, each tgt receives once.
         let mut used_tgt: HashSet<NodeId> = HashSet::new();

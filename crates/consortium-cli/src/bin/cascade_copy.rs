@@ -117,7 +117,7 @@ fn run(args: Args) -> Result<i32> {
     let net = NetworkProfile::default();
 
     // The real-world executor.
-    let executor = NixCopyExecutor::new(addrs, args.store_path.clone(), seed)
+    let executor = NixCopyExecutor::process(addrs, args.store_path.clone(), seed)
         .with_timeout(Duration::from_secs(args.timeout_secs));
 
     // Compose nh-style header lines for the live renderer.

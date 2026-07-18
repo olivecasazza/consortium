@@ -1,11 +1,12 @@
-//! Production [`RoundExecutor`] implementations — wrap real `nix copy`
-//! subprocesses, runnable against actual nixlab hosts.
+//! Production [`RoundExecutor`] implementations — drive real `nix copy`
+//! commands, runnable against actual nixlab hosts.
 //!
 //! [`NixCopyExecutor`] is the realistic counterpart to
 //! `consortium_fanout_sim::DeterministicExecutor`. The sim does
-//! `closure_size / bandwidth + latency` math; this one shells out to
-//! `nix copy --no-check-sigs --to ssh-ng://user@host store_path` for
-//! every (src, tgt) edge in a round, in parallel via `std::thread`.
+//! `closure_size / bandwidth + latency` math; this one runs
+//! `nix copy --no-check-sigs --to ssh-ng://user@host store_path` through an
+//! [`Executor`] for every (src, tgt) edge in a round, in parallel via
+//! `std::thread`.
 //!
 //! ## Edge-source handling
 //!
@@ -20,7 +21,7 @@
 //! `--no-check-sigs` is passed because closures built locally are NOT
 //! signed by a key the remote trusts. Trust boundary is the SSH
 //! connection itself (root-over-ssh deploy assumption — same as
-//! `consortium_nix::copy::copy_closure`).
+//! `consortium_nix::copy::copy_closure_with`).
 //!
 //! ## Failure mapping
 //!
@@ -33,15 +34,20 @@
 //!   alt source might succeed, e.g. if it was source-side bandwidth)
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use consortium_integration::exec::{CommandSpec, Executor, ProcessExecutor, SshTarget};
 
 use crate::cascade::{CascadeError, CascadeNode, NetworkProfile, NodeId, RoundExecutor};
 
 /// Real-world `RoundExecutor` that drives `nix copy` over SSH.
 pub struct NixCopyExecutor {
+    /// Command executor every `nix copy` / `ssh` invocation runs through.
+    /// `ProcessExecutor` in production, `ScriptedExecutor` in tests.
+    pub exec: Arc<dyn Executor>,
     /// NodeId → SSH address (e.g. `"root@hp01"` or `"olive@seir"`).
     /// Seed node also has an entry here for symmetry, even though
     /// edges originating from it run locally.
@@ -51,24 +57,36 @@ pub struct NixCopyExecutor {
     /// NodeId of the seed — edges originating from it run via local
     /// `nix copy`; all other src edges run via `ssh <src> 'nix copy …'`.
     pub seed: NodeId,
-    /// Per-edge subprocess timeout. Cascade halts the edge if the SSH
+    /// Per-edge command timeout. Cascade halts the edge if the SSH
     /// or `nix copy` hasn't returned by this point — typically the
     /// remote is unreachable. Default 5 minutes.
     pub timeout: Duration,
 }
 
 impl NixCopyExecutor {
+    /// An executor that runs every edge through `exec`.
     pub fn new(
+        exec: Arc<dyn Executor>,
         addrs: HashMap<NodeId, String>,
         store_path: impl Into<String>,
         seed: NodeId,
     ) -> Self {
         Self {
+            exec,
             addrs,
             store_path: store_path.into(),
             seed,
             timeout: Duration::from_secs(300),
         }
+    }
+
+    /// An executor that spawns real subprocesses via [`ProcessExecutor`].
+    pub fn process(
+        addrs: HashMap<NodeId, String>,
+        store_path: impl Into<String>,
+        seed: NodeId,
+    ) -> Self {
+        Self::new(Arc::new(ProcessExecutor::new()), addrs, store_path, seed)
     }
 
     pub fn with_timeout(mut self, t: Duration) -> Self {
@@ -77,8 +95,7 @@ impl NixCopyExecutor {
     }
 
     /// Run a single edge: src copies the closure to tgt. Blocks until
-    /// the subprocess completes, the subprocess errors out, or the
-    /// per-edge timeout fires.
+    /// the command completes or errors out.
     ///
     /// Returns `Ok(elapsed)` on success, `Err(CascadeError)` otherwise.
     fn run_edge(&self, src: NodeId, tgt: NodeId) -> Result<Duration, CascadeError> {
@@ -89,19 +106,18 @@ impl NixCopyExecutor {
             });
         };
         let store_uri = format!("ssh-ng://{tgt_addr}");
+        let copy_args = [
+            "copy",
+            "--no-check-sigs",
+            "--to",
+            store_uri.as_str(),
+            self.store_path.as_str(),
+        ];
 
         let started = Instant::now();
-        let cmd_result = if src == self.seed {
+        let spec = if src == self.seed {
             // Local nix copy from the seed.
-            Command::new("nix")
-                .args([
-                    "copy",
-                    "--no-check-sigs",
-                    "--to",
-                    &store_uri,
-                    &self.store_path,
-                ])
-                .output()
+            CommandSpec::new("nix").args(copy_args)
         } else {
             // SSH into src and have it run nix copy.
             let Some(src_addr) = self.addrs.get(&src) else {
@@ -110,35 +126,22 @@ impl NixCopyExecutor {
                     stderr: format!("no SSH address registered for src {src}"),
                 });
             };
-            // Build the remote command. Quote the store path so spaces
-            // (rare but possible) don't break parsing.
-            let remote_cmd = format!(
-                "nix copy --no-check-sigs --to {} {}",
-                shell_escape(&store_uri),
-                shell_escape(&self.store_path),
-            );
-            Command::new("ssh")
-                .args([
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=accept-new",
-                ])
-                .arg(src_addr)
-                .arg(remote_cmd)
-                .output()
+            let (user, host) = split_ssh_addr(src_addr);
+            // accept-new overrides the DEFAULT_SSH_OPTS StrictHostKeyChecking=no
+            // (extra opts come after the defaults).
+            CommandSpec::new("nix").args(copy_args).ssh(
+                SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"),
+            )
         };
 
+        let result = self.exec.exec(&spec);
         let elapsed = started.elapsed();
-        match cmd_result {
-            Ok(output) if output.status.success() => Ok(elapsed),
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                Err(classify_copy_error(tgt, src, &stderr))
-            }
-            Err(io_err) => Err(CascadeError::Copy {
+        match result {
+            Ok(output) if output.success() => Ok(elapsed),
+            Ok(output) => Err(classify_copy_error(tgt, src, &output.stderr)),
+            Err(exec_err) => Err(CascadeError::Copy {
                 node: tgt,
-                stderr: format!("subprocess spawn failed: {io_err}"),
+                stderr: format!("nix copy exec failed: {exec_err}"),
             }),
         }
     }
@@ -202,32 +205,40 @@ fn classify_copy_error(tgt: NodeId, src: NodeId, stderr: &str) -> CascadeError {
     }
 }
 
-/// Minimal POSIX shell escape — wraps in single quotes, doubles any
-/// embedded single quote. Safe for `ssh remote 'cmd ...'` invocations.
-fn shell_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str(r#"'\''"#);
-        } else {
-            out.push(c);
-        }
+/// Split a `user@host` SSH address into its parts.
+///
+/// Fleet addresses are always `user@host`; a bare host falls back to
+/// `root` so hand-rolled inventories keep working.
+fn split_ssh_addr(addr: &str) -> (String, String) {
+    match addr.split_once('@') {
+        Some((user, host)) => (user.to_string(), host.to_string()),
+        None => ("root".to_string(), addr.to_string()),
     }
-    out.push('\'');
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use consortium_integration::exec::{ExecOutput, ScriptedExecutor};
 
     #[test]
-    fn shell_escape_basic() {
-        assert_eq!(shell_escape("foo"), "'foo'");
-        assert_eq!(shell_escape("/nix/store/xxx-foo"), "'/nix/store/xxx-foo'");
-        assert_eq!(shell_escape("with 'quote'"), r#"'with '\''quote'\'''"#);
-        assert_eq!(shell_escape(""), "''");
+    fn split_ssh_addr_user_at_host() {
+        assert_eq!(
+            split_ssh_addr("root@hp01"),
+            ("root".to_string(), "hp01".to_string())
+        );
+        assert_eq!(
+            split_ssh_addr("olive@192.168.1.121"),
+            ("olive".to_string(), "192.168.1.121".to_string())
+        );
+    }
+
+    #[test]
+    fn split_ssh_addr_bare_host_defaults_to_root() {
+        assert_eq!(
+            split_ssh_addr("hp01"),
+            ("root".to_string(), "hp01".to_string())
+        );
     }
 
     #[test]
@@ -261,6 +272,58 @@ mod tests {
                 matches!(err, CascadeError::Copy { .. }),
                 "expected Copy (transient) for stderr={stderr:?}, got {err:?}"
             );
+        }
+    }
+
+    #[test]
+    fn dispatch_runs_edges_through_injected_executor() {
+        let scripted = Arc::new(ScriptedExecutor::new().on("", ExecOutput::ok("")));
+        let mut addrs = HashMap::new();
+        addrs.insert(NodeId(0), "root@seed".to_string());
+        addrs.insert(NodeId(1), "root@n1".to_string());
+        addrs.insert(NodeId(2), "root@n2".to_string());
+        let exec = NixCopyExecutor::new(scripted.clone(), addrs, "/nix/store/abc", NodeId(0));
+        let net = NetworkProfile::default();
+
+        // seed → n1 runs locally; n1 → n2 is relayed over ssh via n1.
+        let out = exec.dispatch(
+            &[],
+            &[(NodeId(0), NodeId(1)), (NodeId(1), NodeId(2))],
+            &net,
+        );
+        assert!(out[&(NodeId(0), NodeId(1))].is_ok());
+        assert!(out[&(NodeId(1), NodeId(2))].is_ok());
+
+        // The seed edge is a bare local nix copy.
+        scripted.assert_invoked_containing(
+            "nix copy --no-check-sigs --to ssh-ng://root@n1 /nix/store/abc",
+        );
+        // The relayed edge is ssh-wrapped: ssh … -l root … n1 'nix' 'copy' …
+        let invocations = scripted.invocations();
+        let relay = invocations
+            .iter()
+            .find(|c| c.starts_with("ssh ") && c.contains("ssh-ng://root@n2"))
+            .expect("relayed edge should be ssh-wrapped");
+        assert!(relay.contains("-l root"), "{}", relay);
+        assert!(relay.contains("accept-new n1 "), "{}", relay);
+    }
+
+    #[test]
+    fn dispatch_maps_exec_error_to_copy_failure() {
+        let scripted = Arc::new(ScriptedExecutor::new().on_error("nix copy", "spawn blew up"));
+        let mut addrs = HashMap::new();
+        addrs.insert(NodeId(0), "root@seed".to_string());
+        addrs.insert(NodeId(1), "root@n1".to_string());
+        let exec = NixCopyExecutor::new(scripted, addrs, "/nix/store/abc", NodeId(0));
+        let net = NetworkProfile::default();
+
+        let out = exec.dispatch(&[], &[(NodeId(0), NodeId(1))], &net);
+        match &out[&(NodeId(0), NodeId(1))] {
+            Err(CascadeError::Copy { node, stderr }) => {
+                assert_eq!(*node, NodeId(1));
+                assert!(stderr.contains("spawn blew up"), "{}", stderr);
+            }
+            other => panic!("expected transient Copy error, got: {:?}", other),
         }
     }
 }
