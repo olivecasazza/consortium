@@ -1,0 +1,15 @@
+[package]
+name = "consortium-integration-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Abstract contract-test harness guaranteeing consistent semantic behavior across consortium integration crates"
+
+[dependencies]
+consortium.workspace = true
+consortium-integration.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

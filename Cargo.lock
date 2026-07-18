@@ -259,6 +259,7 @@ dependencies = [
  "consortium-ansible",
  "consortium-crate",
  "consortium-fanout-sim",
+ "consortium-integration",
  "consortium-nix",
  "consortium-ray",
  "consortium-skypilot",
@@ -308,6 +309,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "consortium-integration-testkit"
+version = "0.2.0"
+dependencies = [
+ "consortium-crate",
+ "consortium-integration",
 ]
 
 [[package]]
