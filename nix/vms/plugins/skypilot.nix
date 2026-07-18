@@ -20,6 +20,15 @@
 # (not hydra-built), so first build of a skypilot node compiles this one
 # pure-python package from source (~minutes); all its deps are cached.
 { pkgs, ... }:
+let
+  # nixpkgs bug workaround: skypilot 0.8.1's wheel metadata pins
+  # `wheel<0.46.0` but this nixpkgs ships wheel 0.46.1, so
+  # pythonRuntimeDepsCheck fails and the whole node closure won't build.
+  # Relax just that one pin; runtime behavior is unaffected.
+  skypilot-fixed = pkgs.skypilot.overridePythonAttrs (old: {
+    pythonRelaxDeps = (old.pythonRelaxDeps or [ ]) ++ [ "wheel" ];
+  });
+in
 {
-  environment.systemPackages = [ pkgs.skypilot ];
+  environment.systemPackages = [ skypilot-fixed ];
 }
