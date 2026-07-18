@@ -284,6 +284,10 @@ use crate::fixtures::{
 /// (mirrors [`crate::executor::DeterministicExecutor`]).
 pub const DEFAULT_BANDWIDTH_BYTES_SEC: u64 = 100 * 1024 * 1024;
 
+/// Rendered-command-line normalizer hook; see
+/// [`SimExecutorBuilder::normalize_command_line`].
+type NormalizeFn = Box<dyn Fn(&str) -> String + Send + Sync>;
+
 /// How [`SimExecutor`] classified a command. See the module docs for the
 /// precedence rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -301,14 +305,13 @@ pub enum SimCommandKind {
 /// The recorded outcome of one simulated invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SimOutcome {
-    /// The command executed: the scripted rules answered. `duration` is
-    /// the simulated transfer time (`transfer_bytes / effective_bandwidth
-    /// + latency` for edge commands, zero for local commands and
-    /// unmatched control commands). `status` is the scripted output's
-    /// exit status — non-zero when the rule scripts a command-level
-    /// failure, so log-only assertions can see it (a rule returning
-    /// `ExecOutput { status: 1, .. }` is no longer indistinguishable
-    /// from success).
+    /// The command executed: the scripted rules answered. `duration` is the
+    /// simulated transfer time (`transfer_bytes / effective_bandwidth +
+    /// latency` for edge commands, zero for local commands and unmatched
+    /// control commands). `status` is the scripted output's exit status —
+    /// non-zero when the rule scripts a command-level failure, so a rule
+    /// returning `ExecOutput { status: 1, .. }` is visible to log-only
+    /// assertions instead of looking like success.
     Ok {
         /// The simulated duration.
         duration: Duration,
@@ -374,7 +377,7 @@ pub struct SimExecutorBuilder {
     default_bandwidth: u64,
     default_transfer_bytes: u64,
     transfer_table: Vec<(String, u64)>,
-    normalize: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+    normalize: Option<NormalizeFn>,
     outputs: ScriptedExecutor,
 }
 
@@ -611,7 +614,7 @@ pub struct SimExecutor {
     transfer_table: Vec<(String, u64)>,
     /// Optional rendered-line normalizer (see
     /// [`SimExecutorBuilder::normalize_command_line`]).
-    normalize: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+    normalize: Option<NormalizeFn>,
     /// Scripted success outputs. Used for output lookup ONLY; its private
     /// invocation recording is never exposed.
     outputs: ScriptedExecutor,
