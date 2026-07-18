@@ -1,5 +1,8 @@
 //! Error types for Ray orchestration.
 
+use consortium_integration::exec::ExecError;
+use consortium_integration::staging::StagingError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum RayError {
     #[error("ray environment build failed: {0}")]
@@ -14,8 +17,11 @@ pub enum RayError {
     #[error("no ray config in fleet configuration")]
     NoConfig,
 
-    #[error("nix error: {0}")]
-    Nix(#[from] consortium_nix::NixError),
+    #[error("staging error: {0}")]
+    Staging(#[from] StagingError),
+
+    #[error("exec error: {0}")]
+    Exec(#[from] ExecError),
 
     #[error("dag error: {0}")]
     Dag(String),
