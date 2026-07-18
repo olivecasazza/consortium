@@ -64,14 +64,14 @@ fn build_run(n_nodes: u32, seed: u64) -> consortium_nix::cascade::CascadeResult 
 /// 256-node cascade must converge in EXACTLY ⌈log₂(256)⌉ = 8 rounds.
 ///
 /// Empirically measured at exactly 8 rounds with the bimodal bandwidth
-/// + bimodal uplinks scenario at SEED 0xdeadbeef256. Even with 30%/70%
+/// plus bimodal uplinks scenario at SEED 0xdeadbeef256. Even with 30%/70%
 /// heterogeneity, MaxBottleneckSpanning's greedy max-weight matching
 /// hits the log₂ lower bound. If this drifts up to 9+, the strategy's
 /// matching has degraded — investigate.
 #[test]
 fn cascade_at_256_nodes_converges_in_exactly_log2_rounds() {
     const N: u32 = 256;
-    const SEED: u64 = 0x_dead_beef_256;
+    const SEED: u64 = 0x0dea_dbee_f256;
     const EXPECTED_ROUNDS: u32 = 8; // ⌈log₂(256)⌉
 
     let result = build_run(N, SEED);

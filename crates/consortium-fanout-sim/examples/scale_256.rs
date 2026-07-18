@@ -240,7 +240,7 @@ fn convergence_histogram(events: &[CascadeEvent]) -> Vec<(u32, usize, usize)> {
 
 fn main() {
     const N: u32 = 256;
-    const SEED: u64 = 0x_cafe_babe_256;
+    const SEED: u64 = 0x0caf_ebab_e256;
 
     println!("=== 256-node cascade, MaxBottleneckSpanning ===");
     println!("Building network profile for {} nodes...", N);

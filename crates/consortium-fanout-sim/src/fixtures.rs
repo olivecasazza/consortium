@@ -218,6 +218,20 @@ pub enum FailureSchedule {
     #[default]
     None,
     /// Fail every edge whose target is `node`, starting at `round`.
+    ///
+    /// Receive-side death only: edges where `node` is the SOURCE keep
+    /// succeeding. This is deliberate — the coordinator marks a target
+    /// permanently failed on non-transient errors, so failing outbound
+    /// edges with `Activation` errors would wrongly dead-letter
+    /// innocent targets that happen to be served by the "dead" node.
+    /// Two consequences:
+    ///
+    /// - Killing a PRE-SEEDED node is a no-op: it starts converged and
+    ///   never needs an inbound copy, so it stays converged and keeps
+    ///   serving as a source.
+    /// - A node that received the closure before its kill round keeps
+    ///   it (and may keep serving) — the coordinator has no liveness
+    ///   model beyond edge outcomes.
     KillNodeAtRound { node: NodeId, round: u32 },
     /// Fail the specific `(src, tgt)` edge at `round`.
     PartitionAtRound {

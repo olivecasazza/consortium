@@ -1,0 +1,19 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# Curation note (2025): the three lines below are the historical
+# "killed node NodeId(0) still appears in converged set" oracle-bug
+# draws — one per strategy (log2-fanout, max-bottleneck-spanning,
+# steiner-greedy). Each draws a KillNodeAtRound against the PRE-SEEDED
+# node NodeId(0) at round 0, which the old unconditional oracle
+# asserted must fail; under the seed-aware oracle they replay as
+# PASSING cases that permanently pin the seed-kill-is-a-no-op shape.
+# Their explicit deterministic counterparts live in tests/corpus.rs
+# (historical_repro_seed_kill_is_noop_*).
+cc 891dc54cdc3036422167f5f4b77bb7c0dc8b390cf5d1ac01018e52a0914769a2 # shrinks to seed = 2121240315, n_nodes = 20, bandwidth = Uniform(62764374), strategy_idx = 0, failure_seed = 4030657417333891302
+cc fed9532519e62832fab3a87fe5aa0c7cbe8a5744312a4f0c5c5f7b9f67207d95 # shrinks to seed = 1806174587, n_nodes = 58, bandwidth = Bimodal { slow: 43466567, fast: 299971259, fast_fraction: 0.2809288496109031 }, strategy_idx = 1, failure_seed = 16203146687862743218
+cc be83f9ad5a5a3307cf52a1f8835819d7adf25be943ef5c847d9bafe7815993e3 # shrinks to seed = 2307395706, n_nodes = 36, bandwidth = Uniform(789129864), strategy_idx = 2, failure_seed = 5947291869225864639

@@ -16,6 +16,9 @@
 //!   bandwidth/latency-driven timing and an injectable failure schedule.
 //! - [`fixtures`] — generators for seed sets, bandwidth distributions,
 //!   and failure schedules. Each takes `&mut StdRng` for reproducibility.
+//! - [`invariants`] — reusable assertion helpers shared by the fuzz
+//!   harness and the curated corpus tests (seed-aware kill semantics,
+//!   convergence / round / determinism checks).
 //! - [`scenario::Scenario`] — high-level wrapper that builds a
 //!   complete cascade run (nodes + seeded set + network + executor +
 //!   strategy) from a seed and a few descriptors.
@@ -44,6 +47,7 @@
 
 pub mod executor;
 pub mod fixtures;
+pub mod invariants;
 pub mod scenario;
 
 pub use executor::DeterministicExecutor;

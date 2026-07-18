@@ -8,11 +8,38 @@
 //! Run with `PROPTEST_CASES=N` to control case count (default 256).
 //! CI should set `PROPTEST_CASES=32` for ~2 min runs; local
 //! exploration can use 1024+.
+//!
+//! ## Regression discipline
+//!
+//! `fuzz.proptest-regressions` (next to this file) is CHECKED IN to
+//! git. Proptest replays every seed line in it before generating new
+//! cases, so historical failures are re-exercised on every run. When a
+//! NEW failure is found:
+//!
+//! 1. Let proptest shrink it, then commit the updated regressions
+//!    file so the failure replays everywhere.
+//! 2. Minimize the case by hand and convert it into an explicit
+//!    deterministic `#[test]` in `tests/corpus.rs` (with the
+//!    seed/parameters in a comment), so the case is documented and
+//!    runs without proptest.
+//!
+//! ## Oracle note (the 2025 flake)
+//!
+//! Assertions here are SEED-AWARE. With `seed_fraction: 0.0`
+//! (`SeedDistribution::Single`), `NodeId(0)` is always pre-seeded — it
+//! starts converged and never needs an inbound copy, so
+//! `KillNodeAtRound` can never fire on it. The old unconditional
+//! "killed ∉ converged" assertion was wrong-by-construction for that
+//! draw and caused the intermittent
+//! `killed node NodeId(0) still appears in converged set` failure.
+//! See [`invariants::assert_killed_node_semantics`] and
+//! `tests/corpus.rs` for the pinned historical repros.
 
 use std::collections::HashSet;
 
 use consortium_fanout_sim::{
     fixtures::{BandwidthDistribution, FailureSchedule},
+    invariants,
     scenario::{Scenario, ScenarioConfig},
 };
 use consortium_nix::cascade::{CascadeStrategy, Log2FanOut, NodeId};
@@ -35,7 +62,7 @@ fn bandwidth_strategy() -> impl Strategy<Value = BandwidthDistribution> {
         (10u64 * 1024 * 1024..1024 * 1024 * 1024).prop_map(BandwidthDistribution::Uniform),
         // Bimodal: slow << fast, fast_fraction varies
         (
-            1u64 * 1024 * 1024..50 * 1024 * 1024,
+            1024u64 * 1024..50 * 1024 * 1024,
             100u64 * 1024 * 1024..2 * 1024 * 1024 * 1024,
             0.05f64..0.95,
         )
@@ -51,9 +78,11 @@ fn bandwidth_strategy() -> impl Strategy<Value = BandwidthDistribution> {
 
 proptest! {
     // Aggressive but reasonable bound — cases should run in <100ms
-    // each since the sim is deterministic + in-process.
+    // each since the sim is deterministic + in-process. The case count
+    // is deliberately NOT set here: the default (256) honors
+    // PROPTEST_CASES, and hardcoding `cases` would silently ignore the
+    // env var (ProptestConfig::default() is what reads it).
     #![proptest_config(ProptestConfig {
-        cases: 64,
         max_shrink_iters: 32,
         .. ProptestConfig::default()
     })]
@@ -81,45 +110,9 @@ proptest! {
         let result = Scenario::new(cfg.clone()).run(strategy);
 
         // Universal invariants under no-failure scenarios.
-        prop_assert!(
-            result.is_success(),
-            "[{}] failed unexpectedly: {:?}",
-            strategy.name(),
-            result.failed,
-        );
-        prop_assert_eq!(
-            result.converged.len() as u32,
-            cfg.n_nodes,
-            "[{}] not all nodes converged",
-            strategy.name(),
-        );
-        let converged_set: HashSet<NodeId> =
-            result.converged.iter().copied().collect();
-        prop_assert_eq!(
-            converged_set.len(),
-            result.converged.len(),
-            "[{}] duplicates in converged list",
-            strategy.name(),
-        );
-        prop_assert!(
-            // Loose bound: rounds capped by coordinator's max_rounds.
-            // Was previously `rounds <= n_nodes` but retry-on-failure
-            // semantics (since the coordinator stopped marking targets
-            // permanently failed on single edge failures) means an
-            // unlucky failure pattern can legitimately exceed n_nodes
-            // rounds. The strategy keeps trying alternate sources.
-            result.rounds <= cfg.max_rounds,
-            "[{}] rounds {} > max_rounds {}",
-            strategy.name(),
-            result.rounds,
-            cfg.max_rounds,
-        );
-        prop_assert_eq!(
-            result.round_durations.len() as u32,
-            result.rounds,
-            "[{}] round_durations len mismatch",
-            strategy.name(),
-        );
+        invariants::assert_converged_all(strategy.name(), seed, &result, cfg.n_nodes);
+        invariants::assert_no_duplicate_converged(strategy.name(), seed, &result);
+        invariants::assert_round_bounds(strategy.name(), seed, &result, cfg.max_rounds);
     }
 
     #[test]
@@ -135,11 +128,22 @@ proptest! {
         // Sample a failure deterministically from this case's seed —
         // proptest's strategy combinators don't compose with our n_nodes
         // dependency cleanly, so we sample manually.
+        //
+        // Kill candidates are drawn from ALL nodes, including the seed:
+        // with seed_fraction = 0.0 (SeedDistribution::Single) NodeId(0)
+        // is always pre-seeded, and drawing it exercises the seed-aware
+        // oracle's "killing a pre-seeded node is a no-op" branch.
+        // Coverage whose intent is strictly "the killed node must fail"
+        // uses NON-SEED candidates instead — a pre-seeded node can
+        // never fail, which is exactly what made the old unconditional
+        // oracle wrong-by-construction (the historical
+        // "[max-bottleneck-spanning] killed node NodeId(0) still
+        // appears in converged set" flake). See
+        // tests/corpus.rs::kill_nonseed_at_round_zero_*.
         let failure_kind: u8 = frng.gen_range(0u8..=2);
-        let killed_node: Option<NodeId> = None;
         let killed_node = match failure_kind {
             1 => Some(NodeId(frng.gen_range(0..n_nodes))),
-            _ => killed_node,
+            _ => None,
         };
         let failures = match failure_kind {
             0 => FailureSchedule::None,
@@ -174,33 +178,8 @@ proptest! {
         let result = Scenario::new(cfg.clone()).run(strategy);
 
         // Even with failures, sanity bounds must hold.
-        let converged_set: HashSet<NodeId> =
-            result.converged.iter().copied().collect();
-        prop_assert_eq!(
-            converged_set.len(),
-            result.converged.len(),
-            "[{}] duplicates in converged list",
-            strategy.name(),
-        );
-        prop_assert!(
-            // Loose bound: rounds capped by coordinator's max_rounds.
-            // Was previously `rounds <= n_nodes` but retry-on-failure
-            // semantics (since the coordinator stopped marking targets
-            // permanently failed on single edge failures) means an
-            // unlucky failure pattern can legitimately exceed n_nodes
-            // rounds. The strategy keeps trying alternate sources.
-            result.rounds <= cfg.max_rounds,
-            "[{}] rounds {} > max_rounds {}",
-            strategy.name(),
-            result.rounds,
-            cfg.max_rounds,
-        );
-        prop_assert_eq!(
-            result.round_durations.len() as u32,
-            result.rounds,
-            "[{}] round_durations len mismatch",
-            strategy.name(),
-        );
+        invariants::assert_no_duplicate_converged(strategy.name(), seed, &result);
+        invariants::assert_round_bounds(strategy.name(), seed, &result, cfg.max_rounds);
         // If failed Some, every affected node id must be valid.
         if let Some(err) = &result.failed {
             for nid in err.affected_nodes() {
@@ -213,34 +192,24 @@ proptest! {
             }
         }
 
-        // Tightened: when KillNodeAtRound was injected with round=0,
-        // the killed node MUST appear in the failure tree (it can never
-        // receive the closure since every attempt to copy to it fails
-        // from round 0). Older test was silent about this — would have
-        // passed even if the kill schedule was being ignored.
+        // Tightened and seed-aware: when KillNodeAtRound was injected
+        // with round=0, the kill's effect is strategy-independent, so
+        // assert exact semantics — a PRE-SEEDED killed node stays
+        // converged (the kill can never fire on it); a NON-SEED killed
+        // node must fail and must be named in the error tree. Only
+        // round 0 is checked: round > 0 may not fire if the cascade
+        // halts before then (which is valid for Steiner on uniform).
         if let Some(killed) = killed_node {
-            // Only assert when the kill could actually have fired:
-            // round 0 means it fires on first attempt regardless of
-            // strategy. Round > 0 may not fire if the cascade halts
-            // before then (which is valid for Steiner on uniform).
-            // We check the schedule's round via re-extraction:
             if let FailureSchedule::KillNodeAtRound { round: 0, .. } = cfg.failures {
-                prop_assert!(
-                    !result.converged.iter().any(|&n| n == killed),
-                    "[{}] killed node {killed:?} still appears in converged set: {:?}",
+                // seed_fraction = 0.0 → SeedDistribution::Single → the
+                // seeded set is always exactly {NodeId(0)}.
+                let seeded: HashSet<NodeId> = std::iter::once(NodeId(0)).collect();
+                invariants::assert_killed_node_semantics(
                     strategy.name(),
-                    result.converged,
-                );
-                let err = result.failed.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "[{}] killed node injected at round 0 but result.failed is None",
-                        strategy.name()
-                    )
-                });
-                prop_assert!(
-                    err.affected_nodes().contains(&killed),
-                    "[{}] killed node {killed:?} missing from affected set",
-                    strategy.name(),
+                    seed,
+                    &result,
+                    killed,
+                    &seeded,
                 );
             }
         }
@@ -265,16 +234,10 @@ proptest! {
             failures: FailureSchedule::None,
             max_rounds: 32,
         };
-        let r1 = Scenario::new(cfg.clone()).run(&MaxBottleneckSpanning);
-        let r2 = Scenario::new(cfg).run(&MaxBottleneckSpanning);
-        prop_assert_eq!(r1.rounds, r2.rounds);
-        prop_assert_eq!(r1.round_durations.clone(), r2.round_durations.clone());
         // Tightened: full set equality, not just len(). Catches the case
         // where determinism produces the same COUNT of converged nodes
         // but a different SET — which would mean the cascade is making
         // non-deterministic edge choices we'd never notice with `len ==`.
-        let s1: HashSet<NodeId> = r1.converged.iter().copied().collect();
-        let s2: HashSet<NodeId> = r2.converged.iter().copied().collect();
-        prop_assert_eq!(s1, s2, "converged sets diverge between identical-seed runs");
+        invariants::assert_deterministic(&cfg, &MaxBottleneckSpanning);
     }
 }
