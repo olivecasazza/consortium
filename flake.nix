@@ -10,6 +10,12 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # microVM test fleet (nix/vms/): declarative NixOS microVMs for testing
+    # the nix/slurm/ansible/ray/skypilot integrations.
+    microvm-nix = {
+      url = "github:astro/microvm.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -21,6 +27,11 @@
       git-hooks-nix,
       ...
     }:
+    let
+      # Declarative microVM test fleet (all nodes x86_64-linux).
+      # See nix/vms/ and doc/testing-microvms.md.
+      vms = import ./nix/vms { inherit inputs; };
+    in
     flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [ git-hooks-nix.flakeModule ];
 
@@ -40,6 +51,32 @@
             name: text:
             builtins.toFile name text;
         };
+
+        # ── microVM test fleet (nix/vms/) ──────────────────────────────
+        # nixosConfigurations.vm-{base,nix,slurm,ansible,ray,skypilot}
+        nixosConfigurations = vms.configs;
+
+        # colmena-compatible hive for deploying the same fleet to a KVM
+        # host (guests are pushed over ssh to their 10.99.0.x tap IPs):
+        #   colmena apply --on vm-base
+        # Deployment builds happen wherever colmena runs; use a linux box.
+        colmena = {
+          meta = {
+            nixpkgs = import nixpkgs { system = "x86_64-linux"; };
+          };
+        }
+        // builtins.mapAttrs (
+          name: modules:
+          { ... }:
+          {
+            deployment = {
+              targetHost = "10.99.0.${toString vms.nodeNumbers.${name}}";
+              targetUser = "root";
+              tags = [ "consortium-test" ];
+            };
+            imports = modules;
+          }
+        ) vms.nodeModules;
       };
 
       perSystem =
@@ -173,10 +210,18 @@
           };
 
           # ── Packages ───────────────────────────────────────────────────
-          packages = {
-            inherit consortium consortium-cli consortium-nix;
-            default = consortium-cli;
-          };
+          packages =
+            {
+              inherit consortium consortium-cli consortium-nix;
+              default = consortium-cli;
+            }
+            # microVM test-fleet qemu runners (x86_64-linux only; they can
+            # only RUN on a linux KVM host, but build from anywhere):
+            #   nix build .#packages.x86_64-linux.vm-base
+            #   nix run   .#packages.x86_64-linux.vm-base   # on the KVM host
+            // lib.optionalAttrs (system == "x86_64-linux") (
+              builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
+            );
 
           # ── Dev shell ──────────────────────────────────────────────────
           devShells.default = pkgs.mkShell {
