@@ -241,7 +241,8 @@ name = "consortium-ansible"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
- "consortium-nix",
+ "consortium-integration",
+ "consortium-integration-testkit",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -325,6 +326,7 @@ version = "0.2.0"
 dependencies = [
  "consortium-crate",
  "consortium-integration",
+ "consortium-integration-testkit",
  "serde",
  "serde_json",
  "tempfile",
@@ -345,9 +347,8 @@ name = "consortium-ray"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
- "consortium-nix",
- "serde",
- "serde_json",
+ "consortium-integration",
+ "consortium-integration-testkit",
  "thiserror 2.0.18",
 ]
 
@@ -356,9 +357,8 @@ name = "consortium-skypilot"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
- "consortium-nix",
- "serde",
- "serde_json",
+ "consortium-integration",
+ "consortium-integration-testkit",
  "thiserror 2.0.18",
 ]
 
@@ -367,7 +367,8 @@ name = "consortium-slurm"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
- "consortium-nix",
+ "consortium-integration",
+ "consortium-integration-testkit",
  "serde",
  "serde_json",
  "serde_yaml",
