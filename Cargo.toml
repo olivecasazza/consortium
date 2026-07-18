@@ -10,6 +10,7 @@ members = [
     "crates/consortium-ray",
     "crates/consortium-skypilot",
     "crates/consortium-fanout-sim",
+    "crates/consortium-integration",
 ]
 
 [workspace.metadata.crane]
@@ -30,5 +31,6 @@ consortium-slurm = { path = "crates/consortium-slurm", version = "0.2.0" }
 consortium-ray = { path = "crates/consortium-ray", version = "0.2.0" }
 consortium-skypilot = { path = "crates/consortium-skypilot", version = "0.2.0" }
 consortium-fanout-sim = { path = "crates/consortium-fanout-sim", version = "0.2.0" }
+consortium-integration = { path = "crates/consortium-integration", version = "0.2.0" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 thiserror = "2"

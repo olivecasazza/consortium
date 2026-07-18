@@ -301,10 +301,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "consortium-integration"
+version = "0.2.0"
+dependencies = [
+ "consortium-crate",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "consortium-nix"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-integration",
  "serde",
  "serde_json",
  "tempfile",
