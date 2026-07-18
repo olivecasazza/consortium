@@ -18,6 +18,7 @@ serde_json = "1"
 # is a Dijkstra problem on the network graph).
 
 [dev-dependencies]
+consortium-fanout-sim.workspace = true
 consortium-integration-testkit.workspace = true
 tempfile = "3"
 
