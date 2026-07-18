@@ -241,6 +241,7 @@ name = "consortium-ansible"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-fanout-sim",
  "consortium-integration",
  "consortium-integration-testkit",
  "serde",
@@ -327,6 +328,7 @@ name = "consortium-nix"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-fanout-sim",
  "consortium-integration",
  "consortium-integration-testkit",
  "serde",
@@ -349,6 +351,7 @@ name = "consortium-ray"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-fanout-sim",
  "consortium-integration",
  "consortium-integration-testkit",
  "thiserror 2.0.18",
@@ -359,6 +362,7 @@ name = "consortium-skypilot"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-fanout-sim",
  "consortium-integration",
  "consortium-integration-testkit",
  "thiserror 2.0.18",
@@ -369,6 +373,7 @@ name = "consortium-slurm"
 version = "0.2.0"
 dependencies = [
  "consortium-crate",
+ "consortium-fanout-sim",
  "consortium-integration",
  "consortium-integration-testkit",
  "serde",
