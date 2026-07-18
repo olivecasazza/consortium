@@ -1,5 +1,10 @@
 # Changelog
 
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+
+
 ## Bug Fixes
 
 - transient-vs-permanent error semantic + summary alignment

@@ -2,6 +2,26 @@
 
 ## Bug Fixes
 
+- port upstream terminate-once and engine error propagation
+
+## Features
+
+- port RangeSet.index, empty-set round-trip fix from upstream
+- port upstream index, stepped slices, mapall upcall
+- port ClusterShell 1.10.1 gateway/comms hardening
+- port ClusterShell 1.10 tree worker semantics
+
+## Refactoring
+
+- migrate test infrastructure to consortium-tests repo
+
+## style
+
+- apply cargo fmt across workspace crates
+
+
+## Bug Fixes
+
 - use [lib] table instead of [package].lib.name ([#3](https://github.com/olivecasazza/consortium/pull/3))
 
 ## Features
