@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use consortium::dag::types::{FnTask, TaskOutcome};
 use consortium::dag::DagBuilder;
-use consortium_integration::exec::{Executor, ProcessExecutor};
+use consortium_integration::exec::Executor;
 use consortium_integration::staging::{self, StagingError};
 
 use crate::config::DeploymentPlan;
@@ -145,14 +145,6 @@ pub fn build_flake_attr_with(
             message,
         },
     })
-}
-
-/// Build any flake attribute and return its store path.
-///
-/// Runs the build on a local [`ProcessExecutor`].
-#[deprecated(note = "use the Executor-based variant")]
-pub fn build_flake_attr(flake_attr: &str, machines_file: Option<&str>) -> Result<String> {
-    build_flake_attr_with(&ProcessExecutor::new(), flake_attr, machines_file)
 }
 
 /// Build the system closure for a single host.

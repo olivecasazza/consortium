@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use consortium_integration::exec::{Executor, ProcessExecutor};
+use consortium_integration::exec::Executor;
 use consortium_integration::staging::{self, StagingError};
 
 use crate::config::DeploymentPlan;
@@ -72,14 +72,6 @@ pub fn copy_closure_with(exec: &dyn Executor, store_path: &str, store_uri: &str)
             message: other.to_string(),
         },
     })
-}
-
-/// Copy a single closure to a remote store.
-///
-/// Runs the copy on a local [`ProcessExecutor`].
-#[deprecated(note = "use the Executor-based variant")]
-pub fn copy_closure(store_path: &str, store_uri: &str) -> Result<()> {
-    copy_closure_with(&ProcessExecutor::new(), store_path, store_uri)
 }
 
 #[cfg(test)]
