@@ -1,0 +1,80 @@
+{
+  "nodes": {
+    "node01": {
+      "name": "node01",
+      "targetHost": "192.168.1.11",
+      "targetUser": "root",
+      "targetPort": null,
+      "system": "x86_64-linux",
+      "profileType": "nixos",
+      "buildOnTarget": false,
+      "tags": ["web"]
+    },
+    "node02": {
+      "name": "node02",
+      "targetHost": "192.168.1.12",
+      "targetUser": "root",
+      "targetPort": null,
+      "system": "x86_64-linux",
+      "profileType": "nixos",
+      "buildOnTarget": false,
+      "tags": ["web", "compute"]
+    },
+    "node03": {
+      "name": "node03",
+      "targetHost": "192.168.1.13",
+      "targetUser": "root",
+      "targetPort": null,
+      "system": "x86_64-linux",
+      "profileType": "nixos",
+      "buildOnTarget": false,
+      "tags": ["compute", "gpu"]
+    }
+  },
+  "builders": {
+    "builder1": {
+      "host": "192.168.1.21",
+      "user": "root",
+      "maxJobs": 16,
+      "speedFactor": 2,
+      "systems": ["x86_64-linux"],
+      "features": ["big-parallel", "kvm"],
+      "sshKey": null,
+      "protocol": "ssh-ng"
+    }
+  },
+  "flakeUri": ".",
+  "ansibleConfig": {
+    "controlNode": "node01",
+    "ansibleVersion": "2.16",
+    "collections": ["community.general"],
+    "playbookDir": "playbooks",
+    "hostGroups": { "web": ["node01", "node02"] }
+  },
+  "slurmConfig": {
+    "submitNode": "node01",
+    "submitUser": "slurm",
+    "controlNode": "node01",
+    "partitions": {
+      "gpu": {
+        "nodes": ["node02", "node03"],
+        "default": true,
+        "maxTime": "7-00:00:00"
+      }
+    }
+  },
+  "rayConfig": {
+    "headAddress": "192.168.1.11",
+    "dashboardPort": 8265,
+    "kubernetes": false,
+    "workerGroups": {
+      "cpu": { "nodes": ["node02"], "cpus": 8 },
+      "gpu": { "nodes": ["node03"], "gpus": 1 }
+    }
+  },
+  "skypilotConfig": {
+    "cloud": "aws",
+    "region": "us-east-1",
+    "instanceType": "p3.2xlarge"
+  }
+}

@@ -1,0 +1,72 @@
+[package]
+name = "consortium-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Example suite for consortium — regular usage and infrastructure integrations"
+publish = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[dependencies]
+consortium.workspace = true
+consortium-integration.workspace = true
+consortium-nix.workspace = true
+consortium-ansible.workspace = true
+consortium-slurm.workspace = true
+consortium-ray.workspace = true
+consortium-skypilot.workspace = true
+
+# ── Regular usage ────────────────────────────────────────────────────────
+
+[[example]]
+name = "nodeset_algebra"
+path = "rust/nodeset_algebra.rs"
+
+[[example]]
+name = "rangeset_basics"
+path = "rust/rangeset_basics.rs"
+
+[[example]]
+name = "groups"
+path = "rust/groups.rs"
+
+[[example]]
+name = "fanout_local"
+path = "rust/fanout_local.rs"
+
+[[example]]
+name = "fanout_ssh"
+path = "rust/fanout_ssh.rs"
+
+[[example]]
+name = "gather_outputs"
+path = "rust/gather_outputs.rs"
+
+[[example]]
+name = "dag_pipeline"
+path = "rust/dag_pipeline.rs"
+
+# ── Integrations (ScriptedExecutor — no real infrastructure needed) ──────
+
+[[example]]
+name = "integration_nix_deploy"
+path = "rust/integration_nix_deploy.rs"
+
+[[example]]
+name = "integration_slurm"
+path = "rust/integration_slurm.rs"
+
+[[example]]
+name = "integration_ansible"
+path = "rust/integration_ansible.rs"
+
+[[example]]
+name = "integration_skypilot"
+path = "rust/integration_skypilot.rs"
+
+[[example]]
+name = "integration_ray"
+path = "rust/integration_ray.rs"

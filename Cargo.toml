@@ -12,6 +12,7 @@ members = [
     "crates/consortium-fanout-sim",
     "crates/consortium-integration",
     "crates/consortium-integration-testkit",
+    "examples",
 ]
 
 [workspace.metadata.crane]
