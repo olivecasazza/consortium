@@ -1,5 +1,8 @@
 //! Error types for Slurm orchestration.
 
+use consortium_integration::exec::ExecError;
+use consortium_integration::staging::StagingError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SlurmError {
     #[error("job environment build failed: {0}")]
@@ -23,8 +26,11 @@ pub enum SlurmError {
     #[error("pipeline parse error: {0}")]
     PipelineParse(String),
 
-    #[error("nix error: {0}")]
-    Nix(#[from] consortium_nix::NixError),
+    #[error("staging error: {0}")]
+    Staging(#[from] StagingError),
+
+    #[error("exec error: {0}")]
+    Exec(#[from] ExecError),
 
     #[error("dag error: {0}")]
     Dag(String),

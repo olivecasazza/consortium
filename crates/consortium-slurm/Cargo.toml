@@ -8,11 +8,14 @@ description = "Slurm job orchestration with nix-built environments for consortiu
 
 [dependencies]
 consortium.workspace = true
-consortium-nix.workspace = true
+consortium-integration.workspace = true
 thiserror.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+
+[dev-dependencies]
+consortium-integration-testkit.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
