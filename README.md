@@ -55,6 +55,46 @@ For full details, see [CONVENTIONAL_COMMITS.md](./CONVENTIONAL_COMMITS.md).
 - **Rust stable** (for Rust crates)
 - **Python 3.7+** (for Python library)
 
+## Integrations
+
+Consortium replaces ClusterShell and adds scheduler and infrastructure
+integrations on top. Every integration is built on the DAG executor and a
+shared command-execution abstraction (`consortium-integration::Executor`), so
+each one is testable without real infrastructure — tests script the executor
+instead of touching live clusters, clouds, or a Nix store.
+
+| Crate | Purpose | Pipeline phases | Entry point |
+| ----- | ------- | --------------- | ----------- |
+| `consortium-nix` | NixOS/nix-darwin fleet deployment (colmena replacement) | eval → build → copy → activate (+ cascade P2P copy) | `deploy` / `deploy_with_cascade` |
+| `consortium-slurm` | Slurm job submission with nix-built hermetic envs | build → copy → submit (sbatch) → wait (sacct) [→ collect] | `submit_job` |
+| `consortium-ansible` | Playbook runs with a nix-built ansible env | build-env → copy-env → run-playbook | `run_playbook` |
+| `consortium-skypilot` | Multi-cloud clusters via SkyPilot | build → launch [→ down] | `launch_task` |
+| `consortium-ray` | Ray job submission | build → submit [→ wait] | `submit_job` |
+
+### Contract test suite
+
+Every integration implements `consortium_integration_testkit::Contract` and
+invokes the `integration_contract_tests!` macro in its `tests/contract.rs`.
+The macro generates seven identical semantic tests per integration:
+
+- `contract_missing_config_errors`
+- `contract_plan_has_no_side_effects`
+- `contract_happy_path`
+- `contract_first_phase_failure_aborts_pipeline`
+- `contract_mid_pipeline_failure_cancels_dependents`
+- `contract_partial_host_failure_continues_independents`
+- `contract_option_variants_skip_declared_phases`
+
+To add a new integration:
+
+1. Build it on `consortium-integration`'s `Executor` and `staging` helpers.
+2. Implement `Contract` with fixtures driven by `ScriptedExecutor` rules.
+3. Invoke `integration_contract_tests!` in its `tests/contract.rs`.
+
+See `crates/consortium-integration-testkit/tests/dummy.rs` for the canonical
+example and `crates/consortium-nix/tests/contract.rs` for the fullest real
+one.
+
 Requirements
 ------------
 
