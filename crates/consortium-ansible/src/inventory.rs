@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use consortium_nix::config::FleetConfig;
+use consortium_integration::fleet::FleetConfig;
 
 /// Generate an ansible inventory YAML string from fleet config.
 pub fn generate_inventory(config: &FleetConfig) -> String {
@@ -55,7 +55,7 @@ pub fn generate_inventory(config: &FleetConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use consortium_nix::config::{AnsibleFleetConfig, DeploymentNode, ProfileType};
+    use consortium_integration::fleet::{AnsibleFleetConfig, DeploymentNode, ProfileType};
 
     fn make_fleet(
         nodes: Vec<(&str, &str, &str, Vec<&str>)>,

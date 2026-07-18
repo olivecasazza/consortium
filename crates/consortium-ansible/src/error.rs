@@ -17,8 +17,11 @@ pub enum AnsibleError {
     #[error("no ansible config in fleet configuration")]
     NoConfig,
 
-    #[error("nix error: {0}")]
-    Nix(#[from] consortium_nix::NixError),
+    #[error("staging error: {0}")]
+    Staging(#[from] consortium_integration::StagingError),
+
+    #[error("exec error: {0}")]
+    Exec(#[from] consortium_integration::ExecError),
 
     #[error("dag error: {0}")]
     Dag(String),
