@@ -12,6 +12,7 @@ consortium-integration.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+consortium-fanout-sim.workspace = true
 consortium-integration-testkit.workspace = true
 
 [package.metadata.docs.rs]
