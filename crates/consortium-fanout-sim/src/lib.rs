@@ -22,6 +22,11 @@
 //! - [`scenario::Scenario`] — high-level wrapper that builds a
 //!   complete cascade run (nodes + seeded set + network + executor +
 //!   strategy) from a seed and a few descriptors.
+//! - [`simexec::SimExecutor`] — network/failure-aware
+//!   [`consortium_integration::exec::Executor`] implementation: the
+//!   bridge that runs *integration pipelines* (deploy, submit_job, …)
+//!   under simulated network + failure conditions. Includes the "Writing
+//!   a sim test for an integration" guide.
 //!
 //! ## Quick start
 //!
@@ -49,7 +54,12 @@ pub mod executor;
 pub mod fixtures;
 pub mod invariants;
 pub mod scenario;
+pub mod simexec;
 
 pub use executor::DeterministicExecutor;
 pub use fixtures::{BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution};
 pub use scenario::{Scenario, ScenarioConfig};
+pub use simexec::{
+    assert_deterministic_equivalence, canonical_log, logs_equivalent, per_edge_outcomes,
+    SimCommandKind, SimEvent, SimExecutor, SimExecutorBuilder, SimOutcome,
+};

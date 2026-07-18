@@ -294,6 +294,8 @@ name = "consortium-fanout-sim"
 version = "0.2.0"
 dependencies = [
  "consortium-cli",
+ "consortium-crate",
+ "consortium-integration",
  "consortium-nix",
  "criterion",
  "proptest",
