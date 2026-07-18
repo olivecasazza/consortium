@@ -1,5 +1,18 @@
 # Changelog
 
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+
+## Features
+
+- port upstream index, stepped slices, mapall upcall
+
+## style
+
+- apply cargo fmt across workspace crates
+
+
 ## Bug Fixes
 
 - use alt screen buffer to fix multi-n0 stacking
