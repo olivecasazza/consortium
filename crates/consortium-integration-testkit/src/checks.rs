@@ -326,10 +326,11 @@ pub fn partial_host_failure_continues_independents<C: Contract>() {
     assert_failure_outcome::<C>(&outcome, "partial host failure");
     let invocations = exec.invocations();
     for phase in &C::phases() {
+        let survived = invocations
+            .iter()
+            .any(|cmd| cmd.contains(phase.marker) && cmd.contains(partial.surviving_host_marker));
         assert!(
-            invocations
-                .iter()
-                .any(|cmd| cmd.contains(phase.marker) && cmd.contains(partial.surviving_host_marker)),
+            survived,
             "{}: partial host failure: surviving host must complete phase '{}' — need an \
              invocation containing both {:?} (phase marker) and {:?} (surviving host \
              marker).\ninvocations: {:#?}",

@@ -51,7 +51,11 @@ pub struct Phase {
 
 impl Phase {
     /// Convenience constructor.
-    pub const fn new(name: &'static str, marker: &'static str, after: &'static [&'static str]) -> Self {
+    pub const fn new(
+        name: &'static str,
+        marker: &'static str,
+        after: &'static [&'static str],
+    ) -> Self {
         Self { name, marker, after }
     }
 }

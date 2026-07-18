@@ -18,12 +18,12 @@
 //! | test name | semantic |
 //! |---|---|
 //! | `contract_missing_config_errors` | missing sub-config → `Err`, zero commands issued |
-//! | `contract_plan_has_no_side_effects` | task descriptions exist, are printable, and required no execution |
+//! | `contract_plan_has_no_side_effects` | task descriptions exist, printable, need no execution |
 //! | `contract_happy_path` | all phases invoked in declared `after` order; report successful |
-//! | `contract_first_phase_failure_aborts_pipeline` | first phase fails → later phases never invoked |
-//! | `contract_mid_pipeline_failure_cancels_dependents` | mid phase fails → later phases never invoked, earlier ones ran |
-//! | `contract_partial_host_failure_continues_independents` | dead host's chain stops; surviving host finishes every phase |
-//! | `contract_option_variants_skip_declared_phases` | each option variant skips exactly its declared phases |
+//! | `contract_first_phase_failure_aborts_pipeline` | first phase fails → later phases never run |
+//! | `contract_mid_pipeline_failure_cancels_dependents` | mid phase fails → later phases never run |
+//! | `contract_partial_host_failure_continues_independents` | surviving host completes every phase |
+//! | `contract_option_variants_skip_declared_phases` | variants skip exactly the declared phases |
 //!
 //! # Usage — three steps for a new integration
 //!
