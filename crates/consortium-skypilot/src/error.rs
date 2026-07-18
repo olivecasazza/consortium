@@ -1,21 +1,18 @@
 //! Error types for SkyPilot orchestration.
 
+use consortium_integration::staging::StagingError;
+use consortium_integration::ExecError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SkypilotError {
-    #[error("sky environment build failed: {0}")]
-    EnvBuildFailed(String),
-
-    #[error("sky launch failed for {cluster}: {message}")]
-    LaunchFailed { cluster: String, message: String },
-
-    #[error("sky exec failed on {cluster}: {message}")]
-    ExecFailed { cluster: String, message: String },
-
     #[error("no skypilot config in fleet configuration")]
     NoConfig,
 
-    #[error("nix error: {0}")]
-    Nix(#[from] consortium_nix::NixError),
+    #[error("staging error: {0}")]
+    Staging(#[from] StagingError),
+
+    #[error("exec error: {0}")]
+    Exec(#[from] ExecError),
 
     #[error("dag error: {0}")]
     Dag(String),
