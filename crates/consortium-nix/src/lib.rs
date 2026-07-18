@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use consortium::dag::{DagContext, DagReport, ErrorPolicy, StageBuilder, TaskId};
 use consortium_integration::exec::Executor;
+use consortium_integration::report::IntegrationReport;
 
 use crate::cascade_events::EventSink;
 use crate::cascade_integration::{cascade_copy_grouped, CascadeCopyConfig, CascadeCopyTarget};
@@ -126,6 +127,11 @@ pub fn deploy(
     max_parallel: usize,
     use_builders: bool,
 ) -> Result<DeployReport> {
+    // Validate targets before ANY command runs (builder health probes
+    // included): an unknown target is a configuration error, not a
+    // runtime failure.
+    validate_targets(config, target_nodes)?;
+
     // Phase 0: Health check builders and prepare machines file
     let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
         let statuses = health::check_builders_with(&*exec, config);
@@ -243,6 +249,10 @@ pub fn deploy_with_cascade(
     seed_addr: &str,
     event_sink: Option<&dyn EventSink>,
 ) -> Result<DeployReport> {
+    // Same upfront validation as deploy(): fail on unknown targets before
+    // issuing any command.
+    validate_targets(config, target_nodes)?;
+
     // Build-only path: no copy, no cascade — defer to deploy().
     if action == DeployAction::Build {
         return deploy(exec, config, target_nodes, action, max_parallel, use_builders);
@@ -292,10 +302,16 @@ pub fn deploy_with_cascade(
         .map_err(|e| NixError::General(e.to_string()))?;
 
     // Collect successfully-built (host, toplevel) pairs from ctx1
-    // outputs. Skip hosts whose build failed.
+    // outputs. Skip hosts whose eval or build failed.
     let mut targets_for_cascade: Vec<CascadeCopyTarget> = Vec::new();
+    let mut eval_failures: Vec<(String, String)> = Vec::new();
     let mut build_failures: Vec<(String, String)> = Vec::new();
     for host in target_nodes {
+        let eval_id = TaskId(format!("eval:{}", host));
+        if let Some(err) = phase1_report.failed.get(&eval_id) {
+            eval_failures.push((host.clone(), err.clone()));
+            continue;
+        }
         let build_id = TaskId(format!("build:{}", host));
         if let Some(err) = phase1_report.failed.get(&build_id) {
             build_failures.push((host.clone(), err.clone()));
@@ -386,7 +402,10 @@ pub fn deploy_with_cascade(
 
     let built: Vec<String> = target_nodes
         .iter()
-        .filter(|h| !build_failures.iter().any(|(b, _)| &b == h))
+        .filter(|h| {
+            !build_failures.iter().any(|(b, _)| &b == h)
+                && !eval_failures.iter().any(|(b, _)| &b == h)
+        })
         .cloned()
         .collect();
 
@@ -396,6 +415,7 @@ pub fn deploy_with_cascade(
         built,
         copied: cascade_result.copied,
         activated,
+        eval_failures,
         build_failures,
         copy_failures,
         activation_failures,
@@ -411,6 +431,8 @@ pub struct DeployReport {
     pub copied: Vec<String>,
     /// Hosts that were activated successfully.
     pub activated: Vec<String>,
+    /// Hosts that failed nix evaluation (name, error message).
+    pub eval_failures: Vec<(String, String)>,
     /// Hosts that failed to build (name, error message).
     pub build_failures: Vec<(String, String)>,
     /// Hosts that failed closure copy (name, error message).
@@ -422,14 +444,18 @@ pub struct DeployReport {
 impl DeployReport {
     /// Whether the deployment was fully successful (no failures).
     pub fn is_success(&self) -> bool {
-        self.build_failures.is_empty()
+        self.eval_failures.is_empty()
+            && self.build_failures.is_empty()
             && self.copy_failures.is_empty()
             && self.activation_failures.is_empty()
     }
 
     /// Total number of failures across all phases.
     pub fn failure_count(&self) -> usize {
-        self.build_failures.len() + self.copy_failures.len() + self.activation_failures.len()
+        self.eval_failures.len()
+            + self.build_failures.len()
+            + self.copy_failures.len()
+            + self.activation_failures.len()
     }
 
     /// Number of hosts that completed successfully (all phases).
@@ -442,14 +468,23 @@ impl DeployReport {
         let mut built = Vec::new();
         let mut copied = Vec::new();
         let mut activated = Vec::new();
+        let mut eval_failures = Vec::new();
         let mut build_failures = Vec::new();
         let mut copy_failures = Vec::new();
         let mut activation_failures = Vec::new();
 
         for host in target_nodes {
+            let eval_id = consortium::dag::TaskId(format!("eval:{}", host));
             let build_id = consortium::dag::TaskId(format!("build:{}", host));
             let copy_id = consortium::dag::TaskId(format!("copy:{}", host));
             let activate_id = consortium::dag::TaskId(format!("activate:{}", host));
+
+            // Check eval. An eval failure cancels build/copy/activate for
+            // the host, so without this check the report would silently
+            // show success with zero work done.
+            if let Some(err) = report.failed.get(&eval_id) {
+                eval_failures.push((host.clone(), err.clone()));
+            }
 
             // Check build
             if report.completed.contains(&build_id) || report.skipped.contains(&build_id) {
@@ -482,6 +517,7 @@ impl DeployReport {
             built,
             copied,
             activated,
+            eval_failures,
             build_failures,
             copy_failures,
             activation_failures,
@@ -489,11 +525,43 @@ impl DeployReport {
     }
 }
 
+impl IntegrationReport for DeployReport {
+    fn is_success(&self) -> bool {
+        DeployReport::is_success(self)
+    }
+
+    fn failure_count(&self) -> usize {
+        DeployReport::failure_count(self)
+    }
+
+    fn success_count(&self) -> usize {
+        DeployReport::success_count(self)
+    }
+}
+
+/// Validate that every requested target node exists in the fleet config.
+///
+/// This runs before any command is issued: an unknown target is a
+/// configuration error, not a runtime failure, so it must not be
+/// discovered halfway through the pipeline (or worse, silently turned
+/// into per-task failures after side effects have already happened).
+fn validate_targets(config: &FleetConfig, target_nodes: &[String]) -> Result<()> {
+    for name in target_nodes {
+        if !config.nodes.contains_key(name) {
+            return Err(NixError::General(format!(
+                "target node '{}' is not present in the fleet config",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use consortium::dag::{DagReport, TaskId};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     fn make_report(completed: &[&str], failed: &[(&str, &str)], cancelled: &[&str]) -> DagReport {
         DagReport {
@@ -531,6 +599,124 @@ mod tests {
         assert_eq!(report.copied, vec!["hp01", "hp02"]);
         assert_eq!(report.activated, vec!["hp01", "hp02"]);
         assert_eq!(report.failure_count(), 0);
+        assert!(report.eval_failures.is_empty());
+    }
+
+    #[test]
+    fn test_deploy_report_eval_failure() {
+        // eval fails for hp02: build/copy/activate for hp02 are cancelled
+        // (not failed). The eval failure must still be attributed, or the
+        // report would wrongly show is_success() == true.
+        let dag_report = make_report(
+            &[
+                "eval:hp01",
+                "build:hp01",
+                "copy:hp01",
+                "activate:hp01",
+            ],
+            &[("eval:hp02", "attribute 'nixosConfigurations.hp02' missing")],
+            &["build:hp02", "copy:hp02", "activate:hp02"],
+        );
+        let targets = vec!["hp01".to_string(), "hp02".to_string()];
+        let report = DeployReport::from_dag_report(&dag_report, &targets, DeployAction::Switch);
+
+        assert!(!report.is_success());
+        assert_eq!(report.failure_count(), 1);
+        assert_eq!(
+            report.eval_failures,
+            vec![(
+                "hp02".to_string(),
+                "attribute 'nixosConfigurations.hp02' missing".to_string()
+            )]
+        );
+        assert!(report.build_failures.is_empty());
+        assert!(report.copy_failures.is_empty());
+        assert!(report.activation_failures.is_empty());
+        assert_eq!(report.built, vec!["hp01"]);
+        assert_eq!(report.activated, vec!["hp01"]);
+        assert_eq!(report.success_count(), 1);
+    }
+
+    #[test]
+    fn test_deploy_report_eval_failure_build_only() {
+        // Same attribution requirement in build-only mode.
+        let dag_report = make_report(
+            &["eval:hp01", "build:hp01"],
+            &[("eval:hp02", "eval boom")],
+            &["build:hp02"],
+        );
+        let targets = vec!["hp01".to_string(), "hp02".to_string()];
+        let report = DeployReport::from_dag_report(&dag_report, &targets, DeployAction::Build);
+
+        assert!(!report.is_success());
+        assert_eq!(report.failure_count(), 1);
+        assert_eq!(
+            report.eval_failures,
+            vec![("hp02".to_string(), "eval boom".to_string())]
+        );
+        assert_eq!(report.built, vec!["hp01"]);
+    }
+
+    #[test]
+    fn test_deploy_report_eval_failure_all_hosts() {
+        // First-phase failure for every host: nothing may count as success.
+        let dag_report = make_report(
+            &[],
+            &[("eval:hp01", "boom"), ("eval:hp02", "boom")],
+            &[
+                "build:hp01",
+                "copy:hp01",
+                "activate:hp01",
+                "build:hp02",
+                "copy:hp02",
+                "activate:hp02",
+            ],
+        );
+        let targets = vec!["hp01".to_string(), "hp02".to_string()];
+        let report = DeployReport::from_dag_report(&dag_report, &targets, DeployAction::Switch);
+
+        assert!(!report.is_success());
+        assert_eq!(report.failure_count(), 2);
+        assert_eq!(report.success_count(), 0);
+        assert!(report.built.is_empty());
+        assert!(report.activated.is_empty());
+    }
+
+    #[test]
+    fn test_deploy_report_integration_report_delegates() {
+        let report = DeployReport {
+            built: vec!["hp01".to_string()],
+            copied: vec!["hp01".to_string()],
+            activated: vec!["hp01".to_string()],
+            eval_failures: vec![("hp02".to_string(), "boom".to_string())],
+            build_failures: vec![],
+            copy_failures: vec![],
+            activation_failures: vec![],
+        };
+        let trait_view: &dyn IntegrationReport = &report;
+        assert_eq!(trait_view.is_success(), report.is_success());
+        assert_eq!(trait_view.failure_count(), report.failure_count());
+        assert_eq!(trait_view.success_count(), report.success_count());
+        assert!(!trait_view.is_success());
+        assert_eq!(trait_view.failure_count(), 1);
+        assert_eq!(trait_view.success_count(), 1);
+    }
+
+    #[test]
+    fn test_validate_targets_rejects_unknown_node() {
+        let config = FleetConfig {
+            nodes: HashMap::new(),
+            builders: HashMap::new(),
+            flake_uri: ".".to_string(),
+            ansible_config: None,
+            slurm_config: None,
+            ray_config: None,
+            skypilot_config: None,
+        };
+        let targets = vec!["node01".to_string()];
+        let err = validate_targets(&config, &targets).unwrap_err();
+        assert!(err.to_string().contains("node01"), "{}", err);
+        assert!(validate_targets(&config, &[]).is_ok());
     }
 
     #[test]
@@ -559,6 +745,7 @@ mod tests {
         // copy and activate for hp02 are cancelled, not failed
         assert!(report.copy_failures.is_empty());
         assert!(report.activation_failures.is_empty());
+        assert!(report.eval_failures.is_empty());
     }
 
     #[test]
@@ -577,6 +764,7 @@ mod tests {
             report.copy_failures,
             vec![("hp01".to_string(), "ssh connection refused".to_string())]
         );
+        assert!(report.eval_failures.is_empty());
     }
 
     #[test]
@@ -593,6 +781,7 @@ mod tests {
         assert_eq!(report.built, vec!["hp01", "hp02"]);
         assert!(report.copied.is_empty());
         assert!(report.activated.is_empty());
+        assert!(report.eval_failures.is_empty());
     }
 
     #[test]

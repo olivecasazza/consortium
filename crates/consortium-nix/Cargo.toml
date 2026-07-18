@@ -18,6 +18,7 @@ serde_json = "1"
 # is a Dijkstra problem on the network graph).
 
 [dev-dependencies]
+consortium-integration-testkit.workspace = true
 tempfile = "3"
 
 [package.metadata.docs.rs]
