@@ -46,7 +46,10 @@
 //! all `N + 1` nodes, so sentinel↔host edges are populated too.
 //! `.network(profile)` substitutes a hand-built profile (the caller is
 //! then responsible for including sentinel edges) and takes precedence
-//! over the distribution knobs.
+//! over the distribution knobs. The host list may be EMPTY (`N = 0`):
+//! the sentinel is still allocated and every ssh/copy command then fails
+//! loudly as an unresolved host — all-local pipelines (skypilot, ray)
+//! need no dummy host.
 //!
 //! ## Order-independent failure decisions
 //!
@@ -88,6 +91,17 @@
 //! embedded executor's own invocation recording is discarded — assertions
 //! use [`SimExecutor::invocation_log`].
 //!
+//! ## Command-line normalization
+//!
+//! `.normalize_command_line(f)` installs a hook applied to the rendered
+//! line BEFORE rule matching, `.transfer_bytes()` pattern lookup, and
+//! recording: rules match against (and [`SimEvent::command_line`]
+//! records) the NORMALIZED line. Use it to scrub run-unique tokens —
+//! temp paths, pids, sequence counters — at the source, so the
+//! determinism contract can compare logs directly (canonical example:
+//! `consortium-skypilot/tests/sim.rs`). Classification is unaffected: it
+//! reads the structured [`CommandSpec`], never the rendered line.
+//!
 //! ## Virtual clock
 //!
 //! [`SimExecutor::simulated_transfer_time`] sums the durations of
@@ -107,18 +121,35 @@
 //!
 //! Same builder config + same pipeline inputs ⇒
 //!
-//! - identical per-edge outcome sequences ([`per_edge_outcomes`]),
-//! - identical [`SimExecutor::invocation_log`] contents as a multiset
-//!   ([`logs_equivalent`] / [`canonical_log`]),
+//! - identical [`SimExecutor::invocation_log`] contents as an
+//!   attempt-insensitive multiset ([`logs_equivalent`] /
+//!   [`canonical_log`]),
+//! - identical per-edge outcome multisets
+//!   ([`per_edge_outcome_multisets`]),
 //! - identical [`SimExecutor::simulated_transfer_time`],
 //!
 //! even though worker-thread interleaving changes the log's ORDER.
-//! [`assert_deterministic_equivalence`] checks the first two. One caveat:
-//! the binding of a command line to an attempt index is deterministic only
-//! per edge — two *different* commands sharing one edge issued from
-//! unordered (non-dependency-ordered) tasks may swap attempt indices
-//! between runs. Integration pipelines are immune: per-host command
-//! chains are dependency-ordered. Keep test DAGs that way.
+//! [`assert_deterministic_equivalence`] checks the first two. The
+//! per-edge sequence view ([`per_edge_outcomes`], ordered by attempt
+//! index) is additionally deterministic whenever the attempt-index
+//! binding itself is — see the caveat.
+//!
+//! One caveat: the binding of a command line to an attempt index is
+//! ARRIVAL-ORDER-DEPENDENT when two *different* commands share one edge
+//! from unordered (non-dependency-ordered) tasks — whichever command
+//! reaches the executor first takes attempt 0, so raw `attempt` fields
+//! (and any view ordered by them) may permute between runs.
+//! `canonical_log` therefore normalizes `attempt` away and the native
+//! comparisons never look at it. Failure DECISIONS still stay
+//! deterministic for the standard patterns:
+//!
+//! - **round-0 kills** (`KillNodeAtRound { round: 0, .. }`) strike every
+//!   attempt on every edge to the node, regardless of binding;
+//! - **per-command [`Rule`]s** key on the (normalized) command line, not
+//!   the attempt index;
+//! - **dependency-ordered per-host chains** give each edge a single
+//!   arrival order, so attempt binding — and [`per_edge_outcomes`] — is
+//!   stable there. Keep test DAGs that way when asserting on sequences.
 //!
 //! ## Writing a sim test for an integration
 //!
@@ -127,7 +158,8 @@
 //!    `.failure_schedule(..)`, `.transfer_bytes(..)`; script every success
 //!    output the pipeline parses (sbatch job ids, store paths,
 //!    `sky`/`ray` statuses) via `.on(..)` — rules match substrings of the
-//!    rendered command line, first match wins.
+//!    rendered command line, first match wins (the NORMALIZED line when
+//!    `.normalize_command_line(..)` is set).
 //! 2. **Wire it in**: wrap in `Arc`, store as `Arc<dyn Executor>` under
 //!    the `"executor"` context state key, then call the integration's
 //!    entry fn (or drive its DAG directly, as below).
@@ -150,8 +182,8 @@
 //! use consortium_fanout_sim::simexec::{
 //!     assert_deterministic_equivalence, SimExecutor, SimOutcome,
 //! };
+//! use consortium_fanout_sim::NodeId;
 //! use consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
-//! use consortium_nix::cascade::NodeId;
 //!
 //! /// The pipeline: one local build stage, then an ssh "activate" per
 //! /// host — the same shape the integrations' DAGs have.
@@ -267,12 +299,22 @@ pub enum SimCommandKind {
 }
 
 /// The recorded outcome of one simulated invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SimOutcome {
-    /// The command succeeded. `duration` is the simulated transfer time
-    /// (`transfer_bytes / effective_bandwidth + latency` for edge
-    /// commands, zero for local commands and unmatched control commands).
-    Ok { duration: Duration },
+    /// The command executed: the scripted rules answered. `duration` is
+    /// the simulated transfer time (`transfer_bytes / effective_bandwidth
+    /// + latency` for edge commands, zero for local commands and
+    /// unmatched control commands). `status` is the scripted output's
+    /// exit status — non-zero when the rule scripts a command-level
+    /// failure, so log-only assertions can see it (a rule returning
+    /// `ExecOutput { status: 1, .. }` is no longer indistinguishable
+    /// from success).
+    Ok {
+        /// The simulated duration.
+        duration: Duration,
+        /// The scripted exit status.
+        status: i32,
+    },
     /// A simulated network/failure-schedule failure rendered as a
     /// non-zero exit status: 255 for ssh edges (ssh convention), 1 for
     /// data copies.
@@ -286,6 +328,19 @@ pub enum SimOutcome {
     /// ([`ExecError::Unexpected`]) or a failing rule fired
     /// ([`ExecError::Scripted`]). `Executor::exec` returned `Err`.
     ExecError(String),
+}
+
+impl SimOutcome {
+    /// The exit status the pipeline saw, if a command-level status
+    /// exists: `Some(status)` for [`SimOutcome::Ok`] (the scripted
+    /// status — may be non-zero) and [`SimOutcome::Failed`] (the
+    /// rendered sim failure), `None` for [`SimOutcome::ExecError`].
+    pub fn exit_status(&self) -> Option<i32> {
+        match self {
+            SimOutcome::Ok { status, .. } | SimOutcome::Failed { status, .. } => Some(*status),
+            SimOutcome::ExecError(_) => None,
+        }
+    }
 }
 
 /// One recorded invocation. See [`SimExecutor::invocation_log`].
@@ -319,6 +374,7 @@ pub struct SimExecutorBuilder {
     default_bandwidth: u64,
     default_transfer_bytes: u64,
     transfer_table: Vec<(String, u64)>,
+    normalize: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
     outputs: ScriptedExecutor,
 }
 
@@ -335,6 +391,7 @@ impl Default for SimExecutorBuilder {
             default_bandwidth: DEFAULT_BANDWIDTH_BYTES_SEC,
             default_transfer_bytes: 0,
             transfer_table: Vec::new(),
+            normalize: None,
             outputs: ScriptedExecutor::new(),
         }
     }
@@ -342,7 +399,10 @@ impl Default for SimExecutorBuilder {
 
 impl SimExecutorBuilder {
     /// Fleet hostnames, mapped to `NodeId(0..N)` in order. The build-host
-    /// sentinel gets `NodeId(N)` automatically. Required.
+    /// sentinel gets `NodeId(N)` automatically. Optional: an empty (or
+    /// omitted) list is valid for all-local pipelines — the sentinel is
+    /// still allocated and every ssh/copy command then fails loudly as
+    /// an unresolved host.
     pub fn hosts<I, S>(mut self, hosts: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -407,9 +467,26 @@ impl SimExecutorBuilder {
     }
 
     /// Transfer size for edge commands whose rendered line contains
-    /// `pattern`. First matching pattern wins.
+    /// `pattern`. First matching pattern wins. Patterns match the
+    /// NORMALIZED line when `.normalize_command_line(..)` is set.
     pub fn transfer_bytes(mut self, pattern: &str, bytes: u64) -> Self {
         self.transfer_table.push((pattern.to_string(), bytes));
+        self
+    }
+
+    /// Hook applied to the rendered command line BEFORE rule matching,
+    /// `.transfer_bytes()` lookup, and recording: scripted rules then
+    /// match against (and [`SimEvent::command_line`] records) the
+    /// NORMALIZED line. Use it to scrub run-unique tokens (temp paths,
+    /// pids, sequence counters) at the source so two runs of one
+    /// pipeline render identical lines and the determinism contract can
+    /// compare logs directly. Classification is unaffected (it reads the
+    /// structured [`CommandSpec`]).
+    pub fn normalize_command_line<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str) -> String + Send + Sync + 'static,
+    {
+        self.normalize = Some(Box::new(f));
         self
     }
 
@@ -433,13 +510,9 @@ impl SimExecutorBuilder {
         self
     }
 
-    /// Build the executor. Panics on an empty or duplicate host list
-    /// (builder misuse).
+    /// Build the executor. Panics on a duplicate host list (builder
+    /// misuse). An empty host list is fine: see [`.hosts()`](Self::hosts).
     pub fn build(self) -> SimExecutor {
-        assert!(
-            !self.hosts.is_empty(),
-            "SimExecutor::builder().hosts(..) must list at least one host"
-        );
         let mut host_to_node = HashMap::new();
         for (i, h) in self.hosts.iter().enumerate() {
             let prev = host_to_node.insert(h.clone(), NodeId(i as u32));
@@ -473,6 +546,7 @@ impl SimExecutorBuilder {
             default_bandwidth: self.default_bandwidth,
             default_transfer_bytes: self.default_transfer_bytes,
             transfer_table: self.transfer_table,
+            normalize: self.normalize,
             outputs: self.outputs,
             state: Mutex::new(SimState::default()),
         }
@@ -535,6 +609,9 @@ pub struct SimExecutor {
     default_bandwidth: u64,
     default_transfer_bytes: u64,
     transfer_table: Vec<(String, u64)>,
+    /// Optional rendered-line normalizer (see
+    /// [`SimExecutorBuilder::normalize_command_line`]).
+    normalize: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
     /// Scripted success outputs. Used for output lookup ONLY; its private
     /// invocation recording is never exposed.
     outputs: ScriptedExecutor,
@@ -554,8 +631,10 @@ impl SimExecutor {
         self.state.lock().unwrap().log.clone()
     }
 
-    /// Sum of successful data-copy durations. Aggregate transfer work,
-    /// NOT concurrent wall-clock — the harness does not model wall time.
+    /// Sum of successful (status-0) data-copy durations. Aggregate
+    /// transfer work, NOT concurrent wall-clock — the harness does not
+    /// model wall time. Data copies whose scripted output exits non-zero
+    /// transferred nothing and do not count.
     pub fn simulated_transfer_time(&self) -> Duration {
         self.state.lock().unwrap().transfer_time
     }
@@ -675,6 +754,37 @@ impl SimExecutor {
         Duration::from_secs_f64(secs) + self.net.latency_of(src, tgt, Duration::ZERO)
     }
 
+    /// The rendered command line with the optional
+    /// [`SimExecutorBuilder::normalize_command_line`] hook applied. Rule
+    /// matching, `.transfer_bytes()` lookup, and the recorded
+    /// [`SimEvent::command_line`] all see this form.
+    fn render_line(&self, spec: &CommandSpec) -> String {
+        let rendered = spec.render();
+        match &self.normalize {
+            Some(f) => f(&rendered),
+            None => rendered,
+        }
+    }
+
+    /// Scripted-output lookup against `rendered` (the possibly
+    /// normalized line). Without a normalizer the embedded executor
+    /// matches `spec` directly. With one, a spec re-parsed from the
+    /// normalized line is looked up instead, so rules match the
+    /// normalized form (`CommandSpec::render` joins argv with single
+    /// spaces, so splitting the line on spaces round-trips it exactly).
+    fn scripted_output(
+        &self,
+        spec: &CommandSpec,
+        rendered: &str,
+    ) -> Result<ExecOutput, ExecError> {
+        if self.normalize.is_none() {
+            return self.outputs.exec(spec);
+        }
+        let mut parts = rendered.split(' ');
+        let reparsed = CommandSpec::new(parts.next().unwrap_or_default()).args(parts);
+        self.outputs.exec(&reparsed)
+    }
+
     fn record(&self, event: SimEvent) {
         self.state.lock().unwrap().log.push(event);
     }
@@ -682,13 +792,14 @@ impl SimExecutor {
 
 impl Executor for SimExecutor {
     fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
-        let rendered = spec.render();
+        let rendered = self.render_line(spec);
         match self.classify(spec) {
             Target::Local => {
-                let result = self.outputs.exec(spec);
+                let result = self.scripted_output(spec, &rendered);
                 let outcome = match &result {
-                    Ok(_) => SimOutcome::Ok {
+                    Ok(out) => SimOutcome::Ok {
                         duration: Duration::ZERO,
+                        status: out.status,
                     },
                     Err(e) => SimOutcome::ExecError(e.to_string()),
                 };
@@ -753,15 +864,19 @@ impl Executor for SimExecutor {
                 }
 
                 let duration = self.edge_duration(kind, src, tgt, &rendered);
-                let result = self.outputs.exec(spec);
+                let result = self.scripted_output(spec, &rendered);
                 let outcome = match &result {
-                    Ok(_) => SimOutcome::Ok { duration },
+                    Ok(out) => SimOutcome::Ok {
+                        duration,
+                        status: out.status,
+                    },
                     Err(e) => SimOutcome::ExecError(e.to_string()),
                 };
                 {
                     let mut st = self.state.lock().unwrap();
+                    // Only status-0 data copies transferred anything.
                     if kind == SimCommandKind::DataCopy
-                        && matches!(outcome, SimOutcome::Ok { .. })
+                        && matches!(outcome, SimOutcome::Ok { status: 0, .. })
                     {
                         st.transfer_time += duration;
                     }
@@ -860,30 +975,46 @@ fn unknown_host_output(kind: SimCommandKind, host: &str) -> ExecOutput {
     )
 }
 
-/// Canonically sorted copy of a log (by command line, kind, edge,
-/// attempt). Two logs whose canonical forms are equal are equal as
-/// multisets.
+/// Canonically sorted copy of a log, with the per-edge `attempt` index
+/// normalized away: every event is reset to `attempt = 0` and sorted by
+/// (command line, kind, edge, outcome). Two logs whose canonical forms
+/// are equal contain the same (command, kind, edge, outcome) events as a
+/// multiset. The attempt binding is deliberately excluded: it is
+/// arrival-order-dependent when distinct commands share one edge (see
+/// the module's determinism contract), so comparing raw `attempt`
+/// fields flakes for that topology.
 pub fn canonical_log(log: &[SimEvent]) -> Vec<SimEvent> {
-    let mut v = log.to_vec();
+    let mut v: Vec<SimEvent> = log
+        .iter()
+        .map(|e| SimEvent {
+            attempt: 0,
+            ..e.clone()
+        })
+        .collect();
     v.sort_by(|a, b| {
-        (&a.command_line, a.kind, a.edge, a.attempt).cmp(&(
+        (&a.command_line, a.kind, a.edge, &a.outcome).cmp(&(
             &b.command_line,
             b.kind,
             b.edge,
-            b.attempt,
+            &b.outcome,
         ))
     });
     v
 }
 
-/// Whether two logs contain the same events, ignoring order.
+/// Whether two logs contain the same events, ignoring order AND the
+/// per-edge attempt indices (see [`canonical_log`]).
 pub fn logs_equivalent(a: &[SimEvent], b: &[SimEvent]) -> bool {
     canonical_log(a) == canonical_log(b)
 }
 
 /// Per-edge outcome sequences, ordered by attempt index. Deterministic
-/// for a fixed builder config + pipeline inputs regardless of thread
-/// interleaving (see the module's determinism contract).
+/// for a fixed builder config + pipeline inputs ONLY where the
+/// attempt-index binding is: the binding is arrival-order-dependent when
+/// distinct commands share one edge from unordered tasks (see the
+/// module's determinism contract). Use [`per_edge_outcome_multisets`]
+/// for the order-independent view; [`assert_deterministic_equivalence`]
+/// compares multisets for that reason.
 pub fn per_edge_outcomes(log: &[SimEvent]) -> BTreeMap<(NodeId, NodeId), Vec<SimOutcome>> {
     let mut by_edge: BTreeMap<(NodeId, NodeId), Vec<(u32, SimOutcome)>> = BTreeMap::new();
     for e in log {
@@ -903,14 +1034,29 @@ pub fn per_edge_outcomes(log: &[SimEvent]) -> BTreeMap<(NodeId, NodeId), Vec<Sim
         .collect()
 }
 
-/// Assert the determinism contract: identical per-edge outcome sequences
-/// AND identical logs as multisets. Panics with both canonical logs on
-/// mismatch.
+/// Per-edge outcomes as sorted multisets — the order-independent residue
+/// of [`per_edge_outcomes`], robust on edges shared by unordered
+/// cross-chain commands whose attempt binding can permute between runs.
+pub fn per_edge_outcome_multisets(log: &[SimEvent]) -> BTreeMap<(NodeId, NodeId), Vec<SimOutcome>> {
+    per_edge_outcomes(log)
+        .into_iter()
+        .map(|(edge, mut outcomes)| {
+            outcomes.sort();
+            (edge, outcomes)
+        })
+        .collect()
+}
+
+/// Assert the determinism contract: identical per-edge outcome multisets
+/// AND identical logs as multisets — both attempt-insensitive, so shared
+/// edges with unordered cross-chain commands cannot flake the comparison
+/// (see the module's determinism contract). Panics with both canonical
+/// logs on mismatch.
 pub fn assert_deterministic_equivalence(run_a: &[SimEvent], run_b: &[SimEvent]) {
     assert_eq!(
-        per_edge_outcomes(run_a),
-        per_edge_outcomes(run_b),
-        "per-edge outcome sequences diverged"
+        per_edge_outcome_multisets(run_a),
+        per_edge_outcome_multisets(run_b),
+        "per-edge outcome multisets diverged"
     );
     assert!(
         logs_equivalent(run_a, run_b),
@@ -1252,14 +1398,148 @@ mod tests {
     // ---------- builder validation ----------
 
     #[test]
-    #[should_panic(expected = "at least one host")]
-    fn builder_panics_without_hosts() {
-        SimExecutor::builder().build();
+    fn empty_fleet_supports_all_local_pipelines() {
+        let sim = SimExecutor::builder()
+            .on("nix build", ExecOutput::ok("/nix/store/x\n"))
+            .build();
+        // The sentinel is still allocated (NodeId(0) for 0 hosts).
+        assert_eq!(sim.sentinel_node(), NodeId(0));
+        let out = sim
+            .exec(&CommandSpec::new("nix").args(["build", ".#x"]))
+            .unwrap();
+        assert!(out.success());
+        // Any edge command fails loudly as an unresolved host.
+        let ssh = sim.exec(&ssh_uptime("node01")).unwrap();
+        assert_eq!(ssh.status, 255);
+        assert!(ssh.stderr.contains("Could not resolve hostname node01"));
     }
 
     #[test]
     #[should_panic(expected = "duplicate host")]
     fn builder_panics_on_duplicate_hosts() {
         SimExecutor::builder().hosts(["node01", "node01"]).build();
+    }
+
+    // ---------- scripted exit status visibility ----------
+
+    #[test]
+    fn scripted_nonzero_exit_is_visible_in_the_log() {
+        let sim = SimExecutor::builder()
+            .hosts(["node01"])
+            .rule(Rule::containing(
+                "sky launch",
+                ExecOutput::new(1, "", "cloud quota exceeded"),
+            ))
+            .build();
+        let out = sim
+            .exec(&CommandSpec::new("sky").args(["launch", "task.yaml"]))
+            .unwrap();
+        assert_eq!(out.status, 1);
+        let log = sim.invocation_log();
+        // The command executed (no sim-level failure) but its scripted
+        // non-zero status is visible to log-only assertions.
+        assert!(matches!(log[0].outcome, SimOutcome::Ok { status: 1, .. }));
+        assert_eq!(log[0].outcome.exit_status(), Some(1));
+    }
+
+    #[test]
+    fn scripted_failed_copy_adds_no_transfer_time() {
+        let sim = SimExecutor::builder()
+            .hosts(["node01"])
+            .bandwidth(BandwidthDistribution::Uniform(100 * MB))
+            .transfer_bytes("nix copy", 100 * MB)
+            .on("nix copy", ExecOutput::new(1, "", "disk full"))
+            .build();
+        let out = sim.exec(&copy_to("node01")).unwrap();
+        assert_eq!(out.status, 1);
+        let log = sim.invocation_log();
+        assert!(matches!(log[0].outcome, SimOutcome::Ok { status: 1, .. }));
+        // A copy that exited 1 transferred nothing.
+        assert_eq!(sim.simulated_transfer_time(), Duration::ZERO);
+    }
+
+    // ---------- command-line normalization ----------
+
+    fn normalize_yaml_token(line: &str) -> String {
+        line.split_whitespace()
+            .map(|tok| {
+                if tok.contains("consortium-sky-") && tok.ends_with(".yaml") {
+                    "<task-yaml>"
+                } else {
+                    tok
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn normalize_hook_applies_before_matching_and_recording() {
+        let sim = SimExecutor::builder()
+            .normalize_command_line(normalize_yaml_token)
+            // The rule matches the NORMALIZED line.
+            .on("sky launch <task-yaml>", ExecOutput::ok("launched\n"))
+            .build();
+        let out = sim
+            .exec(&CommandSpec::new("sky").args([
+                "launch",
+                "/tmp/consortium-sky-c-123-0.yaml",
+            ]))
+            .unwrap();
+        assert!(out.success());
+        let log = sim.invocation_log();
+        assert_eq!(log[0].command_line, "sky launch <task-yaml>");
+    }
+
+    #[test]
+    fn normalize_hook_lets_unique_lines_satisfy_the_determinism_contract() {
+        let make_run = |path: &str| {
+            let sim = SimExecutor::builder()
+                .normalize_command_line(normalize_yaml_token)
+                .on("sky launch <task-yaml>", ExecOutput::ok("launched\n"))
+                .build();
+            sim.exec(&CommandSpec::new("sky").args(["launch", path]))
+                .unwrap();
+            sim
+        };
+        let a = make_run("/tmp/consortium-sky-c-1-0.yaml");
+        let b = make_run("/tmp/consortium-sky-c-2-1.yaml");
+        assert_deterministic_equivalence(&a.invocation_log(), &b.invocation_log());
+    }
+
+    // ---------- attempt-insensitive determinism comparison ----------
+
+    #[test]
+    fn canonical_log_ignores_attempt_binding_on_shared_edges() {
+        // Two distinct commands on ONE edge with swapped attempt indices:
+        // the arrival-order-dependent binding must not affect the
+        // comparison.
+        let edge = Some((NodeId(1), NodeId(0)));
+        let ok = || SimOutcome::Ok {
+            duration: Duration::ZERO,
+            status: 0,
+        };
+        let ssh = |attempt: u32| SimEvent {
+            command_line: "ssh node01 uptime".into(),
+            kind: SimCommandKind::SshControl,
+            edge,
+            attempt,
+            outcome: ok(),
+        };
+        let copy = |attempt: u32| SimEvent {
+            command_line: "nix copy --to ssh-ng://root@node01 /nix/store/abc".into(),
+            kind: SimCommandKind::DataCopy,
+            edge,
+            attempt,
+            outcome: ok(),
+        };
+        let a = vec![ssh(0), copy(1)];
+        let b = vec![copy(0), ssh(1)];
+        assert!(logs_equivalent(&a, &b));
+        assert_deterministic_equivalence(&a, &b);
+        // ...but the events themselves still carry the raw attempt for
+        // order-sensitive consumers (per_edge_outcomes).
+        assert_eq!(a[0].attempt, 0);
+        assert_eq!(a[1].attempt, 1);
     }
 }

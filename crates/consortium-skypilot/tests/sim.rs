@@ -46,12 +46,34 @@ fn fleet_config() -> FleetConfig {
     }
 }
 
+/// Rewrite the unique temp yaml path (pid + sequence counter) inside
+/// `sky launch` command lines to a fixed placeholder. Two runs of the
+/// same pipeline in one process render *different* temp paths, so the
+/// raw rendered lines can never be multiset-equal; installed as the
+/// executor's `normalize_command_line` hook, this rewrites the line
+/// BEFORE rule matching and recording, which makes the determinism
+/// contract checkable on the raw logs. Everything else in the line
+/// (program, flags, cluster, cloud, region) is pipeline-determined.
+fn normalize_task_yaml(line: &str) -> String {
+    line.split_whitespace()
+        .map(|tok| {
+            if tok.contains("consortium-sky-") && tok.ends_with(".yaml") {
+                "<task-yaml>"
+            } else {
+                tok
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The happy-path executor. The pipeline never addresses a fleet host
-/// (every command classifies `Local`), but the builder requires ≥1 host.
+/// (every command classifies `Local`), so the fleet is left EMPTY — the
+/// sentinel is still allocated and no dummy host is needed.
 fn make_sim() -> SimExecutor {
     SimExecutor::builder()
-        .hosts(["unused-host"])
         .seed(SEED)
+        .normalize_command_line(normalize_task_yaml)
         .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
         .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
         .on("sky down", ExecOutput::ok("Terminating cluster\n"))
@@ -83,33 +105,6 @@ fn invocation_index(log: &[SimEvent], marker: &str) -> Option<usize> {
 /// Whether any logged command line contains `marker`.
 fn invoked(log: &[SimEvent], marker: &str) -> bool {
     invocation_index(log, marker).is_some()
-}
-
-/// Replace the unique temp yaml path (pid + sequence counter) inside
-/// `sky launch` command lines with a fixed placeholder. Two runs of the
-/// same pipeline in one process render *different* temp paths, so the raw
-/// logs can never be multiset-equal; everything else in the line (program,
-/// flags, cluster, cloud, region) is pipeline-determined, and normalizing
-/// the path is what makes the determinism contract checkable here.
-fn normalize_log(log: &[SimEvent]) -> Vec<SimEvent> {
-    log.iter()
-        .map(|e| {
-            let mut e = e.clone();
-            e.command_line = e
-                .command_line
-                .split_whitespace()
-                .map(|tok| {
-                    if tok.contains("consortium-sky-") && tok.ends_with(".yaml") {
-                        "<task-yaml>"
-                    } else {
-                        tok
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            e
-        })
-        .collect()
 }
 
 #[test]
@@ -171,7 +166,6 @@ fn launch_failure_skips_teardown() {
     // success rules.
     let sim = Arc::new(
         SimExecutor::builder()
-            .hosts(["unused-host"])
             .seed(SEED)
             .rule(Rule::containing(
                 "sky launch",
@@ -203,7 +197,6 @@ fn launch_failure_skips_teardown() {
 fn env_build_failure_aborts_before_any_sky_command() {
     let sim = Arc::new(
         SimExecutor::builder()
-            .hosts(["unused-host"])
             .seed(SEED)
             .rule(Rule::containing(
                 "nix build",
@@ -245,10 +238,11 @@ fn deterministic_runs() {
     let failed_b: HashSet<_> = report_b.failed.keys().collect();
     assert_eq!(failed_a, failed_b);
 
-    // Temp yaml paths differ between runs (pid + sequence); normalize
-    // them out before checking the determinism contract.
-    let log_a = normalize_log(&sim_a.invocation_log());
-    let log_b = normalize_log(&sim_b.invocation_log());
+    // Temp yaml paths differ between runs (pid + sequence); the
+    // executor's normalize hook (see make_sim) rewrites them before
+    // recording, so the raw logs satisfy the determinism contract.
+    let log_a = sim_a.invocation_log();
+    let log_b = sim_b.invocation_log();
     assert_deterministic_equivalence(&log_a, &log_b);
 
     // All commands classify `Local` → no data edges in the log → zero

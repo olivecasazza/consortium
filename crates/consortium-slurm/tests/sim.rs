@@ -19,12 +19,12 @@ use std::time::Duration;
 
 use consortium::dag::{DagReport, TaskId};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
+use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
     assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
 };
 use consortium_integration::exec::{ExecOutput, Executor};
 use consortium_integration::fleet::{FleetConfig, SlurmFleetConfig};
-use consortium_nix::cascade::NodeId;
 use consortium_slurm::{submit_job, SubmitOptions};
 
 const SUBMIT_HOST: &str = "submit01";

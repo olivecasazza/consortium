@@ -17,7 +17,6 @@ serde_yaml = "0.9"
 [dev-dependencies]
 consortium-fanout-sim.workspace = true
 consortium-integration-testkit.workspace = true
-consortium-nix.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

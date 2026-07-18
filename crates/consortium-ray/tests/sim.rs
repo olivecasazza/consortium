@@ -84,10 +84,10 @@ fn fleet_config() -> FleetConfig {
 }
 
 /// The happy-path head endpoint: env builds, submit yields a job id, the
-/// first status poll reports SUCCEEDED.
+/// first status poll reports SUCCEEDED. The fleet is left EMPTY: every
+/// command classifies `Local`, so no dummy host is needed.
 fn make_happy_sim() -> SimExecutor {
     SimExecutor::builder()
-        .hosts(["ray-head.local"])
         .seed(SEED)
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
         .on(
@@ -182,7 +182,6 @@ fn no_wait_submits_and_returns() {
 fn submit_failure_skips_wait() {
     let sim = Arc::new(
         SimExecutor::builder()
-            .hosts(["ray-head.local"])
             .seed(SEED)
             // Failure mode FIRST (first match wins): the head endpoint
             // refuses the submit.
@@ -215,7 +214,6 @@ fn submit_failure_skips_wait() {
 fn job_failed_terminal_state() {
     let sim = Arc::new(
         SimExecutor::builder()
-            .hosts(["ray-head.local"])
             .seed(SEED)
             .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
             .on(
@@ -246,7 +244,6 @@ fn job_failed_terminal_state() {
 fn status_endpoint_flapping_then_timeout() {
     let sim = Arc::new(
         SimExecutor::builder()
-            .hosts(["ray-head.local"])
             .seed(SEED)
             // Failure mode FIRST (first match wins): the status endpoint
             // stays unreachable — a non-zero exit, which the wait task

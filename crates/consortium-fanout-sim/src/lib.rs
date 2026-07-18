@@ -56,10 +56,11 @@ pub mod invariants;
 pub mod scenario;
 pub mod simexec;
 
+pub use consortium_nix::cascade::NodeId;
 pub use executor::DeterministicExecutor;
 pub use fixtures::{BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution};
 pub use scenario::{Scenario, ScenarioConfig};
 pub use simexec::{
-    assert_deterministic_equivalence, canonical_log, logs_equivalent, per_edge_outcomes,
-    SimCommandKind, SimEvent, SimExecutor, SimExecutorBuilder, SimOutcome,
+    assert_deterministic_equivalence, canonical_log, logs_equivalent, per_edge_outcome_multisets,
+    per_edge_outcomes, SimCommandKind, SimEvent, SimExecutor, SimExecutorBuilder, SimOutcome,
 };

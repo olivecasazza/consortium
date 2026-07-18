@@ -19,22 +19,20 @@
 //! Assertions use edge/kind filters over the invocation log, never log
 //! order: DAG worker threads interleave completions run to run.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use consortium::dag::{DagReport, TaskId};
 use consortium_ansible::{run_playbook, AnsibleOptions};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
+use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, per_edge_outcomes, SimCommandKind, SimEvent, SimExecutor,
-    SimOutcome,
+    assert_deterministic_equivalence, SimCommandKind, SimEvent, SimExecutor, SimOutcome,
 };
 use consortium_integration::exec::{ExecOutput, Executor, Rule};
 use consortium_integration::fleet::{
     AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType,
 };
-use consortium_nix::cascade::NodeId;
 
 const PLAYBOOK: &str = "site.yml";
 const ENV_NAME: &str = "default";
@@ -338,41 +336,6 @@ fn check_mode_still_runs_all_phases() {
 
 // ─── Scenario 5: determinism ────────────────────────────────────────────────
 
-/// One log event reduced to its order-independent identity: what ran, how
-/// it was classified, on which edge, and what happened — without the
-/// attempt index (whose binding can swap on shared edges, see below).
-type EventSummary = (String, SimCommandKind, Option<(NodeId, NodeId)>, SimOutcome);
-
-/// Canonical multiset of events, ignoring the per-edge attempt index.
-///
-/// `assert_deterministic_equivalence` / `logs_equivalent` compare full
-/// events INCLUDING `attempt` — sound only when each edge belongs to one
-/// dependency-ordered chain. Here both copies AND both playbooks share the
-/// single control edge across per-host chains, so (per the simexec module
-/// docs' caveat) cross-chain commands may swap attempt indices between
-/// runs. What IS deterministic for this topology is the multiset of
-/// (command, kind, edge, outcome) — this pins exactly that.
-fn canonical_events(log: &[SimEvent]) -> Vec<EventSummary> {
-    let mut v: Vec<_> = log
-        .iter()
-        .map(|e| (e.command_line.clone(), e.kind, e.edge, e.outcome.clone()))
-        .collect();
-    v.sort_by(|a, b| (&a.0, a.1, a.2).cmp(&(&b.0, b.1, b.2)));
-    v
-}
-
-/// Per-edge outcomes as sorted multisets — the order-independent residue of
-/// `per_edge_outcomes` for edges shared by unordered cross-chain commands.
-fn per_edge_outcome_multisets(log: &[SimEvent]) -> BTreeMap<(NodeId, NodeId), Vec<SimOutcome>> {
-    per_edge_outcomes(log)
-        .into_iter()
-        .map(|(edge, mut outcomes)| {
-            outcomes.sort_by_key(|o| format!("{o:?}"));
-            (edge, outcomes)
-        })
-        .collect()
-}
-
 #[test]
 fn deterministic_under_threads() {
     let run_once = || {
@@ -395,17 +358,12 @@ fn deterministic_under_threads() {
     );
     assert_eq!(sim_a.simulated_transfer_time(), Duration::from_secs(1));
 
-    // Identical log contents and per-edge outcome multisets, even though
-    // thread interleaving permutes completion order (and may swap attempt
-    // indices on the shared control edge — see canonical_events).
-    assert_eq!(
-        canonical_events(&sim_a.invocation_log()),
-        canonical_events(&sim_b.invocation_log())
-    );
-    assert_eq!(
-        per_edge_outcome_multisets(&sim_a.invocation_log()),
-        per_edge_outcome_multisets(&sim_b.invocation_log())
-    );
+    // Both copies AND both playbooks share the single control edge across
+    // per-host chains, so the attempt-index binding is arrival-order
+    // dependent. The harness's native assertion compares logs and
+    // per-edge outcomes attempt-insensitively (multisets), so thread
+    // interleaving cannot flake this.
+    assert_deterministic_equivalence(&sim_a.invocation_log(), &sim_b.invocation_log());
 }
 
 /// With a single target the pipeline is one dependency-ordered chain, so

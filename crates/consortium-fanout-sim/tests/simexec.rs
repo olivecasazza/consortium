@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use consortium::dag::{DagBuilder, DagContext, DagReport, FnTask, TaskId, TaskOutcome};
 use consortium_fanout_sim::fixtures::FailureSchedule;
+use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
     assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
 };
 use consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
-use consortium_nix::cascade::NodeId;
 
 /// One local build stage, then `run` + `verify` per host — the same
 /// stage→run-per-host shape the integrations' pipelines have.
