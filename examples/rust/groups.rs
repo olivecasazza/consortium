@@ -26,8 +26,13 @@ fn banner(title: &str) {
 }
 
 /// Resolve a group and expand its pattern parts into a NodeSet.
-fn resolve_nodeset(resolver: &GroupResolver, group: &str) -> Result<NodeSet, Box<dyn std::error::Error>> {
-    Ok(NodeSet::parse(&resolver.group_nodes(group, None)?.join(","))?)
+fn resolve_nodeset(
+    resolver: &GroupResolver,
+    group: &str,
+) -> Result<NodeSet, Box<dyn std::error::Error>> {
+    Ok(NodeSet::parse(
+        &resolver.group_nodes(group, None)?.join(","),
+    )?)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compute_parts = resolver.group_nodes("compute", None)?;
     println!("@compute pattern : {compute_parts:?}");
     let compute_ns = resolve_nodeset(&resolver, "compute")?;
-    println!("@compute nodes   : {:?}", compute_ns.iter().collect::<Vec<_>>());
+    println!(
+        "@compute nodes   : {:?}",
+        compute_ns.iter().collect::<Vec<_>>()
+    );
     let io_ns = resolve_nodeset(&resolver, "io")?;
     println!("@io nodes        : {:?}", io_ns.iter().collect::<Vec<_>>());
     println!("grouplist        : {:?}", resolver.grouplist(None)?);
@@ -73,7 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("@compute | @io   : {}", compute_ns.union(&io_ns));
     println!("@compute & head  : {}", compute_ns.intersection(&head));
-    println!("@compute - node01: {}", compute_ns.difference(&NodeSet::parse("node01")?));
+    println!(
+        "@compute - node01: {}",
+        compute_ns.difference(&NodeSet::parse("node01")?)
+    );
 
     // Reverse direction: intersect an arbitrary selection with the "all"
     // set to see which fleet members it covers (and which it misses).

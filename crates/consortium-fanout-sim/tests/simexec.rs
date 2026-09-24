@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use consortium::dag::{DagBuilder, DagContext, DagReport, FnTask, TaskId, TaskOutcome};
 use consortium_fanout_sim::fixtures::FailureSchedule;
-use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
     assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
 };
+use consortium_fanout_sim::NodeId;
 use consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
 
 /// One local build stage, then `run` + `verify` per host — the same
@@ -21,15 +21,18 @@ fn build_pipeline(sim: &Arc<SimExecutor>) -> DagReport {
     ctx.set_state("executor", exec);
 
     let mut dag = DagBuilder::new();
-    dag.add_task("stage", FnTask::new("stage build", |ctx| {
-        let exec = ctx.get_state::<Arc<dyn Executor>>("executor").unwrap();
-        let spec = CommandSpec::new("nix").args(["build", ".#fleet", "--no-link"]);
-        match exec.exec(&spec) {
-            Ok(out) if out.success() => TaskOutcome::Success,
-            Ok(out) => TaskOutcome::Failed(format!("stage exited {}", out.status)),
-            Err(e) => TaskOutcome::Failed(e.to_string()),
-        }
-    }));
+    dag.add_task(
+        "stage",
+        FnTask::new("stage build", |ctx| {
+            let exec = ctx.get_state::<Arc<dyn Executor>>("executor").unwrap();
+            let spec = CommandSpec::new("nix").args(["build", ".#fleet", "--no-link"]);
+            match exec.exec(&spec) {
+                Ok(out) if out.success() => TaskOutcome::Success,
+                Ok(out) => TaskOutcome::Failed(format!("stage exited {}", out.status)),
+                Err(e) => TaskOutcome::Failed(e.to_string()),
+            }
+        }),
+    );
 
     for host in ["node01", "node02"] {
         let run_host = host.to_string();
@@ -40,10 +43,9 @@ fn build_pipeline(sim: &Arc<SimExecutor>) -> DagReport {
                 let spec = CommandSpec::new("activate").ssh(SshTarget::new("root", &run_host));
                 match exec.exec(&spec) {
                     Ok(out) if out.success() => TaskOutcome::Success,
-                    Ok(out) => TaskOutcome::Failed(format!(
-                        "activate {run_host}: {}",
-                        out.stderr.trim()
-                    )),
+                    Ok(out) => {
+                        TaskOutcome::Failed(format!("activate {run_host}: {}", out.stderr.trim()))
+                    }
                     Err(e) => TaskOutcome::Failed(e.to_string()),
                 }
             }),
@@ -55,7 +57,8 @@ fn build_pipeline(sim: &Arc<SimExecutor>) -> DagReport {
             format!("verify:{host}"),
             FnTask::new(format!("healthcheck {host}"), move |ctx| {
                 let exec = ctx.get_state::<Arc<dyn Executor>>("executor").unwrap();
-                let spec = CommandSpec::new("healthcheck").ssh(SshTarget::new("root", &verify_host));
+                let spec =
+                    CommandSpec::new("healthcheck").ssh(SshTarget::new("root", &verify_host));
                 match exec.exec(&spec) {
                     Ok(out) if out.success() => TaskOutcome::Success,
                     Ok(out) => TaskOutcome::Failed(format!(
@@ -116,8 +119,7 @@ fn killed_host_fails_run_and_cancels_dependent() {
     ));
     assert!(!log
         .iter()
-        .any(|e| e.command_line.contains("healthcheck")
-            && e.edge == Some((sentinel, NodeId(1)))));
+        .any(|e| e.command_line.contains("healthcheck") && e.edge == Some((sentinel, NodeId(1)))));
 
     // host1 saw two successful ssh control attempts (run + verify).
     let to_node01: Vec<_> = log

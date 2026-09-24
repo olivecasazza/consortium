@@ -46,7 +46,10 @@ mod tests {
     ) -> DagReport {
         DagReport {
             completed: completed.iter().map(|s| TaskId(s.to_string())).collect(),
-            skipped: skipped.iter().map(|s| TaskId(s.to_string())).collect::<HashSet<_>>(),
+            skipped: skipped
+                .iter()
+                .map(|s| TaskId(s.to_string()))
+                .collect::<HashSet<_>>(),
             failed: failed
                 .iter()
                 .map(|(k, v)| (TaskId(k.to_string()), v.to_string()))

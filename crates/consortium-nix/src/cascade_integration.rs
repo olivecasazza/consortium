@@ -185,9 +185,8 @@ fn run_one_group(
     let mut seeded = HashSet::new();
     seeded.insert(seed_id);
 
-    let executor =
-        NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id)
-            .with_timeout(timeout);
+    let executor = NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id)
+        .with_timeout(timeout);
 
     let cascade_result = Cascade::new()
         .nodes(cascade_nodes)

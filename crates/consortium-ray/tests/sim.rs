@@ -115,8 +115,14 @@ fn count_invocations(sim: &SimExecutor, needle: &str) -> usize {
 #[test]
 fn happy_path_submit_and_succeeded() {
     let sim = Arc::new(make_happy_sim());
-    let report = submit_job(sim.clone(), &fleet_config(), JOB_NAME, ENTRYPOINT, &TEST_OPTS)
-        .expect("happy-path submit_job should not error");
+    let report = submit_job(
+        sim.clone(),
+        &fleet_config(),
+        JOB_NAME,
+        ENTRYPOINT,
+        &TEST_OPTS,
+    )
+    .expect("happy-path submit_job should not error");
 
     assert!(report.is_success(), "report: {report:?}");
     for prefix in ["build-ray-env", "ray-submit", "ray-wait"] {
@@ -193,8 +199,14 @@ fn submit_failure_skips_wait() {
             .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
             .build(),
     );
-    let report = submit_job(sim.clone(), &fleet_config(), JOB_NAME, ENTRYPOINT, &TEST_OPTS)
-        .expect("pipeline failures surface in the report, not as Err");
+    let report = submit_job(
+        sim.clone(),
+        &fleet_config(),
+        JOB_NAME,
+        ENTRYPOINT,
+        &TEST_OPTS,
+    )
+    .expect("pipeline failures surface in the report, not as Err");
 
     assert!(!report.is_success());
     let submit = task_id("ray-submit");
@@ -223,8 +235,14 @@ fn job_failed_terminal_state() {
             .on("job status", ExecOutput::ok("Status: FAILED\n"))
             .build(),
     );
-    let report = submit_job(sim.clone(), &fleet_config(), JOB_NAME, ENTRYPOINT, &TEST_OPTS)
-        .expect("pipeline failures surface in the report, not as Err");
+    let report = submit_job(
+        sim.clone(),
+        &fleet_config(),
+        JOB_NAME,
+        ENTRYPOINT,
+        &TEST_OPTS,
+    )
+    .expect("pipeline failures surface in the report, not as Err");
 
     assert!(!report.is_success());
     let wait = task_id("ray-wait");

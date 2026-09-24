@@ -76,10 +76,7 @@ pub fn check_builder_with(exec: &dyn Executor, builder: &Builder) -> HealthStatu
                     builder: builder.clone(),
                     healthy: false,
                     latency_ms: Some(ssh_latency),
-                    error: Some(format!(
-                        "nix store unreachable: {}",
-                        output.stderr.trim()
-                    )),
+                    error: Some(format!("nix store unreachable: {}", output.stderr.trim())),
                 },
                 Ok(_) => HealthStatus {
                     builder: builder.clone(),
@@ -168,7 +165,11 @@ mod tests {
     fn test_unhealthy_when_ssh_probe_fails() {
         let exec = ScriptedExecutor::new().on(
             "ssh",
-            ExecOutput::new(255, "", "ssh: connect to host b1 port 22: Connection refused"),
+            ExecOutput::new(
+                255,
+                "",
+                "ssh: connect to host b1 port 22: Connection refused",
+            ),
         );
         let status = check_builder_with(&exec, &test_builder("b1"));
         assert!(!status.healthy);
@@ -185,7 +186,10 @@ mod tests {
         // ssh-probe rule must match the composed ssh line more specifically.
         let exec = ScriptedExecutor::new()
             .on("ssh -oStrictHostKeyChecking=no", ExecOutput::ok(""))
-            .on("nix store ping", ExecOutput::new(1, "", "cannot open connection"));
+            .on(
+                "nix store ping",
+                ExecOutput::new(1, "", "cannot open connection"),
+            );
         let status = check_builder_with(&exec, &test_builder("b1"));
         assert!(!status.healthy);
         let error = status.error.unwrap();

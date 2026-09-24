@@ -129,9 +129,9 @@ impl NixCopyExecutor {
             let (user, host) = split_ssh_addr(src_addr);
             // accept-new overrides the DEFAULT_SSH_OPTS StrictHostKeyChecking=no
             // (extra opts come after the defaults).
-            CommandSpec::new("nix").args(copy_args).ssh(
-                SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"),
-            )
+            CommandSpec::new("nix")
+                .args(copy_args)
+                .ssh(SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"))
         };
 
         let result = self.exec.exec(&spec);
@@ -286,11 +286,7 @@ mod tests {
         let net = NetworkProfile::default();
 
         // seed → n1 runs locally; n1 → n2 is relayed over ssh via n1.
-        let out = exec.dispatch(
-            &[],
-            &[(NodeId(0), NodeId(1)), (NodeId(1), NodeId(2))],
-            &net,
-        );
+        let out = exec.dispatch(&[], &[(NodeId(0), NodeId(1)), (NodeId(1), NodeId(2))], &net);
         assert!(out[&(NodeId(0), NodeId(1))].is_ok());
         assert!(out[&(NodeId(1), NodeId(2))].is_ok());
 

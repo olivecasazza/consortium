@@ -36,7 +36,8 @@ fn validated_phases<C: Contract>() -> Vec<Phase> {
         );
         for earlier in &phases[..i] {
             assert_ne!(
-                earlier.name, phase.name,
+                earlier.name,
+                phase.name,
                 "{}: duplicate phase name '{}'",
                 C::name(),
                 phase.name

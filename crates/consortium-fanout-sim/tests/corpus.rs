@@ -89,7 +89,10 @@ fn run_historical_case(strategy: &dyn CascadeStrategy) {
     let (killed, round) = historical_failure_draw();
     let cfg = ScenarioConfig {
         bandwidth: BandwidthDistribution::Uniform(HIST_BANDWIDTH),
-        failures: FailureSchedule::KillNodeAtRound { node: killed, round },
+        failures: FailureSchedule::KillNodeAtRound {
+            node: killed,
+            round,
+        },
         ..base_cfg(0, HIST_N_NODES)
     };
     let result = Scenario::new(cfg.clone()).run(strategy);
@@ -170,7 +173,10 @@ fn seed_kill_at_round_zero_still_converges_fleet() {
 fn assert_kill_nonseed_at_round_zero(strategy: &dyn CascadeStrategy) {
     let killed = NodeId(15);
     let cfg = ScenarioConfig {
-        failures: FailureSchedule::KillNodeAtRound { node: killed, round: 0 },
+        failures: FailureSchedule::KillNodeAtRound {
+            node: killed,
+            round: 0,
+        },
         ..base_cfg(4, 32)
     };
     let result = Scenario::new(cfg.clone()).run(strategy);

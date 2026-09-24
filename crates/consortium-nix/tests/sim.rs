@@ -137,11 +137,7 @@ fn run_deploy(
 }
 
 /// Log events of `kind` on `edge`, in log (completion) order.
-fn edge_events(
-    log: &[SimEvent],
-    kind: SimCommandKind,
-    edge: (NodeId, NodeId),
-) -> Vec<&SimEvent> {
+fn edge_events(log: &[SimEvent], kind: SimCommandKind, edge: (NodeId, NodeId)) -> Vec<&SimEvent> {
     log.iter()
         .filter(|e| e.kind == kind && e.edge == Some(edge))
         .collect()
@@ -174,13 +170,20 @@ fn healthy_baseline_converges() {
         // Activation is two ssh control commands per host:
         // `nix-env --set` then `switch-to-configuration switch`.
         let ssh = edge_events(&log, SimCommandKind::SshControl, (sentinel, node));
-        assert_eq!(ssh.len(), 2, "expected both activation ssh calls for {node:?}");
-        assert!(ssh.iter().all(|e| matches!(e.outcome, SimOutcome::Ok { .. })));
+        assert_eq!(
+            ssh.len(),
+            2,
+            "expected both activation ssh calls for {node:?}"
+        );
+        assert!(ssh
+            .iter()
+            .all(|e| matches!(e.outcome, SimOutcome::Ok { .. })));
     }
 
     // Every success output was scripted — no Unexpected/Scripted errors.
     assert!(
-        log.iter().all(|e| !matches!(e.outcome, SimOutcome::ExecError(_))),
+        log.iter()
+            .all(|e| !matches!(e.outcome, SimOutcome::ExecError(_))),
         "unscripted command reached the executor: {log:?}"
     );
 
@@ -197,14 +200,12 @@ fn killed_target_fails_copy_but_fleet_continues() {
     // node02 = NodeId(1) (second .hosts entry); round 0 = dead from the
     // first attempt on any edge targeting it.
     let sim = Arc::new(
-        script_healthy_outputs(
-            base_sim_builder(["node01", "node02"]).failure_schedule(
-                FailureSchedule::KillNodeAtRound {
-                    node: NodeId(1),
-                    round: 0,
-                },
-            ),
-        )
+        script_healthy_outputs(base_sim_builder(["node01", "node02"]).failure_schedule(
+            FailureSchedule::KillNodeAtRound {
+                node: NodeId(1),
+                round: 0,
+            },
+        ))
         .build(),
     );
 
@@ -263,14 +264,12 @@ fn killed_target_fails_copy_but_fleet_continues() {
 fn build_action_ignores_network_kill() {
     let config = fleet_config();
     let sim = Arc::new(
-        script_healthy_outputs(
-            base_sim_builder(["node01", "node02"]).failure_schedule(
-                FailureSchedule::KillNodeAtRound {
-                    node: NodeId(1),
-                    round: 0,
-                },
-            ),
-        )
+        script_healthy_outputs(base_sim_builder(["node01", "node02"]).failure_schedule(
+            FailureSchedule::KillNodeAtRound {
+                node: NodeId(1),
+                round: 0,
+            },
+        ))
         .build(),
     );
 
@@ -306,10 +305,12 @@ fn unhealthy_builder_falls_back_to_local_build() {
     // would short-circuit as UnknownHost instead). The probe's remote
     // command renders as 'true' — quoted, so match the quoted token.
     let sim = Arc::new(
-        script_healthy_outputs(base_sim_builder(["node01", "node02", "builder01"]).on_error(
-            "'true'",
-            "ssh: connect to host builder01 port 22: Connection refused",
-        ))
+        script_healthy_outputs(
+            base_sim_builder(["node01", "node02", "builder01"]).on_error(
+                "'true'",
+                "ssh: connect to host builder01 port 22: Connection refused",
+            ),
+        )
         .build(),
     );
 
@@ -333,7 +334,9 @@ fn unhealthy_builder_falls_back_to_local_build() {
     assert!(matches!(probes[0].outcome, SimOutcome::ExecError(_)));
 
     // A failed ssh probe short-circuits before `nix store ping`.
-    assert!(log.iter().all(|e| !e.command_line.contains("nix store ping")));
+    assert!(log
+        .iter()
+        .all(|e| !e.command_line.contains("nix store ping")));
 
     // Fallback evidence: builds ran locally — no `--builders @<file>`.
     let builds: Vec<_> = log
@@ -341,7 +344,9 @@ fn unhealthy_builder_falls_back_to_local_build() {
         .filter(|e| e.command_line.contains("nix build"))
         .collect();
     assert_eq!(builds.len(), 2);
-    assert!(builds.iter().all(|e| !e.command_line.contains("--builders")));
+    assert!(builds
+        .iter()
+        .all(|e| !e.command_line.contains("--builders")));
 }
 
 /// The identical scenario built twice from one `make_sim()` closure and

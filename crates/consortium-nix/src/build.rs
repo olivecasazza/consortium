@@ -252,10 +252,8 @@ mod tests {
 
     #[test]
     fn test_build_host_failure_surfaces_stderr() {
-        let exec = ScriptedExecutor::new().on(
-            "nix build",
-            ExecOutput::new(1, "", "error: builder busy"),
-        );
+        let exec =
+            ScriptedExecutor::new().on("nix build", ExecOutput::new(1, "", "error: builder busy"));
         let err = build_host(&exec, ".", "hp01", None).unwrap_err();
         match err {
             NixError::BuildFailed { message, .. } => {

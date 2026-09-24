@@ -10,9 +10,7 @@ use std::sync::Arc;
 use consortium::dag::{DagReport, DagTask, TaskId};
 use consortium_ansible::{run_playbook, AnsibleError, AnsibleOptions};
 use consortium_integration::exec::{ExecOutput, Executor, Rule, ScriptedExecutor};
-use consortium_integration::fleet::{
-    AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType,
-};
+use consortium_integration::fleet::{AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType};
 use consortium_integration_testkit::{
     integration_contract_tests, Contract, OptionVariant, PartialFailure, Phase,
 };

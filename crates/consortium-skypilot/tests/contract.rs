@@ -72,16 +72,25 @@ impl Contract for SkypilotContract {
     fn happy_executor() -> ScriptedExecutor {
         ScriptedExecutor::new()
             .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
-            .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
+            .on(
+                "sky launch",
+                ExecOutput::ok("Cluster launched: test-cluster\n"),
+            )
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
     }
 
     fn executor_failing_phase(phase_marker: &str) -> ScriptedExecutor {
         // The failing rule comes FIRST: ScriptedExecutor is first-match-wins.
         ScriptedExecutor::new()
-            .rule(Rule::containing(phase_marker, ExecOutput::new(1, "", "boom")))
+            .rule(Rule::containing(
+                phase_marker,
+                ExecOutput::new(1, "", "boom"),
+            ))
             .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
-            .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
+            .on(
+                "sky launch",
+                ExecOutput::ok("Cluster launched: test-cluster\n"),
+            )
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
     }
 

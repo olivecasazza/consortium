@@ -255,7 +255,14 @@ pub fn deploy_with_cascade(
 
     // Build-only path: no copy, no cascade — defer to deploy().
     if action == DeployAction::Build {
-        return deploy(exec, config, target_nodes, action, max_parallel, use_builders);
+        return deploy(
+            exec,
+            config,
+            target_nodes,
+            action,
+            max_parallel,
+            use_builders,
+        );
     }
 
     // Phase 0: builder health check (same as deploy()).
@@ -608,12 +615,7 @@ mod tests {
         // (not failed). The eval failure must still be attributed, or the
         // report would wrongly show is_success() == true.
         let dag_report = make_report(
-            &[
-                "eval:hp01",
-                "build:hp01",
-                "copy:hp01",
-                "activate:hp01",
-            ],
+            &["eval:hp01", "build:hp01", "copy:hp01", "activate:hp01"],
             &[("eval:hp02", "attribute 'nixosConfigurations.hp02' missing")],
             &["build:hp02", "copy:hp02", "activate:hp02"],
         );

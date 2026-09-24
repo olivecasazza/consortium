@@ -30,8 +30,12 @@ fn banner(title: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pattern = std::env::args().nth(1).unwrap_or_else(|| "node[1-3]".to_string());
-    let command = std::env::args().nth(2).unwrap_or_else(|| "uname -r".to_string());
+    let pattern = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "node[1-3]".to_string());
+    let command = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "uname -r".to_string());
 
     banner("SSH fan-out — requires SSH-reachable hosts");
     println!("targets : {pattern}");

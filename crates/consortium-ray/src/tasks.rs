@@ -346,9 +346,8 @@ mod tests {
 
     #[test]
     fn test_wait_task_fails_on_failed_status() {
-        let scripted = Arc::new(
-            ScriptedExecutor::new().on("job status", ExecOutput::ok("Status: FAILED\n")),
-        );
+        let scripted =
+            Arc::new(ScriptedExecutor::new().on("job status", ExecOutput::ok("Status: FAILED\n")));
         let ctx = test_ctx(scripted);
         ctx.set_output(
             TaskId("ray-submit:train".to_string()),

@@ -33,7 +33,11 @@ fn banner(title: &str) {
 fn print_report(report: &consortium::dag::DagReport) {
     let mut completed: Vec<_> = report.completed.iter().map(|t| t.0.clone()).collect();
     completed.sort();
-    let mut failed: Vec<_> = report.failed.iter().map(|(t, e)| format!("{}: {}", t.0, e)).collect();
+    let mut failed: Vec<_> = report
+        .failed
+        .iter()
+        .map(|(t, e)| format!("{}: {}", t.0, e))
+        .collect();
     failed.sort();
     println!("is_success: {}", report.is_success());
     println!("completed : {completed:?}");
@@ -44,8 +48,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Load fleet configuration");
     let fleet_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories/fleet.json");
     let config = FleetConfig::from_file(&fleet_path)?;
-    let slurm = config.slurm_config.as_ref().expect("fleet.json has slurmConfig");
-    println!("submit node: {} (user {})", slurm.submit_node, slurm.submit_user);
+    let slurm = config
+        .slurm_config
+        .as_ref()
+        .expect("fleet.json has slurmConfig");
+    println!(
+        "submit node: {} (user {})",
+        slurm.submit_node, slurm.submit_user
+    );
 
     banner("Script the executor");
     let scripted = Arc::new(

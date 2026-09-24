@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Expand / fold free functions");
     let nodes = expand("node[1-3]")?;
     println!("expand(\"node[1-3]\") -> {nodes:?}");
-    println!("fold(\"node1,node2,node3\") -> {}", fold("node1,node2,node3")?);
+    println!(
+        "fold(\"node1,node2,node3\") -> {}",
+        fold("node1,node2,node3")?
+    );
 
     banner("Membership and indexing");
     println!("contains(\"node03\") : {}", ns.contains("node03"));

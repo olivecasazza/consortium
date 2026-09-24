@@ -583,10 +583,7 @@ enum Target {
     /// No edge: local command.
     Local,
     /// Would be an edge, but the host is not in the fleet.
-    UnknownHost {
-        kind: SimCommandKind,
-        host: String,
-    },
+    UnknownHost { kind: SimCommandKind, host: String },
     /// A simulated edge `src → tgt`.
     Edge {
         kind: SimCommandKind,
@@ -775,11 +772,7 @@ impl SimExecutor {
     /// normalized line is looked up instead, so rules match the
     /// normalized form (`CommandSpec::render` joins argv with single
     /// spaces, so splitting the line on spaces round-trips it exactly).
-    fn scripted_output(
-        &self,
-        spec: &CommandSpec,
-        rendered: &str,
-    ) -> Result<ExecOutput, ExecError> {
+    fn scripted_output(&self, spec: &CommandSpec, rendered: &str) -> Result<ExecOutput, ExecError> {
         if self.normalize.is_none() {
             return self.outputs.exec(spec);
         }
@@ -1156,11 +1149,8 @@ mod tests {
             .hosts(["node01", "node02"])
             .on("", ExecOutput::ok(""))
             .build();
-        let spec = CommandSpec::new("nix").args([
-            "copy",
-            "--from=ssh-ng://root@node01",
-            "/nix/store/abc",
-        ]);
+        let spec =
+            CommandSpec::new("nix").args(["copy", "--from=ssh-ng://root@node01", "/nix/store/abc"]);
         sim.exec(&spec).unwrap();
         let log = sim.invocation_log();
         assert_eq!(log[0].kind, SimCommandKind::DataCopy);
@@ -1207,7 +1197,11 @@ mod tests {
 
         let copy_dead = sim.exec(&copy_to("node02")).unwrap();
         assert_eq!(copy_dead.status, 1);
-        assert!(copy_dead.stderr.contains("activation"), "{}", copy_dead.stderr);
+        assert!(
+            copy_dead.stderr.contains("activation"),
+            "{}",
+            copy_dead.stderr
+        );
 
         // Other hosts are unaffected.
         let ssh_live = sim.exec(&ssh_uptime("node01")).unwrap();
@@ -1330,14 +1324,7 @@ mod tests {
         // cross-edge interleaving varies with the shuffle seed.
         let mut chunks: Vec<Vec<CommandSpec>> = ["node01", "node02", "node03"]
             .iter()
-            .map(|h| {
-                vec![
-                    ssh_uptime(h),
-                    ssh_uptime(h),
-                    copy_to(h),
-                    copy_to(h),
-                ]
-            })
+            .map(|h| vec![ssh_uptime(h), ssh_uptime(h), copy_to(h), copy_to(h)])
             .collect();
         chunks.shuffle(&mut rand::rngs::StdRng::seed_from_u64(shuffle_seed));
         std::thread::scope(|s| {
@@ -1375,7 +1362,10 @@ mod tests {
         let log_a = sim_a.invocation_log();
         let log_b = sim_b.invocation_log();
         assert_deterministic_equivalence(&log_a, &log_b);
-        assert_eq!(sim_a.simulated_transfer_time(), sim_b.simulated_transfer_time());
+        assert_eq!(
+            sim_a.simulated_transfer_time(),
+            sim_b.simulated_transfer_time()
+        );
 
         // The schedule keyed attempts, not arrival order: on node02's
         // edge, attempt 0 succeeded and attempts 1..=3 failed.
@@ -1484,10 +1474,7 @@ mod tests {
             .on("sky launch <task-yaml>", ExecOutput::ok("launched\n"))
             .build();
         let out = sim
-            .exec(&CommandSpec::new("sky").args([
-                "launch",
-                "/tmp/consortium-sky-c-123-0.yaml",
-            ]))
+            .exec(&CommandSpec::new("sky").args(["launch", "/tmp/consortium-sky-c-123-0.yaml"]))
             .unwrap();
         assert!(out.success());
         let log = sim.invocation_log();

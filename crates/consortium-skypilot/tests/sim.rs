@@ -75,7 +75,10 @@ fn make_sim() -> SimExecutor {
         .seed(SEED)
         .normalize_command_line(normalize_task_yaml)
         .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
-        .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
+        .on(
+            "sky launch",
+            ExecOutput::ok("Cluster launched: test-cluster\n"),
+        )
         .on("sky down", ExecOutput::ok("Terminating cluster\n"))
         .build()
 }
@@ -123,14 +126,26 @@ fn happy_path_launch_and_teardown() {
     let build = invocation_index(&log, "nix build").expect("nix build invoked");
     let launch = invocation_index(&log, "sky launch").expect("sky launch invoked");
     let down = invocation_index(&log, "sky down").expect("sky down invoked");
-    assert!(build < launch, "build ({build}) must precede launch ({launch})");
-    assert!(launch < down, "launch ({launch}) must precede down ({down})");
+    assert!(
+        build < launch,
+        "build ({build}) must precede launch ({launch})"
+    );
+    assert!(
+        launch < down,
+        "launch ({launch}) must precede down ({down})"
+    );
 
     // The launch line carries the fleet's cloud/region and the cluster.
     let launch_line = &log[launch].command_line;
-    assert!(launch_line.contains(&format!("-c {CLUSTER}")), "{launch_line}");
+    assert!(
+        launch_line.contains(&format!("-c {CLUSTER}")),
+        "{launch_line}"
+    );
     assert!(launch_line.contains("--cloud gcp"), "{launch_line}");
-    assert!(launch_line.contains("--region us-central1"), "{launch_line}");
+    assert!(
+        launch_line.contains("--region us-central1"),
+        "{launch_line}"
+    );
 
     // All-local pipeline: no edges, no simulated transfer time.
     assert!(
@@ -172,7 +187,10 @@ fn launch_failure_skips_teardown() {
                 ExecOutput::new(1, "", "cloud quota exceeded"),
             ))
             .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
-            .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
+            .on(
+                "sky launch",
+                ExecOutput::ok("Cluster launched: test-cluster\n"),
+            )
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
             .build(),
     );
@@ -203,14 +221,20 @@ fn env_build_failure_aborts_before_any_sky_command() {
                 ExecOutput::new(1, "", "hash mismatch in fixed-output derivation"),
             ))
             .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
-            .on("sky launch", ExecOutput::ok("Cluster launched: test-cluster\n"))
+            .on(
+                "sky launch",
+                ExecOutput::ok("Cluster launched: test-cluster\n"),
+            )
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
             .build(),
     );
     let report = run(&sim, &SkyOptions::default());
 
     assert!(!report.is_success());
-    let msg = report.failed.get(&build_id()).expect("build-sky-env failed");
+    let msg = report
+        .failed
+        .get(&build_id())
+        .expect("build-sky-env failed");
     assert!(msg.contains("hash mismatch"), "{msg}");
     assert!(!report.completed.contains(&launch_id()));
 

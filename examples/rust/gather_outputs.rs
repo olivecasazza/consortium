@@ -63,7 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("(even-numbered nodes only)");
     for (msg, keys) in tree.walk(Some(&even)) {
-        println!("{}: {}", fold_keys(&keys), String::from_utf8_lossy(&msg).trim_end());
+        println!(
+            "{}: {}",
+            fold_keys(&keys),
+            String::from_utf8_lossy(&msg).trim_end()
+        );
     }
 
     Ok(())

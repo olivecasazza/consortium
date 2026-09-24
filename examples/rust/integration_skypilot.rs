@@ -31,8 +31,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Load fleet configuration");
     let fleet_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories/fleet.json");
     let config = FleetConfig::from_file(&fleet_path)?;
-    let sky = config.skypilot_config.as_ref().expect("fleet.json has skypilotConfig");
-    println!("cloud: {} / {} ({})", sky.cloud, sky.region.as_deref().unwrap_or("?"), sky.instance_type.as_deref().unwrap_or("?"));
+    let sky = config
+        .skypilot_config
+        .as_ref()
+        .expect("fleet.json has skypilotConfig");
+    println!(
+        "cloud: {} / {} ({})",
+        sky.cloud,
+        sky.region.as_deref().unwrap_or("?"),
+        sky.instance_type.as_deref().unwrap_or("?")
+    );
 
     banner("Script the executor");
     let scripted = Arc::new(
@@ -61,7 +69,14 @@ run: python train.py --epochs 1
     let mut completed: Vec<_> = report.completed.iter().map(|t| t.0.clone()).collect();
     completed.sort();
     println!("completed : {completed:?}");
-    println!("failed    : {:?}", report.failed.iter().map(|(t, e)| format!("{}: {}", t.0, e)).collect::<Vec<_>>());
+    println!(
+        "failed    : {:?}",
+        report
+            .failed
+            .iter()
+            .map(|(t, e)| format!("{}: {}", t.0, e))
+            .collect::<Vec<_>>()
+    );
 
     banner("Commands that would have run (recorded invocations)");
     for cmd in scripted.invocations() {

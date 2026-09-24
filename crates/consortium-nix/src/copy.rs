@@ -93,10 +93,13 @@ mod tests {
     fn test_copy_closure_failure_surfaces_stderr() {
         let exec = ScriptedExecutor::new().on(
             "nix copy",
-            ExecOutput::new(1, "", "ssh: connect to host hp01 port 22: Connection refused"),
+            ExecOutput::new(
+                1,
+                "",
+                "ssh: connect to host hp01 port 22: Connection refused",
+            ),
         );
-        let err =
-            copy_closure_with(&exec, "/nix/store/abc-env", "ssh-ng://root@hp01").unwrap_err();
+        let err = copy_closure_with(&exec, "/nix/store/abc-env", "ssh-ng://root@hp01").unwrap_err();
         match err {
             NixError::CopyFailed { host, message } => {
                 assert_eq!(host, "ssh-ng://root@hp01");

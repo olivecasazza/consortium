@@ -33,7 +33,11 @@ fn print_report(name: &str, report: &DagReport) {
     completed.sort();
     let mut skipped: Vec<_> = report.skipped.iter().map(|t| t.0.clone()).collect();
     skipped.sort();
-    let mut failed: Vec<_> = report.failed.iter().map(|(t, e)| (t.0.clone(), e.clone())).collect();
+    let mut failed: Vec<_> = report
+        .failed
+        .iter()
+        .map(|(t, e)| (t.0.clone(), e.clone()))
+        .collect();
     failed.sort();
     let mut cancelled: Vec<_> = report.cancelled.iter().map(|t| t.0.clone()).collect();
     cancelled.sort();
@@ -77,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     b.add_dep("package", "build"); // package waits for build
     b.add_dep("deploy", "package"); // deploy waits for package
-    b.error_policy(ErrorPolicy::FailFast).pool(FixedPool::new(4));
+    b.error_policy(ErrorPolicy::FailFast)
+        .pool(FixedPool::new(4));
 
     let report = b.build()?.run()?;
     print_report("explicit graph", &report);

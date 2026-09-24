@@ -32,8 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Load fleet configuration");
     let fleet_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories/fleet.json");
     let config = FleetConfig::from_file(&fleet_path)?;
-    let ansible = config.ansible_config.as_ref().expect("fleet.json has ansibleConfig");
-    println!("control node: {} (ansible {})", ansible.control_node, ansible.ansible_version.as_deref().unwrap_or("unpinned"));
+    let ansible = config
+        .ansible_config
+        .as_ref()
+        .expect("fleet.json has ansibleConfig");
+    println!(
+        "control node: {} (ansible {})",
+        ansible.control_node,
+        ansible.ansible_version.as_deref().unwrap_or("unpinned")
+    );
 
     banner("Script the executor");
     let scripted = Arc::new(
@@ -50,7 +57,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("run_playbook — site.yml on node01,node02");
     let targets = vec!["node01".to_string(), "node02".to_string()];
     // AnsibleOptions::default(): check_mode=false, max_parallel=4.
-    let report = run_playbook(exec, &config, &targets, "site.yml", "default", &AnsibleOptions::default())?;
+    let report = run_playbook(
+        exec,
+        &config,
+        &targets,
+        "site.yml",
+        "default",
+        &AnsibleOptions::default(),
+    )?;
 
     banner("DagReport");
     println!("is_success: {}", report.is_success());
@@ -62,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = format!("run-playbook:{host}");
         if report.completed.iter().any(|t| t.0 == id) {
             println!("{id}: ok");
-        } else if let Some(err) = report.failed.get(&consortium::dag::TaskId::from(id.as_str())) {
+        } else if let Some(err) = report
+            .failed
+            .get(&consortium::dag::TaskId::from(id.as_str()))
+        {
             println!("{id}: FAILED — {err}");
         } else {
             println!("{id}: not run");

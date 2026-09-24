@@ -166,8 +166,8 @@ mod tests {
     #[test]
     fn launch_task_errors_without_skypilot_config() {
         let exec: Arc<dyn Executor> = Arc::new(ScriptedExecutor::new());
-        let err = launch_task(exec, &config(false), "c", "yaml", &SkyOptions::default())
-            .unwrap_err();
+        let err =
+            launch_task(exec, &config(false), "c", "yaml", &SkyOptions::default()).unwrap_err();
         assert!(matches!(err, SkypilotError::NoConfig));
     }
 

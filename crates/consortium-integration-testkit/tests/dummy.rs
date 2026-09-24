@@ -103,12 +103,18 @@ fn deploy(
     let mut dag = DagBuilder::new();
     dag.error_policy(ErrorPolicy::ContinueIndependent);
     for task in plan(config, opts)? {
-        dag.add_task(task.id.clone(), cmd_task(task.desc, Arc::clone(&exec), task.spec));
+        dag.add_task(
+            task.id.clone(),
+            cmd_task(task.desc, Arc::clone(&exec), task.spec),
+        );
         if let Some(after) = task.after {
             dag.add_dep(task.id, after);
         }
     }
-    dag.build().map_err(|e| e.to_string())?.run().map_err(|e| e.to_string())
+    dag.build()
+        .map_err(|e| e.to_string())?
+        .run()
+        .map_err(|e| e.to_string())
 }
 
 // ── Shared fixtures ─────────────────────────────────────────────────────────
@@ -225,7 +231,12 @@ impl Contract for DummyContract {
             .on("nix copy", ExecOutput::ok(""))
             .on("dummy-run", ExecOutput::ok("ok\n"))
             .on("dummy-collect", ExecOutput::ok("collected\n"));
-        Some(PartialFailure::new(executor, "node02", "node01", "dummy-collect"))
+        Some(PartialFailure::new(
+            executor,
+            "node02",
+            "node01",
+            "dummy-collect",
+        ))
     }
 
     fn task_descriptions(config: &FleetConfig, _exec: Arc<dyn Executor>) -> Vec<String> {

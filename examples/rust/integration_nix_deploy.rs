@@ -32,7 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Load fleet configuration");
     let fleet_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories/fleet.json");
     let config = FleetConfig::from_file(&fleet_path)?;
-    println!("loaded {} — nodes: {}", fleet_path.display(), config.node_names().join(", "));
+    println!(
+        "loaded {} — nodes: {}",
+        fleet_path.display(),
+        config.node_names().join(", ")
+    );
 
     banner("Script the executor (first-match-wins on rendered cmdline)");
     let scripted = Arc::new(
@@ -40,7 +44,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Activation marker first: it runs over ssh, and a broad "ssh"
             // rule placed before "nix copy" would also match copy lines
             // (they contain ssh-ng:// URLs).
-            .on("switch-to-configuration", ExecOutput::ok("activating the configuration...\n"))
+            .on(
+                "switch-to-configuration",
+                ExecOutput::ok("activating the configuration...\n"),
+            )
             .on("nix eval", ExecOutput::ok("/nix/store/abc-toplevel\n"))
             .on("nix build", ExecOutput::ok("/nix/store/abc-toplevel\n"))
             .on("nix copy", ExecOutput::ok(""))

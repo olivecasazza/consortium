@@ -83,7 +83,10 @@ impl DagTask for NixCopyToSubmitTask {
         let store_uri = format!("ssh-ng://{}@{}", self.submit_user, self.submit_host);
         match staging::copy_closure(&*exec, &store_path, &store_uri) {
             Ok(()) => {
-                ctx.set_output(TaskId(format!("copy-job-env:{}", self.job_name)), store_path);
+                ctx.set_output(
+                    TaskId(format!("copy-job-env:{}", self.job_name)),
+                    store_path,
+                );
                 TaskOutcome::Success
             }
             Err(e) => TaskOutcome::Failed(format!("copy job env: {e}")),
@@ -195,8 +198,7 @@ impl DagTask for SlurmWaitTask {
             Err(outcome) => return outcome,
         };
 
-        let job_id: u64 = match ctx.get_output(&TaskId(format!("slurm-submit:{}", self.job_name)))
-        {
+        let job_id: u64 = match ctx.get_output(&TaskId(format!("slurm-submit:{}", self.job_name))) {
             Some(id) => id,
             None => return TaskOutcome::Failed("no job ID from submit".into()),
         };
@@ -232,10 +234,7 @@ impl DagTask for SlurmWaitTask {
                     let state = out.stdout.lines().next().unwrap_or("").trim().to_string();
                     match state.as_str() {
                         "COMPLETED" => {
-                            ctx.set_output(
-                                TaskId(format!("slurm-wait:{}", self.job_name)),
-                                job_id,
-                            );
+                            ctx.set_output(TaskId(format!("slurm-wait:{}", self.job_name)), job_id);
                             return TaskOutcome::Success;
                         }
                         "FAILED" | "CANCELLED" | "TIMEOUT" | "OUT_OF_MEMORY" | "NODE_FAIL" => {
@@ -295,7 +294,10 @@ impl DagTask for SlurmCollectTask {
 
         match exec.exec(&spec) {
             Ok(out) if out.success() => {
-                ctx.set_output(TaskId(format!("slurm-collect:{}", self.job_name)), out.stdout);
+                ctx.set_output(
+                    TaskId(format!("slurm-collect:{}", self.job_name)),
+                    out.stdout,
+                );
                 TaskOutcome::Success
             }
             Ok(out) => TaskOutcome::Failed(format!("collect failed: {}", out.stderr.trim())),
@@ -425,9 +427,8 @@ mod tests {
 
         let outcome = NixBuildJobEnvTask::new("train", ".").execute(&ctx);
         assert!(matches!(outcome, TaskOutcome::Success));
-        scripted.assert_invoked_containing(
-            "nix build .#slurmEnvs.train --no-link --print-out-paths",
-        );
+        scripted
+            .assert_invoked_containing("nix build .#slurmEnvs.train --no-link --print-out-paths");
         let path: Option<String> = ctx.get_output(&TaskId("build-job-env:train".to_string()));
         assert_eq!(path.as_deref(), Some("/nix/store/env"));
     }

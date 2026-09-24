@@ -124,13 +124,15 @@ pub fn assert_deterministic(cfg: &ScenarioConfig, strategy: &dyn CascadeStrategy
     let r1 = Scenario::new(cfg.clone()).run(strategy);
     let r2 = Scenario::new(cfg.clone()).run(strategy);
     assert_eq!(
-        r1.rounds, r2.rounds,
+        r1.rounds,
+        r2.rounds,
         "[{}] seed={:#x} round count differs between identical runs",
         strategy.name(),
         cfg.seed,
     );
     assert_eq!(
-        r1.round_durations, r2.round_durations,
+        r1.round_durations,
+        r2.round_durations,
         "[{}] seed={:#x} round durations differ between identical runs",
         strategy.name(),
         cfg.seed,
@@ -138,7 +140,8 @@ pub fn assert_deterministic(cfg: &ScenarioConfig, strategy: &dyn CascadeStrategy
     let s1: HashSet<NodeId> = r1.converged.iter().copied().collect();
     let s2: HashSet<NodeId> = r2.converged.iter().copied().collect();
     assert_eq!(
-        s1, s2,
+        s1,
+        s2,
         "[{}] seed={:#x} converged sets diverge between identical-seed runs",
         strategy.name(),
         cfg.seed,

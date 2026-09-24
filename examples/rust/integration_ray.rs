@@ -31,7 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Load fleet configuration");
     let fleet_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories/fleet.json");
     let config = FleetConfig::from_file(&fleet_path)?;
-    let ray = config.ray_config.as_ref().expect("fleet.json has rayConfig");
+    let ray = config
+        .ray_config
+        .as_ref()
+        .expect("fleet.json has rayConfig");
     println!("head: {}:{}", ray.head_address, ray.dashboard_port);
 
     banner("Script the executor");
@@ -39,7 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ScriptedExecutor::new()
             .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
             // submit output must contain the job id line for ray-wait to poll.
-            .on("job submit", ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"))
+            .on(
+                "job submit",
+                ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
+            )
             .on("job status", ExecOutput::ok("Status: SUCCEEDED\n")),
     );
     let exec: Arc<dyn Executor> = scripted.clone();
@@ -58,7 +64,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut completed: Vec<_> = report.completed.iter().map(|t| t.0.clone()).collect();
     completed.sort();
     println!("completed : {completed:?}");
-    println!("failed    : {:?}", report.failed.iter().map(|(t, e)| format!("{}: {}", t.0, e)).collect::<Vec<_>>());
+    println!(
+        "failed    : {:?}",
+        report
+            .failed
+            .iter()
+            .map(|(t, e)| format!("{}: {}", t.0, e))
+            .collect::<Vec<_>>()
+    );
 
     banner("Commands that would have run (recorded invocations)");
     for cmd in scripted.invocations() {

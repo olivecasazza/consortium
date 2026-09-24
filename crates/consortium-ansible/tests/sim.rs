@@ -25,14 +25,12 @@ use std::time::Duration;
 use consortium::dag::{DagReport, TaskId};
 use consortium_ansible::{run_playbook, AnsibleOptions};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
-use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
     assert_deterministic_equivalence, SimCommandKind, SimEvent, SimExecutor, SimOutcome,
 };
+use consortium_fanout_sim::NodeId;
 use consortium_integration::exec::{ExecOutput, Executor, Rule};
-use consortium_integration::fleet::{
-    AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType,
-};
+use consortium_integration::fleet::{AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType};
 
 const PLAYBOOK: &str = "site.yml";
 const ENV_NAME: &str = "default";
@@ -233,7 +231,8 @@ fn killed_control_node_aborts_playbooks() {
     let log = sim.invocation_log();
     // Zero playbook attempts: no ssh command ever reached the executor.
     assert!(
-        !log.iter().any(|e| e.command_line.contains("ansible-playbook")),
+        !log.iter()
+            .any(|e| e.command_line.contains("ansible-playbook")),
         "no playbook may be attempted against a dead control node"
     );
     let copies: Vec<_> = log

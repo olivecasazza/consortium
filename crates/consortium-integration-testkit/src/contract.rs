@@ -56,7 +56,11 @@ impl Phase {
         marker: &'static str,
         after: &'static [&'static str],
     ) -> Self {
-        Self { name, marker, after }
+        Self {
+            name,
+            marker,
+            after,
+        }
     }
 }
 
@@ -82,7 +86,11 @@ pub struct OptionVariant<Options> {
 impl<Options> OptionVariant<Options> {
     /// Convenience constructor.
     pub fn new(name: &'static str, options: Options, skipped_phases: Vec<&'static str>) -> Self {
-        Self { name, options, skipped_phases }
+        Self {
+            name,
+            options,
+            skipped_phases,
+        }
     }
 }
 

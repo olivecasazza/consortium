@@ -145,8 +145,10 @@ mod tests {
 
     #[test]
     fn build_happy_path() {
-        let exec = ScriptedExecutor::new()
-            .on("nix build", ExecOutput::ok("/nix/store/abc123-slurm-env-train\n"));
+        let exec = ScriptedExecutor::new().on(
+            "nix build",
+            ExecOutput::ok("/nix/store/abc123-slurm-env-train\n"),
+        );
         let path = build_flake_attr(&exec, ".#slurmEnvs.train", None).unwrap();
         assert_eq!(path, "/nix/store/abc123-slurm-env-train");
         exec.assert_invoked_containing("nix build .#slurmEnvs.train --no-link --print-out-paths");
@@ -215,7 +217,11 @@ mod tests {
     fn copy_nonzero_exit_contains_stderr() {
         let exec = ScriptedExecutor::new().on(
             "nix copy",
-            ExecOutput::new(1, "", "ssh: connect to host submit01 port 22: Connection refused"),
+            ExecOutput::new(
+                1,
+                "",
+                "ssh: connect to host submit01 port 22: Connection refused",
+            ),
         );
         let err = copy_closure(&exec, "/nix/store/abc-env", "ssh-ng://root@submit01").unwrap_err();
         match err {

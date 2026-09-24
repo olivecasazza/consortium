@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use consortium::dag::{DagReport, TaskId};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
-use consortium_fanout_sim::NodeId;
 use consortium_fanout_sim::simexec::{
     assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
 };
+use consortium_fanout_sim::NodeId;
 use consortium_integration::exec::{ExecOutput, Executor};
 use consortium_integration::fleet::{FleetConfig, SlurmFleetConfig};
 use consortium_slurm::{submit_job, SubmitOptions};
@@ -112,7 +112,9 @@ fn run_submit(sim: &Arc<SimExecutor>, opts: &SubmitOptions) -> DagReport {
 /// All invocations classified onto the edge sentinel → submit node.
 fn submit_edge_events(sim: &Arc<SimExecutor>) -> Vec<consortium_fanout_sim::simexec::SimEvent> {
     let sentinel = sim.sentinel_node();
-    let submit = sim.host_node(SUBMIT_HOST).expect("submit host is in the fleet");
+    let submit = sim
+        .host_node(SUBMIT_HOST)
+        .expect("submit host is in the fleet");
     sim.invocation_log()
         .into_iter()
         .filter(|e| e.edge == Some((sentinel, submit)))
@@ -160,7 +162,9 @@ fn happy_path_full_pipeline() {
         .filter(|e| e.kind == SimCommandKind::DataCopy)
         .collect();
     assert_eq!(copies.len(), 1, "expected exactly one env copy: {copies:?}");
-    assert!(copies[0].command_line.contains("--to ssh-ng://root@submit01"));
+    assert!(copies[0]
+        .command_line
+        .contains("--to ssh-ng://root@submit01"));
     assert!(matches!(copies[0].outcome, SimOutcome::Ok { .. }));
 
     // sbatch and the sacct poll are ssh control edges to the submit node.
@@ -229,7 +233,9 @@ fn killed_submit_node_aborts_before_sbatch() {
         report.failed
     );
     // The local build ran before the copy and is unaffected by the kill.
-    assert!(report.completed.contains(&TaskId(format!("build-job-env:{JOB}"))));
+    assert!(report
+        .completed
+        .contains(&TaskId(format!("build-job-env:{JOB}"))));
 
     let log = sim.invocation_log();
 
@@ -249,7 +255,9 @@ fn killed_submit_node_aborts_before_sbatch() {
     // no sacct, no collect cat, no ssh control edge at all.
     assert!(!log.iter().any(|e| e.command_line.contains("sbatch")));
     assert!(!log.iter().any(|e| e.command_line.contains("sacct")));
-    assert!(!log.iter().any(|e| e.command_line.contains("slurm-12345.out")));
+    assert!(!log
+        .iter()
+        .any(|e| e.command_line.contains("slurm-12345.out")));
     assert!(!log.iter().any(|e| e.kind == SimCommandKind::SshControl));
 }
 

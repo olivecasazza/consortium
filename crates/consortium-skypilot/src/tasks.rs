@@ -150,7 +150,10 @@ impl DagTask for SkyExecTask {
 
         match exec.exec(&spec) {
             Ok(out) if out.success() => {
-                ctx.set_output(TaskId(format!("sky-exec:{}", self.cluster_name)), out.stdout);
+                ctx.set_output(
+                    TaskId(format!("sky-exec:{}", self.cluster_name)),
+                    out.stdout,
+                );
                 TaskOutcome::Success
             }
             Ok(out) => TaskOutcome::Failed(format!("sky exec failed: {}", out.stderr.trim())),
@@ -277,18 +280,17 @@ mod tests {
 
         let outcome = NixBuildSkyEnvTask::new("train", ".").execute(&ctx);
         assert!(matches!(outcome, TaskOutcome::Success));
-        scripted
-            .assert_invoked_containing("nix build .#skyEnvs.train --no-link --print-out-paths");
+        scripted.assert_invoked_containing("nix build .#skyEnvs.train --no-link --print-out-paths");
         let path: Option<String> = ctx.get_output(&TaskId("build-sky-env:train".to_string()));
         assert_eq!(path.as_deref(), Some("/nix/store/abc-sky-env"));
     }
 
     #[test]
     fn test_launch_task_runs_scripted_sky_launch() {
-        let scripted = Arc::new(
-            ScriptedExecutor::new()
-                .on("sky launch", ExecOutput::ok("Cluster launched: my-cluster\n")),
-        );
+        let scripted = Arc::new(ScriptedExecutor::new().on(
+            "sky launch",
+            ExecOutput::ok("Cluster launched: my-cluster\n"),
+        ));
         let exec: Arc<dyn Executor> = scripted.clone();
         let ctx = DagContext::new();
         ctx.set_state("executor", exec);
@@ -325,9 +327,8 @@ mod tests {
 
     #[test]
     fn test_exec_task_runs_scripted_sky_exec() {
-        let scripted = Arc::new(
-            ScriptedExecutor::new().on("sky exec", ExecOutput::ok("training done\n")),
-        );
+        let scripted =
+            Arc::new(ScriptedExecutor::new().on("sky exec", ExecOutput::ok("training done\n")));
         let exec: Arc<dyn Executor> = scripted.clone();
         let ctx = DagContext::new();
         ctx.set_state("executor", exec);

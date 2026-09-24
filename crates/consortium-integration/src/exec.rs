@@ -640,9 +640,11 @@ mod tests {
 
     #[test]
     fn ssh_argv_with_port_and_extra_opts() {
-        let target = SshTarget::new("admin", "10.0.0.5")
-            .port(2222)
-            .extra_opts(["-i", "/keys/id_ed25519", "-oProxyJump=bastion"]);
+        let target = SshTarget::new("admin", "10.0.0.5").port(2222).extra_opts([
+            "-i",
+            "/keys/id_ed25519",
+            "-oProxyJump=bastion",
+        ]);
         let argv = ssh_argv(&target, "'systemctl' 'status'");
         assert_eq!(
             argv,
@@ -686,7 +688,10 @@ mod tests {
         );
         let argv = spec.argv();
         assert_eq!(argv.first().unwrap(), "ssh");
-        assert_eq!(argv.last().unwrap(), "'sbatch' '--job-name=my job' 'run.sh'");
+        assert_eq!(
+            argv.last().unwrap(),
+            "'sbatch' '--job-name=my job' 'run.sh'"
+        );
     }
 
     #[test]
@@ -801,8 +806,12 @@ mod tests {
             ["nix", "copy", "ssh-ng://root@node01"],
             ExecOutput::ok(""),
         ));
-        assert!(exec.exec(&spec("nix copy --to ssh-ng://root@node02 /nix/store/x")).is_err());
-        assert!(exec.exec(&spec("nix copy --to ssh-ng://root@node01 /nix/store/x")).is_ok());
+        assert!(exec
+            .exec(&spec("nix copy --to ssh-ng://root@node02 /nix/store/x"))
+            .is_err());
+        assert!(exec
+            .exec(&spec("nix copy --to ssh-ng://root@node01 /nix/store/x"))
+            .is_ok());
     }
 
     #[test]
@@ -811,7 +820,9 @@ mod tests {
             |cmd| cmd.contains("sbatch") && cmd.contains("--job-name=train"),
             ExecOutput::ok("Submitted batch job 12345\n"),
         );
-        let out = exec.exec(&spec("sbatch --job-name=train train.sh")).unwrap();
+        let out = exec
+            .exec(&spec("sbatch --job-name=train train.sh"))
+            .unwrap();
         assert!(out.stdout.contains("12345"));
     }
 
@@ -840,7 +851,10 @@ mod tests {
         exec.exec(&spec("eval host1")).ok();
         exec.exec(&spec("build host1")).ok();
         exec.exec(&spec("copy host1")).ok();
-        assert_eq!(exec.invocations(), vec!["eval host1", "build host1", "copy host1"]);
+        assert_eq!(
+            exec.invocations(),
+            vec!["eval host1", "build host1", "copy host1"]
+        );
         assert_eq!(exec.invocation_count(), 3);
     }
 
@@ -905,8 +919,7 @@ mod tests {
 
     #[test]
     fn scripted_matches_ssh_rendered_line() {
-        let exec =
-            ScriptedExecutor::new().on("sbatch", ExecOutput::ok("Submitted batch job 7\n"));
+        let exec = ScriptedExecutor::new().on("sbatch", ExecOutput::ok("Submitted batch job 7\n"));
         let spec = CommandSpec::new("sbatch")
             .args(["--job-name=x", "x.sh"])
             .ssh(SshTarget::new("root", "submit01"));
