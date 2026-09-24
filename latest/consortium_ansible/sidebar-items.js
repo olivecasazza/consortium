@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["run_playbook"],"mod":["error","inventory","tasks"],"struct":["AnsibleOptions"]};
+window.SIDEBAR_ITEMS = {"fn":["run_playbook"],"mod":["error","inventory","tasks"]};
