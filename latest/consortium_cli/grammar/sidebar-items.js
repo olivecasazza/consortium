@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["KINDS","PINNED_ROOT_LONGS","PINNED_SELECTORS","PINNED_SHORT_FLAGS","ROOT","SHARED_FLAGS"],"fn":["check","check_keys","dump","key_of","manifest_bins","registry_violations","violations"],"struct":["CheckReport","Row","Violation"]};

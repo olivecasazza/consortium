@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["submit_job"],"mod":["error","tasks"]};
+window.SIDEBAR_ITEMS = {"fn":["submit_job"],"mod":["error","tasks"],"struct":["SubmitOptions"]};

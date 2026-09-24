@@ -1,0 +1,268 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`SimExecutor` — a network/failure-aware `Executor` implementation that runs integration pipelines (`deploy`, `submit_job`, `run_playbook`, `launch_task`, …) under simulated network and failure conditions, reproducibly from a seed."><title>consortium_fanout_sim::simexec - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="consortium_fanout_sim" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module simexec</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../consortium_fanout_sim/index.html">consortium_<wbr>fanout_<wbr>sim</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module simexec</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#command-classification-precedence" title="Command classification (precedence)">Command classification (precedence)</a></li><li><a href="#fleet-topology" title="Fleet topology">Fleet topology</a></li><li><a href="#order-independent-failure-decisions" title="Order-independent failure decisions">Order-independent failure decisions</a></li><li><a href="#failure-rendering-never-panics-never-err" title="Failure rendering (never panics, never `Err`)">Failure rendering (never panics, never <code>Err</code>)</a></li><li><a href="#success-outputs" title="Success outputs">Success outputs</a></li><li><a href="#command-line-normalization" title="Command-line normalization">Command-line normalization</a></li><li><a href="#virtual-clock" title="Virtual clock">Virtual clock</a></li><li><a href="#determinism-contract" title="Determinism contract">Determinism contract</a></li><li><a href="#writing-a-sim-test-for-an-integration" title="Writing a sim test for an integration">Writing a sim test for an integration</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate consortium_<wbr>fanout_<wbr>sim</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">consortium_fanout_sim</a></div><h1>Module <span>simexec</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/consortium_fanout_sim/simexec.rs.html#1-1535">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p><code>SimExecutor</code> — a network/failure-aware
+[<code>Executor</code>] implementation that
+runs integration pipelines (<code>deploy</code>, <code>submit_job</code>, <code>run_playbook</code>,
+<code>launch_task</code>, …) under simulated network and failure conditions,
+reproducibly from a seed.</p>
+<p>It is the bridge between the executor abstraction
+([<code>consortium_integration::exec</code>]) and the sim harness
+([<code>NetworkProfile</code>], <a href="../fixtures/enum.FailureSchedule.html" title="enum consortium_fanout_sim::fixtures::FailureSchedule"><code>FailureSchedule</code></a>): every command an integration
+issues through <code>Arc&lt;dyn Executor&gt;</code> is classified onto a simulated edge
+(or not), judged against the failure schedule, timed against the
+network profile, and answered from scripted success outputs — without
+real networking, ssh, or sleeping.</p>
+<h3 id="command-classification-precedence"><a class="doc-anchor" href="#command-classification-precedence">§</a>Command classification (precedence)</h3>
+<p>Commands are classified from the <em>structured</em>
+[<code>CommandSpec</code>], not by
+parsing the rendered line wherever structure exists:</p>
+<ol>
+<li><strong><code>spec.ssh = Some(target)</code> → control edge.</strong> A remote command
+targeting <code>target.host</code> maps to the edge <em>sentinel → node(host)</em>.
+This rule wins even when the args contain an <code>ssh-ng://</code> store URI:
+nix cascade relay edges render as ssh-wrapped <code>nix copy</code>, and the
+copy is attributed to the ssh login host (the relay source) — that
+is the host a kill/partition schedule must strike to interrupt the
+relay.</li>
+<li><strong><code>--to ssh-ng://&lt;user&gt;@&lt;host&gt;</code> / <code>--from ssh-ng://…</code> args → data
+edge.</strong> The staging <code>nix copy</code> shape. <code>--to</code> absent → target is the
+sentinel; <code>--from</code> absent → source is the sentinel. Only <code>ssh-ng://</code>
+endpoints form edges; a host that is not part of the fleet renders
+a resolution failure instead of an edge.</li>
+<li><strong>Anything else → local.</strong> <code>nix build</code>, <code>nix eval</code>, <code>sky</code>, <code>ray</code>,
+and any other command with neither <code>spec.ssh</code> nor an <code>ssh-ng://</code>
+endpoint forms no edge. The failure schedule does not apply: local
+work is not network-bound, and the sim models the network, not the
+build host’s reliability. Output comes from the scripted rules
+alone.</li>
+</ol>
+<h3 id="fleet-topology"><a class="doc-anchor" href="#fleet-topology">§</a>Fleet topology</h3>
+<p><code>.hosts([..])</code> assigns <code>NodeId(0..N)</code> in order; the <em>build-host
+sentinel</em> — where local commands and staging copies originate — gets
+<code>NodeId(N)</code>. Bandwidth/uplink/latency distributions are sampled from
+the seed (via <a href="../fixtures/fn.rng_from_seed.html" title="fn consortium_fanout_sim::fixtures::rng_from_seed"><code>rng_from_seed</code></a>) over
+all <code>N + 1</code> nodes, so sentinel↔host edges are populated too.
+<code>.network(profile)</code> substitutes a hand-built profile (the caller is
+then responsible for including sentinel edges) and takes precedence
+over the distribution knobs. The host list may be EMPTY (<code>N = 0</code>):
+the sentinel is still allocated and every ssh/copy command then fails
+loudly as an unresolved host — all-local pipelines (skypilot, ray)
+need no dummy host.</p>
+<h3 id="order-independent-failure-decisions"><a class="doc-anchor" href="#order-independent-failure-decisions">§</a>Order-independent failure decisions</h3>
+<p><a href="../executor/struct.DeterministicExecutor.html" title="struct consortium_fanout_sim::executor::DeterministicExecutor"><code>DeterministicExecutor</code></a> is
+round-keyed: the cascade coordinator dispatches edges round by round,
+so a monotonically increasing round number keys
+<a href="../fixtures/enum.FailureSchedule.html#method.failure_for" title="method consortium_fanout_sim::fixtures::FailureSchedule::failure_for"><code>FailureSchedule::failure_for</code></a>. Integration pipelines instead run DAG
+tasks on <em>concurrent worker threads</em>, so the global invocation order
+varies run to run. <code>SimExecutor</code> therefore keys failure decisions per
+<strong>(edge, per-edge attempt index)</strong>: the r-th invocation on edge
+<code>(src, tgt)</code> — assigned under a lock, so it is deterministic per edge —
+is judged by <code>failure_for(r, src, tgt)</code>. <code>KillNodeAtRound { node, round }</code> then deterministically means “attempts ≥ round targeting node
+fail” regardless of thread interleaving, matching the schedule’s
+<code>round &gt;= r</code> semantics per edge. Static partitions
+(<code>net.partitions</code>) are consulted for every edge, after the schedule.</p>
+<h3 id="failure-rendering-never-panics-never-err"><a class="doc-anchor" href="#failure-rendering-never-panics-never-err">§</a>Failure rendering (never panics, never <code>Err</code>)</h3>
+<p>A schedule/partition hit renders as ordinary command-failure output —
+integrations already handle non-zero exits:</p>
+<ul>
+<li>ssh control edge → <code>Ok(ExecOutput { status: 255, stderr: "ssh: connect to host &lt;h&gt; port &lt;p&gt;: &lt;reason&gt;", .. })</code> (ssh convention).</li>
+<li>data copy edge → <code>Ok(ExecOutput { status: 1, stderr: &lt;message naming the error kind: activation / partition / copy / …&gt;, .. })</code>.</li>
+<li>host not in the fleet → 255 (ssh) / 1 (copy) with <code>ssh: Could not resolve hostname …</code> — a loud failure, so fleet typos surface.</li>
+</ul>
+<h3 id="success-outputs"><a class="doc-anchor" href="#success-outputs">§</a>Success outputs</h3>
+<p>Successful commands (and all local commands) get their output from an
+embedded [<code>ScriptedExecutor</code>]
+fed the same rendered line — <code>.on()</code>, <code>.on_error()</code>, <code>.rule()</code> on the
+builder forward to it. Its
+<a href="consortium_integration::exec::ExecError::Unexpected"><code>Unexpected</code></a>
+error for unscripted commands is <em>correct</em> behavior and surfaces
+verbatim: script every success output your pipeline parses. The
+embedded executor’s own invocation recording is discarded — assertions
+use <a href="struct.SimExecutor.html#method.invocation_log" title="method consortium_fanout_sim::simexec::SimExecutor::invocation_log"><code>SimExecutor::invocation_log</code></a>.</p>
+<h3 id="command-line-normalization"><a class="doc-anchor" href="#command-line-normalization">§</a>Command-line normalization</h3>
+<p><code>.normalize_command_line(f)</code> installs a hook applied to the rendered
+line BEFORE rule matching, <code>.transfer_bytes()</code> pattern lookup, and
+recording: rules match against (and <a href="struct.SimEvent.html#structfield.command_line" title="field consortium_fanout_sim::simexec::SimEvent::command_line"><code>SimEvent::command_line</code></a>
+records) the NORMALIZED line. Use it to scrub run-unique tokens —
+temp paths, pids, sequence counters — at the source, so the
+determinism contract can compare logs directly (canonical example:
+<code>consortium-skypilot/tests/sim.rs</code>). Classification is unaffected: it
+reads the structured [<code>CommandSpec</code>], never the rendered line.</p>
+<h3 id="virtual-clock"><a class="doc-anchor" href="#virtual-clock">§</a>Virtual clock</h3>
+<p><a href="struct.SimExecutor.html#method.simulated_transfer_time" title="method consortium_fanout_sim::simexec::SimExecutor::simulated_transfer_time"><code>SimExecutor::simulated_transfer_time</code></a> sums the durations of
+successful data copies: <code>transfer_bytes / effective_bandwidth(src, tgt, 1, 1, default) + latency</code>. This is <strong>aggregate transfer work, not
+concurrent wall-clock</strong> — the harness does not model wall time. The
+contention args are pinned to <code>1/1</code>: the executor observes one command
+at a time and cannot know how many transfers are concurrently in
+flight, so each transfer is modeled uncontended (per-host DAG
+serialization makes that the honest default). Transfer sizes come from
+<code>.transfer_bytes(pattern, bytes)</code> — first substring match on the
+rendered line wins; unmatched data copies fall back to
+<code>.default_transfer_bytes(..)</code> (0 by default) and unmatched ssh control
+commands always use 0 bytes (just latency).</p>
+<h3 id="determinism-contract"><a class="doc-anchor" href="#determinism-contract">§</a>Determinism contract</h3>
+<p>Same builder config + same pipeline inputs ⇒</p>
+<ul>
+<li>identical <a href="struct.SimExecutor.html#method.invocation_log" title="method consortium_fanout_sim::simexec::SimExecutor::invocation_log"><code>SimExecutor::invocation_log</code></a> contents as an
+attempt-insensitive multiset (<a href="fn.logs_equivalent.html" title="fn consortium_fanout_sim::simexec::logs_equivalent"><code>logs_equivalent</code></a> /
+<a href="fn.canonical_log.html" title="fn consortium_fanout_sim::simexec::canonical_log"><code>canonical_log</code></a>),</li>
+<li>identical per-edge outcome multisets
+(<a href="fn.per_edge_outcome_multisets.html" title="fn consortium_fanout_sim::simexec::per_edge_outcome_multisets"><code>per_edge_outcome_multisets</code></a>),</li>
+<li>identical <a href="struct.SimExecutor.html#method.simulated_transfer_time" title="method consortium_fanout_sim::simexec::SimExecutor::simulated_transfer_time"><code>SimExecutor::simulated_transfer_time</code></a>,</li>
+</ul>
+<p>even though worker-thread interleaving changes the log’s ORDER.
+<a href="fn.assert_deterministic_equivalence.html" title="fn consortium_fanout_sim::simexec::assert_deterministic_equivalence"><code>assert_deterministic_equivalence</code></a> checks the first two. The
+per-edge sequence view (<a href="fn.per_edge_outcomes.html" title="fn consortium_fanout_sim::simexec::per_edge_outcomes"><code>per_edge_outcomes</code></a>, ordered by attempt
+index) is additionally deterministic whenever the attempt-index
+binding itself is — see the caveat.</p>
+<p>One caveat: the binding of a command line to an attempt index is
+ARRIVAL-ORDER-DEPENDENT when two <em>different</em> commands share one edge
+from unordered (non-dependency-ordered) tasks — whichever command
+reaches the executor first takes attempt 0, so raw <code>attempt</code> fields
+(and any view ordered by them) may permute between runs.
+<code>canonical_log</code> therefore normalizes <code>attempt</code> away and the native
+comparisons never look at it. Failure DECISIONS still stay
+deterministic for the standard patterns:</p>
+<ul>
+<li><strong>round-0 kills</strong> (<code>KillNodeAtRound { round: 0, .. }</code>) strike every
+attempt on every edge to the node, regardless of binding;</li>
+<li><strong>per-command [<code>Rule</code>]s</strong> key on the (normalized) command line, not
+the attempt index;</li>
+<li><strong>dependency-ordered per-host chains</strong> give each edge a single
+arrival order, so attempt binding — and <a href="fn.per_edge_outcomes.html" title="fn consortium_fanout_sim::simexec::per_edge_outcomes"><code>per_edge_outcomes</code></a> — is
+stable there. Keep test DAGs that way when asserting on sequences.</li>
+</ul>
+<h3 id="writing-a-sim-test-for-an-integration"><a class="doc-anchor" href="#writing-a-sim-test-for-an-integration">§</a>Writing a sim test for an integration</h3>
+<ol>
+<li><strong>Build the executor</strong> mirroring the fleet: <code>.hosts(..)</code> in the
+order the integration addresses them; pin <code>.seed(..)</code>,
+<code>.failure_schedule(..)</code>, <code>.transfer_bytes(..)</code>; script every success
+output the pipeline parses (sbatch job ids, store paths,
+<code>sky</code>/<code>ray</code> statuses) via <code>.on(..)</code> — rules match substrings of the
+rendered command line, first match wins (the NORMALIZED line when
+<code>.normalize_command_line(..)</code> is set).</li>
+<li><strong>Wire it in</strong>: wrap in <code>Arc</code>, store as <code>Arc&lt;dyn Executor&gt;</code> under
+the <code>"executor"</code> context state key, then call the integration’s
+entry fn (or drive its DAG directly, as below).</li>
+<li><strong>Assert semantics, not order</strong>: the <code>DagReport</code> / pipeline result
+plus edge/kind-filtered views of the invocation log. Never assert on
+log order (worker threads interleave) or wall-clock time (none
+passes — the clock is virtual).</li>
+<li><strong>Assert determinism</strong>: run the identical scenario twice and call
+<a href="fn.assert_deterministic_equivalence.html" title="fn consortium_fanout_sim::simexec::assert_deterministic_equivalence"><code>assert_deterministic_equivalence</code></a> on both logs.</li>
+</ol>
+<p>Complete example — a 2-host fleet, a tiny <code>stage → run-per-host</code> DAG
+standing in for an integration pipeline, host2 killed, determinism
+checked across two identical runs:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::sync::Arc;
+
+<span class="kw">use </span>consortium::dag::{DagBuilder, DagContext, DagReport, FnTask, TaskId, TaskOutcome};
+<span class="kw">use </span>consortium_fanout_sim::fixtures::FailureSchedule;
+<span class="kw">use </span>consortium_fanout_sim::simexec::{
+    assert_deterministic_equivalence, SimExecutor, SimOutcome,
+};
+<span class="kw">use </span>consortium_fanout_sim::NodeId;
+<span class="kw">use </span>consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
+
+<span class="doccomment">/// The pipeline: one local build stage, then an ssh "activate" per
+/// host — the same shape the integrations' DAGs have.
+</span><span class="kw">fn </span>run_pipeline(sim: <span class="kw-2">&amp;</span>Arc&lt;SimExecutor&gt;) -&gt; DagReport {
+    <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = sim.clone();
+    <span class="kw">let </span>ctx = DagContext::new();
+    ctx.set_state(<span class="string">"executor"</span>, exec);
+
+    <span class="kw">let </span><span class="kw-2">mut </span>dag = DagBuilder::new();
+    dag.add_task(<span class="string">"stage"</span>, FnTask::new(<span class="string">"stage build"</span>, |ctx| {
+        <span class="kw">let </span>exec = ctx.get_state::&lt;Arc&lt;<span class="kw">dyn </span>Executor&gt;&gt;(<span class="string">"executor"</span>).unwrap();
+        <span class="kw">let </span>spec = CommandSpec::new(<span class="string">"nix"</span>).args([<span class="string">"build"</span>, <span class="string">".#fleet"</span>, <span class="string">"--no-link"</span>]);
+        <span class="kw">match </span>exec.exec(<span class="kw-2">&amp;</span>spec) {
+            <span class="prelude-val">Ok</span>(out) <span class="kw">if </span>out.success() =&gt; TaskOutcome::Success,
+            <span class="prelude-val">Ok</span>(out) =&gt; TaskOutcome::Failed(<span class="macro">format!</span>(<span class="string">"stage exited {}"</span>, out.status)),
+            <span class="prelude-val">Err</span>(e) =&gt; TaskOutcome::Failed(e.to_string()),
+        }
+    }));
+    <span class="kw">for </span>host <span class="kw">in </span>[<span class="string">"node01"</span>, <span class="string">"node02"</span>] {
+        <span class="kw">let </span>h = host.to_string();
+        dag.add_task(
+            <span class="macro">format!</span>(<span class="string">"run:{host}"</span>),
+            FnTask::new(<span class="macro">format!</span>(<span class="string">"activate {host}"</span>), <span class="kw">move </span>|ctx| {
+                <span class="kw">let </span>exec = ctx.get_state::&lt;Arc&lt;<span class="kw">dyn </span>Executor&gt;&gt;(<span class="string">"executor"</span>).unwrap();
+                <span class="kw">let </span>spec = CommandSpec::new(<span class="string">"activate"</span>).ssh(SshTarget::new(<span class="string">"root"</span>, <span class="kw-2">&amp;</span>h));
+                <span class="kw">match </span>exec.exec(<span class="kw-2">&amp;</span>spec) {
+                    <span class="prelude-val">Ok</span>(out) <span class="kw">if </span>out.success() =&gt; TaskOutcome::Success,
+                    <span class="prelude-val">Ok</span>(out) =&gt; TaskOutcome::Failed(<span class="macro">format!</span>(
+                        <span class="string">"activate {h}: {}"</span>,
+                        out.stderr.trim()
+                    )),
+                    <span class="prelude-val">Err</span>(e) =&gt; TaskOutcome::Failed(e.to_string()),
+                }
+            }),
+        );
+        dag.add_dep(<span class="macro">format!</span>(<span class="string">"run:{host}"</span>), <span class="string">"stage"</span>);
+    }
+    dag.context(ctx);
+    dag.build().unwrap().run().unwrap()
+}
+
+<span class="kw">let </span>make_sim = || {
+    SimExecutor::builder()
+        .hosts([<span class="string">"node01"</span>, <span class="string">"node02"</span>])
+        .failure_schedule(FailureSchedule::KillNodeAtRound {
+            node: NodeId(<span class="number">1</span>), <span class="comment">// node02
+            </span>round: <span class="number">0</span>,
+        })
+        .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-fleet\n"</span>))
+        .on(<span class="string">"activate"</span>, ExecOutput::ok(<span class="string">"activated\n"</span>))
+        .build()
+};
+
+<span class="kw">let </span>sim_a = Arc::new(make_sim());
+<span class="kw">let </span>report_a = run_pipeline(<span class="kw-2">&amp;</span>sim_a);
+<span class="macro">assert!</span>(report_a.completed.contains(<span class="kw-2">&amp;</span>TaskId::from(<span class="string">"stage"</span>)));
+<span class="macro">assert!</span>(report_a.completed.contains(<span class="kw-2">&amp;</span>TaskId::from(<span class="string">"run:node01"</span>)));
+<span class="macro">assert!</span>(report_a.failed.contains_key(<span class="kw-2">&amp;</span>TaskId::from(<span class="string">"run:node02"</span>)));
+
+<span class="comment">// The log tells the same story without relying on event order:
+// exactly one ssh attempt went to node02, and it failed with 255.
+</span><span class="kw">let </span>sentinel = sim_a.sentinel_node();
+<span class="kw">let </span>to_node02: Vec&lt;<span class="kw">_</span>&gt; = sim_a
+    .invocation_log()
+    .into_iter()
+    .filter(|e| e.edge == <span class="prelude-val">Some</span>((sentinel, NodeId(<span class="number">1</span>))))
+    .collect();
+<span class="macro">assert_eq!</span>(to_node02.len(), <span class="number">1</span>);
+<span class="macro">assert!</span>(<span class="macro">matches!</span>(
+    to_node02[<span class="number">0</span>].outcome,
+    SimOutcome::Failed { status: <span class="number">255</span>, .. }
+));
+
+<span class="comment">// Determinism: an identical executor running the identical pipeline
+// produces an equivalent log, even though thread interleaving may
+// differ between runs.
+</span><span class="kw">let </span>sim_b = Arc::new(make_sim());
+<span class="kw">let </span>report_b = run_pipeline(<span class="kw-2">&amp;</span>sim_b);
+<span class="macro">assert_eq!</span>(report_a.is_success(), report_b.is_success());
+assert_deterministic_equivalence(<span class="kw-2">&amp;</span>sim_a.invocation_log(), <span class="kw-2">&amp;</span>sim_b.invocation_log());</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.SimEvent.html" title="struct consortium_fanout_sim::simexec::SimEvent">SimEvent</a></dt><dd>One recorded invocation. See <a href="struct.SimExecutor.html#method.invocation_log" title="method consortium_fanout_sim::simexec::SimExecutor::invocation_log"><code>SimExecutor::invocation_log</code></a>.</dd><dt><a class="struct" href="struct.SimExecutor.html" title="struct consortium_fanout_sim::simexec::SimExecutor">SimExecutor</a></dt><dd>Network/failure-aware [<code>Executor</code>] for integration sim tests. See the
+module docs for classification, failure-keying, and determinism
+semantics.</dd><dt><a class="struct" href="struct.SimExecutorBuilder.html" title="struct consortium_fanout_sim::simexec::SimExecutorBuilder">SimExecutor<wbr>Builder</a></dt><dd>Builder for <a href="struct.SimExecutor.html" title="struct consortium_fanout_sim::simexec::SimExecutor"><code>SimExecutor</code></a>; see <a href="struct.SimExecutor.html#method.builder" title="associated function consortium_fanout_sim::simexec::SimExecutor::builder"><code>SimExecutor::builder</code></a>.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.SimCommandKind.html" title="enum consortium_fanout_sim::simexec::SimCommandKind">SimCommand<wbr>Kind</a></dt><dd>How <a href="struct.SimExecutor.html" title="struct consortium_fanout_sim::simexec::SimExecutor"><code>SimExecutor</code></a> classified a command. See the module docs for the
+precedence rules.</dd><dt><a class="enum" href="enum.SimOutcome.html" title="enum consortium_fanout_sim::simexec::SimOutcome">SimOutcome</a></dt><dd>The recorded outcome of one simulated invocation.</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DEFAULT_BANDWIDTH_BYTES_SEC.html" title="constant consortium_fanout_sim::simexec::DEFAULT_BANDWIDTH_BYTES_SEC">DEFAULT_<wbr>BANDWIDTH_<wbr>BYTES_<wbr>SEC</a></dt><dd>Default per-edge bandwidth used when the network profile has no entry
+(mirrors <a href="../executor/struct.DeterministicExecutor.html" title="struct consortium_fanout_sim::executor::DeterministicExecutor"><code>crate::executor::DeterministicExecutor</code></a>).</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.assert_deterministic_equivalence.html" title="fn consortium_fanout_sim::simexec::assert_deterministic_equivalence">assert_<wbr>deterministic_<wbr>equivalence</a></dt><dd>Assert the determinism contract: identical per-edge outcome multisets
+AND identical logs as multisets — both attempt-insensitive, so shared
+edges with unordered cross-chain commands cannot flake the comparison
+(see the module’s determinism contract). Panics with both canonical
+logs on mismatch.</dd><dt><a class="fn" href="fn.canonical_log.html" title="fn consortium_fanout_sim::simexec::canonical_log">canonical_<wbr>log</a></dt><dd>Canonically sorted copy of a log, with the per-edge <code>attempt</code> index
+normalized away: every event is reset to <code>attempt = 0</code> and sorted by
+(command line, kind, edge, outcome). Two logs whose canonical forms
+are equal contain the same (command, kind, edge, outcome) events as a
+multiset. The attempt binding is deliberately excluded: it is
+arrival-order-dependent when distinct commands share one edge (see
+the module’s determinism contract), so comparing raw <code>attempt</code>
+fields flakes for that topology.</dd><dt><a class="fn" href="fn.logs_equivalent.html" title="fn consortium_fanout_sim::simexec::logs_equivalent">logs_<wbr>equivalent</a></dt><dd>Whether two logs contain the same events, ignoring order AND the
+per-edge attempt indices (see <a href="fn.canonical_log.html" title="fn consortium_fanout_sim::simexec::canonical_log"><code>canonical_log</code></a>).</dd><dt><a class="fn" href="fn.per_edge_outcome_multisets.html" title="fn consortium_fanout_sim::simexec::per_edge_outcome_multisets">per_<wbr>edge_<wbr>outcome_<wbr>multisets</a></dt><dd>Per-edge outcomes as sorted multisets — the order-independent residue
+of <a href="fn.per_edge_outcomes.html" title="fn consortium_fanout_sim::simexec::per_edge_outcomes"><code>per_edge_outcomes</code></a>, robust on edges shared by unordered
+cross-chain commands whose attempt binding can permute between runs.</dd><dt><a class="fn" href="fn.per_edge_outcomes.html" title="fn consortium_fanout_sim::simexec::per_edge_outcomes">per_<wbr>edge_<wbr>outcomes</a></dt><dd>Per-edge outcome sequences, ordered by attempt index. Deterministic
+for a fixed builder config + pipeline inputs ONLY where the
+attempt-index binding is: the binding is arrival-order-dependent when
+distinct commands share one edge from unordered tasks (see the
+module’s determinism contract). Use <a href="fn.per_edge_outcome_multisets.html" title="fn consortium_fanout_sim::simexec::per_edge_outcome_multisets"><code>per_edge_outcome_multisets</code></a>
+for the order-independent view; <a href="fn.assert_deterministic_equivalence.html" title="fn consortium_fanout_sim::simexec::assert_deterministic_equivalence"><code>assert_deterministic_equivalence</code></a>
+compares multisets for that reason.</dd></dl></section></div></main></body></html>

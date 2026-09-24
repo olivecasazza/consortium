@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["launch_task"],"mod":["error","tasks"]};
+window.SIDEBAR_ITEMS = {"fn":["launch_task"],"mod":["error","tasks"],"struct":["SkyOptions"]};

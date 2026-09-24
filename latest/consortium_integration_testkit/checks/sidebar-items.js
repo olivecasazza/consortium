@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["first_phase_failure_aborts_pipeline","happy_path","mid_pipeline_failure_cancels_dependents","missing_config_errors","option_variants_skip_declared_phases","partial_host_failure_continues_independents","plan_has_no_side_effects"]};
