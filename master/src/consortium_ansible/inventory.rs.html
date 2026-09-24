@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::HashMap;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>consortium_integration::fleet::FleetConfig;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>consortium_nix::config::FleetConfig;
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="doccomment">/// Generate an ansible inventory YAML string from fleet config.
 <a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">pub fn </span>generate_inventory(config: <span class="kw-2">&amp;</span>FleetConfig) -&gt; String {
@@ -55,7 +55,7 @@
 <a href=#55 id=55 data-nosnippet>55</a><span class="attr">#[cfg(test)]
 <a href=#56 id=56 data-nosnippet>56</a></span><span class="kw">mod </span>tests {
 <a href=#57 id=57 data-nosnippet>57</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">use </span>consortium_integration::fleet::{AnsibleFleetConfig, DeploymentNode, ProfileType};
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">use </span>consortium_nix::config::{AnsibleFleetConfig, DeploymentNode, ProfileType};
 <a href=#59 id=59 data-nosnippet>59</a>
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">fn </span>make_fleet(
 <a href=#61 id=61 data-nosnippet>61</a>        nodes: Vec&lt;(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, Vec&lt;<span class="kw-2">&amp;</span>str&gt;)&gt;,

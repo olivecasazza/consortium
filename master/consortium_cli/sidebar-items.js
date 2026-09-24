@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["cast","claw","display","event_render","fold","grammar","inventory","molt","output","pinch","tree"]};
+window.SIDEBAR_ITEMS = {"mod":["display","event_render","fold","inventory","output","tree"]};
