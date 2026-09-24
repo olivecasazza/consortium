@@ -12,9 +12,9 @@ use std::process;
 
 use clap::Parser;
 
+use crate::output::{CliOutput, OutputArgs};
 use consortium::node_set::NodeSet;
 use consortium::range_set::RangeSet;
-use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// pinch — node set operations for consortium.
 ///
@@ -22,7 +22,7 @@ use consortium_cli::output::{CliOutput, OutputArgs};
 /// set algebra (union, intersection, difference, symmetric difference).
 #[derive(Parser)]
 #[command(name = "pinch", version, about)]
-struct Args {
+pub struct Args {
     // ── Operations (mutually exclusive) ────────────────────────────────
     /// Count nodes in the resulting set.
     #[arg(short = 'c', long = "count", group = "operation")]
@@ -115,16 +115,16 @@ struct Args {
     output: OutputArgs,
 }
 
-fn main() {
+pub fn run() {
     let args = Args::parse();
     let _out = CliOutput::from_args(&args.output);
-    if let Err(e) = run(args) {
+    if let Err(e) = execute(args) {
         eprintln!("pinch: {e}");
         process::exit(1);
     }
 }
 
-fn run(args: Args) -> anyhow::Result<()> {
+fn execute(args: Args) -> anyhow::Result<()> {
     // ── Command validation (mirrors CLI/Nodeset.py parser.error paths) ──
     // --index counts as a command; combined with another command upstream
     // reports "Multiple commands not allowed." and exits 2.

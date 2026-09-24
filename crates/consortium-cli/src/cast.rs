@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
+use crate::output::{CliOutput, OutputArgs};
 use consortium::node_set::NodeSet;
-use consortium_cli::output::{CliOutput, OutputArgs};
 use consortium_integration::exec::ProcessExecutor;
 use consortium_nix::config::{DeployAction, FleetConfig};
 use consortium_nix::health;
@@ -22,7 +22,7 @@ use consortium_nix::health;
 /// cast — NixOS deployment orchestration powered by consortium.
 #[derive(Parser)]
 #[command(name = "cast", version, about)]
-struct Args {
+pub struct Args {
     /// Path to fleet configuration JSON file.
     #[arg(short, long, default_value = "fleet.json")]
     config: PathBuf,
@@ -121,7 +121,7 @@ enum Commands {
     },
 }
 
-fn main() {
+pub fn run() {
     let args = Args::parse();
     let out = CliOutput::from_args(&args.output);
 

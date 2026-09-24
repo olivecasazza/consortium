@@ -13,10 +13,10 @@ use std::process;
 
 use clap::{Parser, ValueEnum};
 
+use crate::display;
+use crate::fold;
+use crate::output::{CliOutput, OutputArgs};
 use consortium::node_set::NodeSet;
-use consortium_cli::display;
-use consortium_cli::fold;
-use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// Whether input keys are interpreted as nodesets (upstream clubak
 /// `--interpret-keys`; THREE_CHOICES).
@@ -37,7 +37,7 @@ enum InterpretKeys {
 /// groups nodes that produced identical output together.
 #[derive(Parser)]
 #[command(name = "molt", version, about)]
-struct Args {
+pub struct Args {
     /// Gather nodes with identical output (dshbak mode).
     #[arg(short = 'b', long = "dshbak")]
     dshbak: bool,
@@ -73,16 +73,16 @@ struct Args {
     output: OutputArgs,
 }
 
-fn main() {
+pub fn run() {
     let args = Args::parse();
     let _out = CliOutput::from_args(&args.output);
-    if let Err(e) = run(args) {
+    if let Err(e) = execute(args) {
         eprintln!("molt: {e}");
         process::exit(1);
     }
 }
 
-fn run(args: Args) -> anyhow::Result<()> {
+fn execute(args: Args) -> anyhow::Result<()> {
     // User-specified nD-nodeset fold axis for output display (#356).
     // An empty axis list behaves like Python's empty DEFAULTS.fold_axis
     // tuple (falsy → fold along all axes).

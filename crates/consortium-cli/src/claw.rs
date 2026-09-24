@@ -15,15 +15,15 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
+use crate::display;
+use crate::fold;
+use crate::output::{CliOutput, OutputArgs};
 use consortium::node_set::NodeSet;
 use consortium::node_utils::GroupResolverConfig;
 use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
 use consortium::worker::ssh::SshOptions;
 use consortium::worker::EventHandler;
-use consortium_cli::display;
-use consortium_cli::fold;
-use consortium_cli::output::{CliOutput, OutputArgs};
 
 /// claw — execute commands in parallel across cluster nodes.
 ///
@@ -31,7 +31,7 @@ use consortium_cli::output::{CliOutput, OutputArgs};
 /// configurable fanout, output gathering, and timeout control.
 #[derive(Parser)]
 #[command(name = "claw", version, about)]
-struct Args {
+pub struct Args {
     // ── Node selection ─────────────────────────────────────────────────
     /// Target nodes (bracket notation, e.g., node[1-5]).
     #[arg(short = 'w', long = "nodes")]
@@ -140,9 +140,9 @@ struct Args {
     command: Vec<String>,
 }
 
-fn main() {
+pub fn run() {
     let args = Args::parse();
-    let exit_code = match run(args) {
+    let exit_code = match execute(args) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("claw: {e}");
@@ -152,7 +152,7 @@ fn main() {
     process::exit(exit_code);
 }
 
-fn run(args: Args) -> anyhow::Result<i32> {
+fn execute(args: Args) -> anyhow::Result<i32> {
     let cli_out = CliOutput::from_args(&args.output);
 
     // User-specified nD-nodeset fold axis for output display (#356).

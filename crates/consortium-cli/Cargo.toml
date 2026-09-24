@@ -37,19 +37,19 @@ path = "src/bin/cascade_copy.rs"
 
 [[bin]]
 name = "claw"
-path = "src/claw.rs"
+path = "src/bin/claw.rs"
 
 [[bin]]
 name = "molt"
-path = "src/molt.rs"
+path = "src/bin/molt.rs"
 
 [[bin]]
 name = "pinch"
-path = "src/pinch.rs"
+path = "src/bin/pinch.rs"
 
 [[bin]]
 name = "cast"
-path = "src/cast.rs"
+path = "src/bin/cast.rs"
 
 [dev-dependencies]
 assert_cmd = "2"
