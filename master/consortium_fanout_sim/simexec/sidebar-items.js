@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_BANDWIDTH_BYTES_SEC"],"enum":["SimCommandKind","SimOutcome"],"fn":["assert_deterministic_equivalence","canonical_log","logs_equivalent","per_edge_outcome_multisets","per_edge_outcomes"],"struct":["SimEvent","SimExecutor","SimExecutorBuilder"]};

@@ -1,0 +1,272 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="consortium-integration-testkit"><title>consortium_integration_testkit - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="consortium_integration_testkit" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate consortium_integration_testkit</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../consortium_integration_testkit/index.html">consortium_<wbr>integration_<wbr>testkit</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#consortium-integration-testkit" title="consortium-integration-testkit">consortium-integration-testkit</a></li><li><a href="#the-generated-suite" title="The generated suite">The generated suite</a></li><li><a href="#usage--three-steps-for-a-new-integration" title="Usage — three steps for a new integration">Usage — three steps for a new integration</a></li><li><a href="#complete-example" title="Complete example">Complete example</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#macros" title="Macros">Macros</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#traits" title="Traits">Traits</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>consortium_<wbr>integration_<wbr>testkit</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/consortium_integration_testkit/lib.rs.html#1-350">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="consortium-integration-testkit"><a class="doc-anchor" href="#consortium-integration-testkit">§</a>consortium-integration-testkit</h2>
+<p>The <strong>abstract contract-test harness</strong> for consortium’s integration
+crates (<code>consortium-nix</code>, <code>consortium-slurm</code>, <code>consortium-ansible</code>,
+<code>consortium-skypilot</code>, <code>consortium-ray</code>). Every integration runs commands
+in pipeline phases over a <a href="struct.FleetConfig.html" title="struct consortium_integration_testkit::FleetConfig"><code>FleetConfig</code></a>, reports success/failure through
+an <a href="trait.IntegrationReport.html" title="trait consortium_integration_testkit::IntegrationReport"><code>IntegrationReport</code></a>, and must behave identically in the face of
+missing configuration, phase failures, per-host partial failures, and
+option-driven phase skips. This crate encodes those semantics once, as
+seven generic checks, so each integration keeps ~100 lines of glue and
+zero duplicated test logic.</p>
+<h2 id="the-generated-suite"><a class="doc-anchor" href="#the-generated-suite">§</a>The generated suite</h2>
+<p><a href="macro.integration_contract_tests.html" title="macro consortium_integration_testkit::integration_contract_tests"><code>integration_contract_tests!</code></a> generates one <code>#[test]</code> per semantic
+contract, with uniform names across all integrations:</p>
+<div><table><thead><tr><th>test name</th><th>semantic</th></tr></thead><tbody>
+<tr><td><code>contract_missing_config_errors</code></td><td>missing sub-config → <code>Err</code>, zero commands issued</td></tr>
+<tr><td><code>contract_plan_has_no_side_effects</code></td><td>task descriptions exist, printable, need no execution</td></tr>
+<tr><td><code>contract_happy_path</code></td><td>all phases invoked in declared <code>after</code> order; report successful</td></tr>
+<tr><td><code>contract_first_phase_failure_aborts_pipeline</code></td><td>first phase fails → later phases never run</td></tr>
+<tr><td><code>contract_mid_pipeline_failure_cancels_dependents</code></td><td>mid phase fails → later phases never run</td></tr>
+<tr><td><code>contract_partial_host_failure_continues_independents</code></td><td>surviving host completes every phase</td></tr>
+<tr><td><code>contract_option_variants_skip_declared_phases</code></td><td>variants skip exactly the declared phases</td></tr>
+</tbody></table>
+</div><h2 id="usage--three-steps-for-a-new-integration"><a class="doc-anchor" href="#usage--three-steps-for-a-new-integration">§</a>Usage — three steps for a new integration</h2>
+<ol>
+<li><strong>Implement <a href="trait.Contract.html" title="trait consortium_integration_testkit::Contract"><code>Contract</code></a></strong> for a marker struct in your integration’s
+<code>tests/contract.rs</code>: associated types (<code>Report</code>, <code>Error</code>, <code>Options</code> —
+use <code>()</code> when there are no options), <code>run()</code> delegating to your real
+entry point, and <code>phases()</code> declaring the pipeline with
+quoting-safe markers (see <a href="struct.Phase.html" title="struct consortium_integration_testkit::Phase"><code>Phase</code></a>).</li>
+<li><strong>Write the fixtures</strong>: <code>config_missing()</code> / <code>config_complete()</code>,
+<code>happy_executor()</code>, <code>executor_failing_phase()</code>, and optionally
+<code>option_variants()</code> and <code>partial_failure()</code>.</li>
+<li><strong>Instantiate the macro</strong>: <code>integration_contract_tests!(MyContract);</code>
+then run <code>cargo test -p &lt;your-integration&gt;</code>.</li>
+</ol>
+<p>Failure reporting is deliberately tolerant: a scenario that must fail may
+either return <code>Err(..)</code> or return <code>Ok(report)</code> with
+<code>report.is_success() == false</code> and <code>report.failure_count() &gt;= 1</code>. That
+tolerance <em>is</em> the semantic — everything else is asserted strictly, with
+messages naming the integration and the phase/marker involved.</p>
+<h2 id="complete-example"><a class="doc-anchor" href="#complete-example">§</a>Complete example</h2>
+<p>A full, self-contained <code>tests/contract.rs</code> for a fictional
+stage → execute → collect integration. Copy it, rename, and adjust the
+phases and fixtures to match your integration (this exact shape is
+exercised by this crate’s own test suite, so it is guaranteed to pass):</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::collections::HashMap;
+<span class="kw">use </span>std::sync::Arc;
+
+<span class="kw">use </span>consortium::dag::{DagBuilder, DagContext, DagReport, ErrorPolicy, FnTask, TaskOutcome};
+<span class="kw">use </span>consortium_integration::exec::{
+    CommandSpec, ExecOutput, Executor, Rule, ScriptedExecutor, SshTarget,
+};
+<span class="kw">use </span>consortium_integration::fleet::{
+    DeploymentNode, FleetConfig, ProfileType, SlurmFleetConfig,
+};
+<span class="kw">use </span>consortium_integration_testkit::{
+    integration_contract_tests, Contract, OptionVariant, PartialFailure, Phase,
+};
+
+<span class="comment">// ── Integration code under test (normally lives in your crate's src/) ────
+
+</span><span class="doccomment">/// Run options. `Default` is the baseline used by most contract tests.
+</span><span class="attr">#[derive(Default)]
+</span><span class="kw">struct </span>DeployOptions {
+    skip_collect: bool,
+}
+
+<span class="doccomment">/// One planned DAG task, as data (id, dependency, description, command).
+</span><span class="kw">struct </span>PlannedTask {
+    id: String,
+    after: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    desc: String,
+    spec: CommandSpec,
+}
+
+<span class="doccomment">/// Build the pipeline plan for every node in the fleet.
+</span><span class="kw">fn </span>plan(config: <span class="kw-2">&amp;</span>FleetConfig, opts: <span class="kw-2">&amp;</span>DeployOptions) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;PlannedTask&gt;, String&gt; {
+    <span class="kw">if </span>config.slurm_config.is_none() {
+        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"missing slurm config"</span>.into());
+    }
+    <span class="kw">let </span><span class="kw-2">mut </span>tasks = Vec::new();
+    <span class="kw">for </span>name <span class="kw">in </span>config.node_names() {
+        <span class="kw">let </span>host = config.nodes[<span class="kw-2">&amp;</span>name].target_host.clone();
+        <span class="kw">let </span>stage = <span class="macro">format!</span>(<span class="string">"stage:{name}"</span>);
+        <span class="kw">let </span>execute = <span class="macro">format!</span>(<span class="string">"execute:{name}"</span>);
+        tasks.push(PlannedTask {
+            id: stage.clone(),
+            after: <span class="prelude-val">None</span>,
+            desc: <span class="macro">format!</span>(<span class="string">"stage closure to {name}"</span>),
+            spec: CommandSpec::new(<span class="string">"nix"</span>).args([
+                <span class="string">"copy"</span>.into(),
+                <span class="string">"--to"</span>.into(),
+                <span class="macro">format!</span>(<span class="string">"ssh-ng://root@{host}"</span>),
+                <span class="string">"/nix/store/env"</span>.into(),
+            ]),
+        });
+        tasks.push(PlannedTask {
+            id: execute.clone(),
+            after: <span class="prelude-val">Some</span>(stage),
+            desc: <span class="macro">format!</span>(<span class="string">"run payload on {name}"</span>),
+            spec: CommandSpec::new(<span class="string">"dummy-run"</span>)
+                .args([<span class="string">"--node"</span>, name.as_str()])
+                .ssh(SshTarget::new(<span class="string">"root"</span>, <span class="kw-2">&amp;</span>host)),
+        });
+        <span class="kw">if </span>!opts.skip_collect {
+            tasks.push(PlannedTask {
+                id: <span class="macro">format!</span>(<span class="string">"collect:{name}"</span>),
+                after: <span class="prelude-val">Some</span>(execute),
+                desc: <span class="macro">format!</span>(<span class="string">"collect results from {name}"</span>),
+                spec: CommandSpec::new(<span class="string">"dummy-collect"</span>)
+                    .args([<span class="string">"--node"</span>, name.as_str()])
+                    .ssh(SshTarget::new(<span class="string">"root"</span>, <span class="kw-2">&amp;</span>host)),
+            });
+        }
+    }
+    <span class="prelude-val">Ok</span>(tasks)
+}
+
+<span class="kw">fn </span>cmd_task(
+    desc: String,
+    exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;,
+    spec: CommandSpec,
+) -&gt; FnTask&lt;<span class="kw">impl </span>Fn(<span class="kw-2">&amp;</span>DagContext) -&gt; TaskOutcome + Send&gt; {
+    FnTask::new(desc, <span class="kw">move </span>|<span class="kw">_</span>| <span class="kw">match </span>exec.exec(<span class="kw-2">&amp;</span>spec) {
+        <span class="prelude-val">Ok</span>(out) <span class="kw">if </span>out.success() =&gt; TaskOutcome::Success,
+        <span class="prelude-val">Ok</span>(out) =&gt; TaskOutcome::Failed(<span class="macro">format!</span>(<span class="string">"exit {}: {}"</span>, out.status, out.stderr.trim())),
+        <span class="prelude-val">Err</span>(e) =&gt; TaskOutcome::Failed(e.to_string()),
+    })
+}
+
+<span class="doccomment">/// The integration's entry point: build the DAG and run it.
+</span><span class="kw">fn </span>deploy(
+    config: <span class="kw-2">&amp;</span>FleetConfig,
+    exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;,
+    opts: <span class="kw-2">&amp;</span>DeployOptions,
+) -&gt; <span class="prelude-ty">Result</span>&lt;DagReport, String&gt; {
+    <span class="kw">let </span><span class="kw-2">mut </span>dag = DagBuilder::new();
+    <span class="comment">// Independent hosts must survive a sibling host's failure.
+    </span>dag.error_policy(ErrorPolicy::ContinueIndependent);
+    <span class="kw">for </span>task <span class="kw">in </span>plan(config, opts)<span class="question-mark">? </span>{
+        dag.add_task(task.id.clone(), cmd_task(task.desc, Arc::clone(<span class="kw-2">&amp;</span>exec), task.spec));
+        <span class="kw">if let </span><span class="prelude-val">Some</span>(after) = task.after {
+            dag.add_dep(task.id, after);
+        }
+    }
+    dag.build().map_err(|e| e.to_string())<span class="question-mark">?</span>.run().map_err(|e| e.to_string())
+}
+
+<span class="comment">// ── Step 1 + 2: implement Contract, including fixtures ────────────────────
+
+</span><span class="kw">struct </span>MyContract;
+
+<span class="kw">impl </span>Contract <span class="kw">for </span>MyContract {
+    <span class="kw">type </span>Report = DagReport;
+    <span class="kw">type </span>Error = String;
+    <span class="kw">type </span>Options = DeployOptions;
+
+    <span class="kw">fn </span>name() -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+        <span class="string">"my-integration"
+    </span>}
+
+    <span class="kw">fn </span>run(
+        config: <span class="kw-2">&amp;</span>FleetConfig,
+        exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;,
+        opts: <span class="kw-2">&amp;</span><span class="self">Self</span>::Options,
+    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::Report, <span class="self">Self</span>::Error&gt; {
+        deploy(config, exec, opts)
+    }
+
+    <span class="kw">fn </span>phases() -&gt; Vec&lt;Phase&gt; {
+        <span class="comment">// Markers: single tokens (quoting-safe for ssh renderings), no
+        // substring relations, declared in topological order.
+        </span><span class="macro">vec!</span>[
+            Phase::new(<span class="string">"stage"</span>, <span class="string">"nix copy"</span>, <span class="kw-2">&amp;</span>[]),
+            Phase::new(<span class="string">"execute"</span>, <span class="string">"dummy-run"</span>, <span class="kw-2">&amp;</span>[<span class="string">"stage"</span>]),
+            Phase::new(<span class="string">"collect"</span>, <span class="string">"dummy-collect"</span>, <span class="kw-2">&amp;</span>[<span class="string">"execute"</span>]),
+        ]
+    }
+
+    <span class="kw">fn </span>config_missing() -&gt; FleetConfig {
+        fleet_config(<span class="bool-val">false</span>)
+    }
+
+    <span class="kw">fn </span>config_complete() -&gt; FleetConfig {
+        fleet_config(<span class="bool-val">true</span>)
+    }
+
+    <span class="kw">fn </span>happy_executor() -&gt; ScriptedExecutor {
+        ScriptedExecutor::new()
+            .on(<span class="string">"nix copy"</span>, ExecOutput::ok(<span class="string">""</span>))
+            .on(<span class="string">"dummy-run"</span>, ExecOutput::ok(<span class="string">"ok\n"</span>))
+            .on(<span class="string">"dummy-collect"</span>, ExecOutput::ok(<span class="string">"collected\n"</span>))
+    }
+
+    <span class="kw">fn </span>executor_failing_phase(marker: <span class="kw-2">&amp;</span>str) -&gt; ScriptedExecutor {
+        <span class="comment">// The failing rule comes FIRST: ScriptedExecutor is first-match-wins.
+        </span>ScriptedExecutor::new()
+            .rule(Rule::containing(marker, ExecOutput::new(<span class="number">1</span>, <span class="string">""</span>, <span class="string">"boom"</span>)))
+            .on(<span class="string">"nix copy"</span>, ExecOutput::ok(<span class="string">""</span>))
+            .on(<span class="string">"dummy-run"</span>, ExecOutput::ok(<span class="string">"ok\n"</span>))
+            .on(<span class="string">"dummy-collect"</span>, ExecOutput::ok(<span class="string">"collected\n"</span>))
+    }
+
+    <span class="kw">fn </span>option_variants() -&gt; Vec&lt;OptionVariant&lt;<span class="self">Self</span>::Options&gt;&gt; {
+        <span class="macro">vec!</span>[OptionVariant::new(
+            <span class="string">"no-collect"</span>,
+            DeployOptions { skip_collect: <span class="bool-val">true </span>},
+            <span class="macro">vec!</span>[<span class="string">"collect"</span>],
+        )]
+    }
+
+    <span class="kw">fn </span>partial_failure() -&gt; <span class="prelude-ty">Option</span>&lt;PartialFailure&gt; {
+        <span class="kw">let </span>executor = ScriptedExecutor::new()
+            .rule(Rule::containing_all(
+                [<span class="string">"node02"</span>, <span class="string">"dummy-run"</span>],
+                ExecOutput::new(<span class="number">1</span>, <span class="string">""</span>, <span class="string">"node02 unreachable"</span>),
+            ))
+            .on(<span class="string">"nix copy"</span>, ExecOutput::ok(<span class="string">""</span>))
+            .on(<span class="string">"dummy-run"</span>, ExecOutput::ok(<span class="string">"ok\n"</span>))
+            .on(<span class="string">"dummy-collect"</span>, ExecOutput::ok(<span class="string">"collected\n"</span>));
+        <span class="prelude-val">Some</span>(PartialFailure::new(executor, <span class="string">"node02"</span>, <span class="string">"node01"</span>, <span class="string">"dummy-collect"</span>))
+    }
+
+    <span class="kw">fn </span>task_descriptions(config: <span class="kw-2">&amp;</span>FleetConfig, _exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;) -&gt; Vec&lt;String&gt; {
+        plan(config, <span class="kw-2">&amp;</span>DeployOptions::default())
+            .map(|tasks| tasks.into_iter().map(|t| t.desc).collect())
+            .unwrap_or_default()
+    }
+}
+
+<span class="comment">// ── Step 2b: shared config fixture ────────────────────────────────────────
+
+</span><span class="kw">fn </span>fleet_config(with_slurm: bool) -&gt; FleetConfig {
+    <span class="kw">let </span>node = |name: <span class="kw-2">&amp;</span>str| DeploymentNode {
+        name: name.into(),
+        target_host: name.into(), <span class="comment">// hostname doubles as the per-host marker
+        </span>target_user: <span class="string">"root"</span>.into(),
+        target_port: <span class="prelude-val">None</span>,
+        system: <span class="string">"x86_64-linux"</span>.into(),
+        profile_type: ProfileType::Nixos,
+        build_on_target: <span class="bool-val">false</span>,
+        tags: <span class="macro">vec!</span>[],
+        drv_path: <span class="prelude-val">None</span>,
+        toplevel: <span class="prelude-val">None</span>,
+    };
+    <span class="kw">let </span><span class="kw-2">mut </span>nodes = HashMap::new();
+    nodes.insert(<span class="string">"node01"</span>.to_string(), node(<span class="string">"node01"</span>));
+    nodes.insert(<span class="string">"node02"</span>.to_string(), node(<span class="string">"node02"</span>));
+    FleetConfig {
+        nodes,
+        builders: HashMap::new(),
+        flake_uri: <span class="string">"."</span>.into(),
+        ansible_config: <span class="prelude-val">None</span>,
+        slurm_config: with_slurm.then(|| SlurmFleetConfig {
+            submit_node: <span class="string">"node01"</span>.into(),
+            submit_user: <span class="string">"root"</span>.into(),
+            control_node: <span class="string">"node01"</span>.into(),
+            partitions: HashMap::new(),
+        }),
+        ray_config: <span class="prelude-val">None</span>,
+        skypilot_config: <span class="prelude-val">None</span>,
+    }
+}
+
+<span class="comment">// ── Step 3: instantiate the suite ─────────────────────────────────────────
+
+</span><span class="macro">integration_contract_tests!</span>(MyContract);</code></pre></div></div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="checks/index.html" title="mod consortium_integration_testkit::checks">checks</a></dt><dd>The generic contract checks.</dd></dl><h2 id="macros" class="section-header">Macros<a href="#macros" class="anchor">§</a></h2><dl class="item-table"><dt><a class="macro" href="macro.integration_contract_tests.html" title="macro consortium_integration_testkit::integration_contract_tests">integration_<wbr>contract_<wbr>tests</a></dt><dd>Instantiate the abstract integration contract suite for one <a href="trait.Contract.html" title="trait consortium_integration_testkit::Contract"><code>Contract</code></a>
+implementation.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.FleetConfig.html" title="struct consortium_integration_testkit::FleetConfig">Fleet<wbr>Config</a></dt><dd>Complete fleet configuration produced by Nix evaluation.</dd><dt><a class="struct" href="struct.OptionVariant.html" title="struct consortium_integration_testkit::OptionVariant">Option<wbr>Variant</a></dt><dd>One non-default option configuration the contract suite exercises.</dd><dt><a class="struct" href="struct.PartialFailure.html" title="struct consortium_integration_testkit::PartialFailure">Partial<wbr>Failure</a></dt><dd>Fixture for per-host partial failure: one host dies mid-pipeline while
+another must run to completion.</dd><dt><a class="struct" href="struct.Phase.html" title="struct consortium_integration_testkit::Phase">Phase</a></dt><dd>A named stage of an integration’s command pipeline.</dd><dt><a class="struct" href="struct.ScriptedExecutor.html" title="struct consortium_integration_testkit::ScriptedExecutor">Scripted<wbr>Executor</a></dt><dd>Test fake <a href="trait.Executor.html" title="trait consortium_integration_testkit::Executor"><code>Executor</code></a>: scripts outputs per command and records every
+invocation.</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.Contract.html" title="trait consortium_integration_testkit::Contract">Contract</a></dt><dd>The hook an integration implements to enroll in the abstract contract
+suite.</dd><dt><a class="trait" href="trait.Executor.html" title="trait consortium_integration_testkit::Executor">Executor</a></dt><dd>The contract every integration uses to run external commands.</dd><dt><a class="trait" href="trait.IntegrationReport.html" title="trait consortium_integration_testkit::IntegrationReport">Integration<wbr>Report</a></dt><dd>Uniform success/failure accounting for integration run reports.</dd></dl></section></div></main></body></html>

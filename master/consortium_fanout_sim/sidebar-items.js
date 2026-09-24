@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["executor","fixtures","scenario"]};
+window.SIDEBAR_ITEMS = {"mod":["executor","fixtures","invariants","scenario","simexec"],"struct":["NodeId"]};
