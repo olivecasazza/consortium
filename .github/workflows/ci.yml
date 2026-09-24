@@ -56,6 +56,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check CLI grammar
+        run: cargo run -p consortium-cli --bin consortium-grammar -- check
+
       - name: Check docs build
         env:
           RUSTDOCFLAGS: "-D warnings"
@@ -231,10 +234,11 @@ jobs:
       - name: Build consortium-cli
         run: nix build .#consortium-cli
 
-      - name: Verify cast binary works
+      - name: Verify installed CLI binaries and grammar gate
         run: |
           ./result/bin/cast --help
           ./result/bin/claw --help
+          ./result/bin/consortium-grammar check
 
       - name: Test distributed builds (if builders reachable)
         continue-on-error: true

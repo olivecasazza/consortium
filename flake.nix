@@ -108,7 +108,9 @@
             filter =
               path: type:
               (craneLib.filterCargoSources path type)
-              || (builtins.match ".*\\.py$" path != null);
+              || (builtins.match ".*\\.py$" path != null)
+              # The grammar gate embeds this reviewed JSON baseline at compile time.
+              || (lib.hasSuffix "/crates/consortium-cli/src/grammar/baseline.json" path);
           };
 
           # ── Common Cargo args ──────────────────────────────────────────

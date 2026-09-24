@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- Added a strict, introspected CLI grammar gate for `claw`, `molt`, `pinch`,
+  and `cast`, with an embedded zero-violation baseline, drift checks, and
+  a dedicated CI invocation.
+
 ### Bug Fixes
 
 ### Performance

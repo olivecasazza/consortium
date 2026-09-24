@@ -7,36 +7,14 @@
 
 use assert_cmd::Command;
 
-const ALL_BINS: &[&str] = &[
-    "claw",
-    "molt",
-    "pinch",
-    "cast",
-    "cascade-viz",
-    "cascade-copy",
-];
-
-/// Every `[[bin]]` in Cargo.toml maps to an existing src file AND has a
-/// `tests/<bin>_tests.rs` (the lazaret `registry` rule).
+/// Every `[[bin]]` in Cargo.toml maps to an existing declared source file
+/// AND has a `tests/<bin>_tests.rs` (the lazaret `registry` rule), derived
+/// from the manifest itself — no hand-maintained bin list here.
 #[test]
 fn registry_covers_every_bin() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    for bin in ALL_BINS {
-        let src = if bin.starts_with("cascade-") {
-            format!("{root}/src/bin/{}.rs", bin.replace('-', "_"))
-        } else {
-            format!("{root}/src/{bin}.rs")
-        };
-        assert!(
-            std::path::Path::new(&src).exists(),
-            "bin '{bin}': missing source file {src}"
-        );
-        let test_file = format!("{root}/tests/{}_tests.rs", bin.replace('-', "_"));
-        assert!(
-            std::path::Path::new(&test_file).exists(),
-            "bin '{bin}': missing test file {test_file}"
-        );
-    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let violations = consortium_cli::grammar::registry_violations(&manifest);
+    assert!(violations.is_empty(), "registry violations: {violations:?}");
 }
 
 /// Shared output vocabulary from `output::OutputArgs` (-v/--verbose,

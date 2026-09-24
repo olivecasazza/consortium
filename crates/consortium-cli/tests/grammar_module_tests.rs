@@ -1,12 +1,87 @@
 //! Grammar-module tests: introspected dump, pinned legacy flag sets, and
 //! shrink-only baseline semantics.
-//!
-//! These import `consortium_cli::grammar`. Until that module exists this
-//! file fails to compile — that compile failure is the TDD red state.
 
 use std::collections::BTreeSet;
 
 use consortium_cli::grammar;
+
+/// The manifest is the source of truth: a `[[bin]]` absent from KINDS and
+/// shipping no `tests/<name>_tests.rs` must be flagged by the registry rule.
+#[test]
+fn registry_flags_unclassified_bin_without_tests() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/bin")).unwrap();
+    std::fs::write(dir.path().join("src/bin/zeta.rs"), "fn main() {}").unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[[bin]]\nname = \"zeta\"\npath = \"src/bin/zeta.rs\"\n",
+    )
+    .unwrap();
+    let violations = grammar::registry_violations(&dir.path().join("Cargo.toml"));
+    let keys: BTreeSet<String> = violations.iter().map(grammar::key_of).collect();
+    assert!(
+        keys.contains("registry zeta (root) kind"),
+        "unclassified bin must be flagged: {keys:?}"
+    );
+    assert!(
+        keys.contains("registry zeta (root) tests"),
+        "missing tests file must be flagged: {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains(" zeta (root) source")),
+        "declared source exists, no source violation expected: {keys:?}"
+    );
+}
+
+/// An entry with a declared source path that does not exist must not pass
+/// merely because its per-bin test file is present.
+#[test]
+fn registry_flags_missing_declared_source() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("tests")).unwrap();
+    std::fs::write(dir.path().join("tests/zeta_tests.rs"), "").unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[[bin]]\nname = \"zeta\"\npath = \"src/bin/missing.rs\"\n",
+    )
+    .unwrap();
+    let keys: BTreeSet<String> = grammar::registry_violations(&dir.path().join("Cargo.toml"))
+        .iter()
+        .map(grammar::key_of)
+        .collect();
+    assert!(
+        keys.contains("registry zeta (root) source"),
+        "missing source: {keys:?}"
+    );
+    assert!(
+        !keys.contains("registry zeta (root) tests"),
+        "existing test file must not be misclassified: {keys:?}"
+    );
+}
+
+/// Reverse direction: a KINDS bin with no matching `[[bin]]` in the
+/// manifest must be flagged (the manifest cannot silently drop a bin).
+#[test]
+fn registry_flags_kinds_bin_missing_from_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+    let violations = grammar::registry_violations(&dir.path().join("Cargo.toml"));
+    let keys: BTreeSet<String> = violations.iter().map(grammar::key_of).collect();
+    for bin in [
+        "claw",
+        "molt",
+        "pinch",
+        "cast",
+        "cascade_viz",
+        "cascade_copy",
+        "consortium_grammar",
+    ] {
+        assert!(
+            keys.contains(&format!("registry {bin} (root) manifest")),
+            "KINDS bin '{bin}' missing from manifest must be flagged: {keys:?}"
+        );
+    }
+}
 
 /// claw/molt/pinch short flags are frozen upstream ClusterShell surface
 /// (clush/clubak/cluset parity is pinned by the `consortium-tests` oracle).
@@ -46,6 +121,7 @@ fn dump_is_total() {
         "cast",
         "cascade_viz",
         "cascade_copy",
+        "consortium_grammar",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -76,20 +152,19 @@ fn dump_is_total() {
     );
 }
 
-/// Baseline semantics: a stale baseline entry errors, a new live violation
-/// errors, and an exactly-matching baseline passes.
+/// A stale baseline entry and a new live violation both fail the comparison.
 #[test]
 fn baseline_stale_entry_errors() {
-    let live = vec!["registry cascade_copy ".to_string()];
+    let live = vec!["registry cascade_copy (root) tests".to_string()];
     let stale = vec![
-        "compat molt short-flags".to_string(),
-        "registry cascade_copy ".to_string(),
+        "compat molt (root) short-flags".to_string(),
+        "registry cascade_copy (root) tests".to_string(),
     ];
     assert!(
         grammar::check_keys(&live, &stale).is_err(),
         "stale baseline entry must error"
     );
-    let matching = vec!["registry cascade_copy ".to_string()];
+    let matching = vec!["registry cascade_copy (root) tests".to_string()];
     assert!(
         grammar::check_keys(&live, &matching).is_ok(),
         "exact baseline must pass"
@@ -101,17 +176,32 @@ fn baseline_stale_entry_errors() {
     );
 }
 
-/// write_baseline followed by check on the current tree: the live set is
-/// empty once `tests/cascade_copy_tests.rs` exists, so an empty baseline
-/// round-trips clean.
 #[test]
-fn write_and_check_roundtrip() {
-    let dir = std::env::temp_dir().join(format!("consortium-grammar-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("baseline.json");
-    grammar::write_baseline(&path, &[]).unwrap();
-    let report = grammar::check(&path).unwrap();
-    assert!(report.ok);
-    assert_eq!(report.violations, 0, "current tree must be violation-free");
-    std::fs::remove_file(&path).ok();
+fn repeated_cast_arg_ids_have_distinct_subcommand_keys() {
+    let mut missing_help = grammar::Violation {
+        rule: "typed".to_string(),
+        bin: "cast".to_string(),
+        subcommand: "build".to_string(),
+        arg: "on".to_string(),
+        detail: "argument has no help text".to_string(),
+    };
+    let build = grammar::key_of(&missing_help);
+    missing_help.subcommand = "deploy".to_string();
+    let deploy = grammar::key_of(&missing_help);
+    assert_eq!(build, "typed cast build on");
+    assert_eq!(deploy, "typed cast deploy on");
+    assert_ne!(build, deploy);
+    assert!(grammar::check_keys(&[build.clone(), deploy.clone()], &[build.clone()]).is_err());
+    assert!(grammar::check_keys(&[build.clone()], &[build.clone(), deploy.clone()]).is_err());
+    assert_eq!(
+        grammar::check_keys(&[build.clone(), deploy.clone()], &[build, deploy]).unwrap(),
+        2
+    );
+}
+
+#[test]
+fn duplicate_keys_cannot_hide_distinct_violations() {
+    let key = "typed cast build on".to_string();
+    assert!(grammar::check_keys(&[key.clone(), key.clone()], &[key.clone()]).is_err());
+    assert!(grammar::check_keys(&[key.clone()], &[key.clone(), key]).is_err());
 }

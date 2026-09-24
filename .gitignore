@@ -52,3 +52,7 @@ results/
 
 # Backup files from autoresearch's accountant agent.
 *.bak.*
+
+# Local-only Gas City rig and Beads ledger; never publish machine-local state.
+/.beads
+/city/

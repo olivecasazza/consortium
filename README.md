@@ -55,6 +55,27 @@ For full details, see [CONVENTIONAL_COMMITS.md](./CONVENTIONAL_COMMITS.md).
 - **Rust stable** (for Rust crates)
 - **Python 3.7+** (for Python library)
 
+### CLI grammar gate
+
+The `consortium-grammar` binary introspects the clap signatures of `claw`,
+`molt`, `pinch`, and `cast`, and checks the declared binary registry, reviewed
+root long options and selectors, legacy short flags, and argument help:
+
+```sh
+nix develop --command cargo run -p consortium-cli --bin consortium-grammar -- check
+nix develop --command cargo run -p consortium-cli --bin consortium-grammar -- dump
+```
+
+`check` compares live violation keys with the committed
+`crates/consortium-cli/src/grammar/baseline.json` embedded at build time.
+The Cargo binary registry and source/test presence facts are embedded too,
+so the Nix-installed checker works without the build source tree.
+New, stale, or duplicate keys fail the check; CI runs it as a strict step.
+`check --baseline PATH` audits a different JSON key array and fails if the
+file is missing. `dump` prints the introspected rows as JSON, including
+registry placeholders for binaries without exported clap arguments. Review
+rule changes rather than adding new violations to the baseline.
+
 ## Integrations
 
 Consortium replaces ClusterShell and adds scheduler and infrastructure
