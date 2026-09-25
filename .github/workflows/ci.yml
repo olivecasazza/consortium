@@ -170,6 +170,9 @@ jobs:
           cargo --version
           cargo nextest --version
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
