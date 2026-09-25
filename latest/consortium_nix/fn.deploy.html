@@ -1,11 +1,70 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Run the full deployment pipeline using the DAG executor."><title>deploy in consortium_nix - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="consortium_nix" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">deploy</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../consortium_nix/index.html">consortium_<wbr>nix</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">consortium_nix</a></div><h1>Function <span class="fn">deploy</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/consortium_nix/lib.rs.html#53-132">Source</a> </span></div><pre class="rust item-decl"><code>pub fn deploy(
-    config: &amp;<a class="struct" href="config/struct.FleetConfig.html" title="struct consortium_nix::config::FleetConfig">FleetConfig</a>,
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Run the full deployment pipeline using the DAG executor."><title>deploy in consortium_nix - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="consortium_nix" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.1 (48a229cea 2026-09-01)" data-channel="1.98.1" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">deploy</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../consortium_nix/index.html">consortium_<wbr>nix</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">deploy</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#example" title="Example">Example</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate consortium_<wbr>nix</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">consortium_nix</a></div><h1>Function <span class="fn">deploy</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/consortium_nix/lib.rs.html#122-208">Source</a> </span></div><pre class="rust item-decl"><code>pub fn deploy(
+    exec: <a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;dyn Executor&gt;,
+    config: &amp;<a class="struct" href="struct.FleetConfig.html" title="struct consortium_nix::FleetConfig">FleetConfig</a>,
     target_nodes: &amp;[<a class="struct" href="https://doc.rust-lang.org/1.98.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>],
-    action: <a class="enum" href="config/enum.DeployAction.html" title="enum consortium_nix::config::DeployAction">DeployAction</a>,
+    action: <a class="enum" href="enum.DeployAction.html" title="enum consortium_nix::DeployAction">DeployAction</a>,
     max_parallel: <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.usize.html">usize</a>,
     use_builders: <a class="primitive" href="https://doc.rust-lang.org/1.98.1/std/primitive.bool.html">bool</a>,
 ) -&gt; <a class="type" href="error/type.Result.html" title="type consortium_nix::error::Result">Result</a>&lt;<a class="struct" href="struct.DeployReport.html" title="struct consortium_nix::DeployReport">DeployReport</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Run the full deployment pipeline using the DAG executor.</p>
 <p>Each host progresses independently through eval → build → copy → activate,
 with per-stage concurrency limits. A host that fails at any stage is
 cancelled for subsequent stages without blocking other hosts.</p>
-</div></details></section></div></main></body></html>
+<p>Every external command (<code>nix eval</code> / <code>nix build</code> / <code>nix copy</code> / ssh
+activation) runs through <code>exec</code>, which is also shared with the DAG tasks
+via the <code>"executor"</code> context state key.</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::collections::HashMap;
+<span class="kw">use </span>std::sync::Arc;
+
+<span class="kw">use </span>consortium_integration::exec::{ExecOutput, Executor, ScriptedExecutor};
+<span class="kw">use </span>consortium_nix::config::{DeploymentNode, FleetConfig, ProfileType};
+<span class="kw">use </span>consortium_nix::{deploy, DeployAction};
+
+<span class="kw">let </span><span class="kw-2">mut </span>nodes = HashMap::new();
+nodes.insert(
+    <span class="string">"web1"</span>.to_string(),
+    DeploymentNode {
+        name: <span class="string">"web1"</span>.to_string(),
+        target_host: <span class="string">"10.0.0.1"</span>.to_string(),
+        target_user: <span class="string">"root"</span>.to_string(),
+        target_port: <span class="prelude-val">None</span>,
+        system: <span class="string">"x86_64-linux"</span>.to_string(),
+        profile_type: ProfileType::Nixos,
+        build_on_target: <span class="bool-val">false</span>,
+        tags: <span class="macro">vec!</span>[],
+        drv_path: <span class="prelude-val">None</span>,
+        toplevel: <span class="prelude-val">None</span>,
+    },
+);
+<span class="kw">let </span>config = FleetConfig {
+    nodes,
+    builders: HashMap::new(),
+    flake_uri: <span class="string">"."</span>.to_string(),
+    ansible_config: <span class="prelude-val">None</span>,
+    slurm_config: <span class="prelude-val">None</span>,
+    ray_config: <span class="prelude-val">None</span>,
+    skypilot_config: <span class="prelude-val">None</span>,
+};
+
+<span class="kw">let </span>scripted = Arc::new(
+    ScriptedExecutor::new()
+        .on(<span class="string">"nix eval"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-toplevel\n"</span>))
+        .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-toplevel\n"</span>))
+        .on(<span class="string">"nix copy"</span>, ExecOutput::ok(<span class="string">""</span>))
+        .on(<span class="string">"ssh"</span>, ExecOutput::ok(<span class="string">""</span>)),
+);
+<span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
+
+<span class="kw">let </span>report = deploy(
+    exec,
+    <span class="kw-2">&amp;</span>config,
+    <span class="kw-2">&amp;</span>[<span class="string">"web1"</span>.to_string()],
+    DeployAction::Switch,
+    <span class="number">4</span>,
+    <span class="bool-val">false</span>,
+)<span class="question-mark">?</span>;
+<span class="macro">assert!</span>(report.is_success());
+scripted.assert_invoked_containing(
+    <span class="string">"nix build .#nixosConfigurations.web1.config.system.build.toplevel"</span>,
+);
+scripted.assert_invoked_containing(<span class="string">"switch-to-configuration switch"</span>);</code></pre></div></div></details></section></div></main></body></html>

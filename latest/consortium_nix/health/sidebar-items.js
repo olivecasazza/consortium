@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["check_builder","check_builders","healthy_builders","warm_connections"],"struct":["HealthStatus"]};
+window.SIDEBAR_ITEMS = {"fn":["check_builder_with","check_builders","check_builders_with","healthy_builders","warm_connections"],"struct":["HealthStatus"]};

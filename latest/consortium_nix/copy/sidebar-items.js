@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["copy_closure","copy_closures"],"struct":["CopyResults"]};
+window.SIDEBAR_ITEMS = {"fn":["copy_closure_with","copy_closures"],"struct":["CopyResults"]};
