@@ -83,7 +83,6 @@ jobs:
 
       # ── Rust unit tests ────────────────────────────────────────
       - name: Run Rust unit tests
-        continue-on-error: true
         run: |
           mkdir -p consortium-tests/results
           source .venv/bin/activate
@@ -93,13 +92,24 @@ jobs:
             --no-fail-fast \
             2>&1 | tee consortium-tests/results/rust-raw.txt
 
+
           # Generate JUnit XML from cargo test output
           cargo test -p consortium-crate 2>&1 | \
             python consortium-tests/harness/cargo_to_junit.py > consortium-tests/results/rust-unit.xml
 
+      # ── Loopback SSH for ClusterShell tree tests ────────────────
+      # TreeWorker/GW tests ssh to localhost/127.0.0.1/127.0.0.2; the
+      # runner's sshd host keys must be in known_hosts and the extra
+      # loopback aliases must exist or every distant test fails.
+      - name: Prepare loopback SSH
+        run: |
+          sudo ip addr add 127.0.0.2/8 dev lo 2>/dev/null || true
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t rsa,ecdsa,ed25519 localhost 127.0.0.1 127.0.0.2 >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+
       # ── Python tests: original backend ─────────────────────────
       - name: Run Python tests (original backend)
-        continue-on-error: true
         env:
           CONSORTIUM_BACKEND: python
           PYTHONPATH: ${{ github.workspace }}/consortium-tests/lib
@@ -109,12 +119,10 @@ jobs:
           python -m pytest consortium-tests/tests/ -v \
             --timeout=30 \
             --tb=short \
-            --junit-xml=consortium-tests/results/python-original.xml \
-            || true
+            --junit-xml=consortium-tests/results/python-original.xml
 
       # ── Python tests: Rust backend ─────────────────────────────
       - name: Run Python tests (Rust backend)
-        continue-on-error: true
         env:
           CONSORTIUM_BACKEND: rust
           LIB_CLUSTERSHELL: ${{ github.workspace }}/consortium-tests/lib
@@ -123,8 +131,7 @@ jobs:
           python -m pytest consortium-tests/tests/ -v \
             --timeout=30 \
             --tb=short \
-            --junit-xml=consortium-tests/results/python-rust.xml \
-            || true
+            --junit-xml=consortium-tests/results/python-rust.xml
 
       # ── Generate scorecard ─────────────────────────────────────
       - name: Generate test mapping

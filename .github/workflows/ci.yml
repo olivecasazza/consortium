@@ -39,7 +39,7 @@ jobs:
           cargo nextest run --workspace \
             --profile ci \
             --no-fail-fast \
-            2>&1 || true
+            2>&1 | tee target/nextest/ci/junit.xml
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -121,7 +121,7 @@ jobs:
             --profile ci \
             --test-threads=1 \
             --no-fail-fast \
-            2>&1 || true
+            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -159,7 +159,12 @@ jobs:
       - name: Setup Rust toolchain
         run: |
           # Rust and cargo-nextest are in the runner's extraPackages (NixOS module).
-          # Just ensure rustup has a default toolchain.
+          # Fallback: install rustup if cargo is missing from the runner image.
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
           rustup default stable 2>/dev/null || true
           cargo --version
           cargo nextest --version
@@ -198,7 +203,7 @@ jobs:
             --profile ci \
             --test-threads=1 \
             --no-fail-fast \
-            2>&1 || true
+            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
