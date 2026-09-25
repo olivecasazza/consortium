@@ -232,10 +232,9 @@ jobs:
           docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
 
   # ── Layer 3: Nix Integration Gates (self-hosted NixOS Mac Minis) ───
-  # Non-advisory premerge gate: Nix-native integration checks plus the
-  # SemVer check. The SemVer app consults crates.io for baselines, so it
-  # runs via `nix run` on the runner (outside the Nix build sandbox) and
-  # is intentionally NOT a `checks.semver` derivation.
+  # Non-advisory premerge gate: Nix-native integration checks plus Git-base
+  # API compatibility and crates.io release-version checks. Both SemVer
+  # comparisons run via `nix run` outside the Nix build sandbox.
   nix-gates:
     name: Nix Integration Gates (self-hosted)
     needs: unit
@@ -243,6 +242,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
@@ -257,8 +258,10 @@ jobs:
             .#checks.${SYSTEM}.python-api \
             .#checks.${SYSTEM}.cargo-test
 
-      - name: SemVer check (crates.io baseline)
-        run: nix run .#semver-check
+      - name: SemVer check (Git base API + crates.io release)
+        env:
+          BASELINE_REV: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: nix run .#semver-check -- "${BASELINE_REV:-HEAD^}"
 
       - name: Generate summary
         if: always()

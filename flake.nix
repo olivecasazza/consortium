@@ -168,9 +168,9 @@
           # ── Published library crates (SemVer gate) ─────────────────────
           # Every crates/ workspace member except consortium-py: it is
           # published, but as a cdylib Python extension with no meaningful
-          # Rust public API for cargo-semver-checks to diff. Baselines are
-          # looked up on crates.io at RUNTIME by the semver-check app
-          # below — never inside a Nix sandbox.
+          # Rust public API for cargo-semver-checks to diff. The app checks
+          # the premerge Git baseline and the crates.io release baseline at
+          # runtime, never in a Nix sandbox.
           publishedLibs =
             let
               workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
@@ -182,12 +182,10 @@
                 (lib.filter (lib.strings.hasPrefix "crates/") workspace.members)
             );
 
-
-          # SemVer gate against the crates.io baseline. Runs OUTSIDE the
-          # sandbox (invoked as `nix run .#semver-check` from the workspace
-          # root): fetching the baseline is the whole point, so no network
-          # faking, no skipping failures, no `|| true` — the app exits
-          # nonzero on substantive breakage or baseline lookup errors.
+          # Git baseline enforces API compatibility even while 0.3.0 is an
+          # unpublished breaking release; crates.io checks the version bump.
+          # Both run outside the Nix sandbox. CI passes the exact PR base
+          # (or pre-push tip), rather than relying on the checkout depth.
           semverCheck = pkgs.writeShellApplication {
             name = "semver-check";
             runtimeInputs = [
@@ -195,15 +193,25 @@
               rustToolchain
             ];
             text = ''
+              if [ "$#" -ne 1 ]; then
+                echo "usage: nix run .#semver-check -- <base-commit>" >&2
+                exit 2
+              fi
               if [ ! -f Cargo.toml ]; then
                 echo "semver-check: run from the consortium workspace root" >&2
                 exit 1
               fi
+              baseline_rev="$1"
               status=0
               for pkg in ${lib.escapeShellArgs publishedLibs}; do
+                echo "=== cargo semver-checks -p $pkg (git baseline: $baseline_rev; API release type: minor)"
+                if ! cargo semver-checks -p "$pkg" --baseline-rev "$baseline_rev" --release-type minor; then
+                  echo "semver-check: $pkg FAILED API compatibility against $baseline_rev" >&2
+                  status=1
+                fi
                 echo "=== cargo semver-checks -p $pkg (baseline: crates.io)"
                 if ! cargo semver-checks -p "$pkg"; then
-                  echo "semver-check: $pkg FAILED SemVer check" >&2
+                  echo "semver-check: $pkg FAILED crates.io version check" >&2
                   status=1
                 fi
               done

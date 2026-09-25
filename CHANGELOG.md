@@ -39,5 +39,5 @@ All notable changes to this project will be documented in this file.
 ### CI/CD
 
 - Gate Rust workspace tests, Nix fleet/adapter contracts, and the native Python
-  API in CI; run cargo-semver-checks against published crates.io baselines
-  outside the Nix build sandbox.
+  API in CI; enforce Rust API compatibility against the Git base commit and
+  release versioning against crates.io outside the Nix build sandbox.

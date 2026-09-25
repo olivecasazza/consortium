@@ -204,13 +204,16 @@ enroll its contract suite, and exercise the built PyO3 extension from Python:
         .#checks.${system}.integration-enrollment \
         .#checks.${system}.python-api
 
-Check published Rust API compatibility against crates.io before merging:
+Check published Rust API compatibility against the branch point and release
+versioning against crates.io before merging:
 
-    $ nix run .#semver-check
+    $ nix run .#semver-check -- "$(git merge-base HEAD master)"
 
-The SemVer app must run from the workspace root with network access; it
-fetches released baselines at runtime rather than inside a Nix build sandbox.
-CI runs both sets of gates as blocking checks on the Nix builder.
+The Git comparison always runs minor-release API lints, including while
+0.3.0 is unpublished; the crates.io comparison checks that the release
+version permits the accumulated changes. Both run outside the Nix build
+sandbox. CI supplies the exact PR base or pre-push commit and blocks on either
+failure.
 
 Python code (simple example)
 ----------------------------
