@@ -231,7 +231,49 @@ jobs:
         run: |
           docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
 
-  # ── Layer 3: Nix Integration (self-hosted NixOS Mac Minis) ────────
+  # ── Layer 3: Nix Integration Gates (self-hosted NixOS Mac Minis) ───
+  # Non-advisory premerge gate: Nix-native integration checks plus the
+  # SemVer check. The SemVer app consults crates.io for baselines, so it
+  # runs via `nix run` on the runner (outside the Nix build sandbox) and
+  # is intentionally NOT a `checks.semver` derivation.
+  nix-gates:
+    name: Nix Integration Gates (self-hosted)
+    needs: unit
+    runs-on: nix-builder
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Resolve current Nix system
+        run: echo "SYSTEM=$(nix eval --raw --impure --expr 'builtins.currentSystem')" >> "$GITHUB_ENV"
+
+      - name: Build Nix-native integration checks
+        run: |
+          nix build -L --no-link \
+            .#checks.${SYSTEM}.fleet-contract \
+            .#checks.${SYSTEM}.integration-enrollment \
+            .#checks.${SYSTEM}.python-api \
+            .#checks.${SYSTEM}.cargo-test
+
+      - name: SemVer check (crates.io baseline)
+        run: nix run .#semver-check
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Nix Integration Gates" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate | Attribute |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Fleet contract | \`checks.${SYSTEM}.fleet-contract\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration enrollment | \`checks.${SYSTEM}.integration-enrollment\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python API | \`checks.${SYSTEM}.python-api\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cargo contract tests | \`checks.${SYSTEM}.cargo-test\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SemVer | \`apps.${SYSTEM}.semver-check\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Layer 4: Nix Integration (self-hosted NixOS Mac Minis) ────────
   nix-integration:
     name: Nix Integration (self-hosted)
     needs: [docker-integration, tool-integration]

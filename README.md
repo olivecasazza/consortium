@@ -194,6 +194,24 @@ Rust unit tests run right here:
 
     $ cargo test --workspace
 
+The Nix integration gates run the workspace tests, deserialize JSON produced
+by the real `mkFleet` library in Rust, require every integration adapter to
+enroll its contract suite, and exercise the built PyO3 extension from Python:
+
+    $ system=$(nix eval --raw --impure --expr builtins.currentSystem)
+    $ nix build --no-link .#checks.${system}.cargo-test \
+        .#checks.${system}.fleet-contract \
+        .#checks.${system}.integration-enrollment \
+        .#checks.${system}.python-api
+
+Check published Rust API compatibility against crates.io before merging:
+
+    $ nix run .#semver-check
+
+The SemVer app must run from the workspace root with network access; it
+fetches released baselines at runtime rather than inside a Nix build sandbox.
+CI runs both sets of gates as blocking checks on the Nix builder.
+
 Python code (simple example)
 ----------------------------
 

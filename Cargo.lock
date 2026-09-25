@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-ansible"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-fanout-sim",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-crate"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "configparser",
  "criterion",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-examples"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-ansible",
  "consortium-crate",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-fanout-sim"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-cli",
  "consortium-crate",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-integration"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "serde",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-integration-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-integration",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-nix"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-fanout-sim",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-py"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "pyo3",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-ray"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-fanout-sim",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-skypilot"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-fanout-sim",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "consortium-slurm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "consortium-crate",
  "consortium-fanout-sim",

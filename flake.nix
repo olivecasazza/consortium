@@ -159,6 +159,58 @@
             inherit (pkgs) writeText;
           };
 
+          # ── Fleet contract fixture ─────────────────────────────────────
+          # Real mkFleet JSON over an inexpensive stub node; consumed by
+          # crates/consortium-integration/tests/nix_fleet_contract.rs.
+          # See nix/lib/fleet-contract-fixture.nix for the exact values.
+          fleetFixture = consortiumLib.mkFleet (import ./nix/lib/fleet-contract-fixture.nix);
+
+          # ── Published library crates (SemVer gate) ─────────────────────
+          # Every crates/ workspace member except consortium-py: it is
+          # published, but as a cdylib Python extension with no meaningful
+          # Rust public API for cargo-semver-checks to diff. Baselines are
+          # looked up on crates.io at RUNTIME by the semver-check app
+          # below — never inside a Nix sandbox.
+          publishedLibs =
+            let
+              workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
+              pkgName = member:
+                (builtins.fromTOML (builtins.readFile (./. + "/${member}/Cargo.toml"))).package.name;
+            in
+            map pkgName (
+              lib.filter (member: pkgName member != "consortium-py")
+                (lib.filter (lib.strings.hasPrefix "crates/") workspace.members)
+            );
+
+
+          # SemVer gate against the crates.io baseline. Runs OUTSIDE the
+          # sandbox (invoked as `nix run .#semver-check` from the workspace
+          # root): fetching the baseline is the whole point, so no network
+          # faking, no skipping failures, no `|| true` — the app exits
+          # nonzero on substantive breakage or baseline lookup errors.
+          semverCheck = pkgs.writeShellApplication {
+            name = "semver-check";
+            runtimeInputs = [
+              pkgs.cargo-semver-checks
+              rustToolchain
+            ];
+            text = ''
+              if [ ! -f Cargo.toml ]; then
+                echo "semver-check: run from the consortium workspace root" >&2
+                exit 1
+              fi
+              status=0
+              for pkg in ${lib.escapeShellArgs publishedLibs}; do
+                echo "=== cargo semver-checks -p $pkg (baseline: crates.io)"
+                if ! cargo semver-checks -p "$pkg"; then
+                  echo "semver-check: $pkg FAILED SemVer check" >&2
+                  status=1
+                fi
+              done
+              exit "$status"
+            '';
+          };
+
           # ── Python environment ─────────────────────────────────────────
           python = pkgs.python312;
           pythonEnv = python.withPackages (
@@ -207,6 +259,66 @@
               inherit src;
             };
 
+            # Fleet JSON contract: real mkFleet fixture against the real
+            # FleetConfig parser. The integration test is `#[ignore]`d in
+            # the suite because it needs a store fixture path, so plain
+            # `cargo test` skips it — this check runs it explicitly with
+            # CONSORTIUM_FLEET_CONFIG pointing at the generated JSON.
+            fleet-contract = craneLib.cargoTest (commonArgs // {
+              inherit cargoArtifacts;
+              cargoTestExtraArgs = "-p consortium-integration --test nix_fleet_contract -- --ignored";
+              CONSORTIUM_FLEET_CONFIG = fleetFixture.configFile;
+            });
+
+            # Integration adapters must be enrolled in the generated
+            # contract suite. Pure manifest gate (nix/lib/enrollment.nix);
+            # violations fail at EVAL time, never pass by accident. The
+            # enrolled suites themselves execute via cargo-test above.
+            integration-enrollment =
+              let
+                enrollment = import ./nix/lib/enrollment.nix { inherit lib; } ./.;
+              in
+              pkgs.runCommand "consortium-integration-enrollment"
+                {
+                  adapters = lib.concatStringsSep " " enrollment.adapters;
+                }
+                ''
+                  echo "enrolled contract-suite adapters: $adapters" > $out
+                '';
+
+            # Python bindings gate: builds the real PyO3 extension and runs
+            # crates/consortium-py/tests/nix_smoke.py against it plus the
+            # in-repo ClusterShell shims. Hermetic: no oracle repo, no
+            # network, no maturin/venv. The cdylib is installed as
+            # ClusterShell/_consortium.so (CPython's loader requires the
+            # .so suffix, also on darwin).
+            python-api =
+              let
+                pySrc = ./crates/consortium-py;
+                extension = craneLib.buildPackage (commonArgs // {
+                  inherit cargoArtifacts;
+                  cargoExtraArgs = "-p consortium-py";
+                  # cdylib only; nothing to test inside this derivation.
+                  doCheck = false;
+                });
+              in
+              pkgs.runCommand "consortium-python-api"
+                {
+                  nativeBuildInputs = [ pythonEnv ];
+                }
+                ''
+                  export PYTHONDONTWRITEBYTECODE=1
+
+                  mkdir -p $out
+                  cp -r ${pySrc}/ClusterShell $out/ClusterShell
+                  chmod -R u+w $out/ClusterShell
+
+                  cp ${extension}/lib/lib_consortium.* $out/ClusterShell/_consortium.so
+
+                  PYTHONPATH="$out" python ${pySrc}/tests/nix_smoke.py
+                  touch $out
+                '';
+
             # Build the library
             inherit consortium;
           };
@@ -224,6 +336,20 @@
             // lib.optionalAttrs (system == "x86_64-linux") (
               builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
             );
+
+          # ── Apps ───────────────────────────────────────────────────────
+          apps = {
+            # `nix run .#semver-check` from the workspace root: real
+            # cargo-semver-checks against the crates.io baseline for every
+            # published library crate (see publishedLibs above). Exits
+            # nonzero on substantive SemVer breakage or baseline lookup
+            # errors. Network use happens here at runtime, never inside a
+            # Nix derivation.
+            semver-check = {
+              type = "app";
+              program = lib.getExe semverCheck;
+            };
+          };
 
           # ── Dev shell ──────────────────────────────────────────────────
           devShells.default = pkgs.mkShell {

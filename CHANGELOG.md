@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking Changes
 
+- Bumped the workspace to 0.3.0: published 0.2.0 Rust APIs were already
+  incompatible with the current source, so the next release declares a
+  pre-1.0 breaking change rather than claiming 0.2.0 compatibility.
+
 ### Features
 
 - Added a strict, introspected CLI grammar gate for `claw`, `molt`, `pinch`,
@@ -13,6 +17,9 @@ All notable changes to this project will be documented in this file.
   a dedicated CI invocation.
 
 ### Bug Fixes
+
+- Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,
+  correctly in the Rust fleet consumer.
 
 ### Performance
 
@@ -30,3 +37,7 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 ### CI/CD
+
+- Gate Rust workspace tests, Nix fleet/adapter contracts, and the native Python
+  API in CI; run cargo-semver-checks against published crates.io baselines
+  outside the Nix build sandbox.
