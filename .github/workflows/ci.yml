@@ -199,7 +199,9 @@ jobs:
 
       - name: Run tool integration tests
         run: |
-          cargo nextest run \
+          # Host build needs a C linker; the NixOS runner provides one via nix.
+          nix shell nixpkgs#stdenv.cc -c \
+            cargo nextest run \
             --manifest-path consortium-tests/Cargo.toml \
             -p consortium-integration-tests \
             --features docker-tests \
