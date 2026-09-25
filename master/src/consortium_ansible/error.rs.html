@@ -17,15 +17,18 @@
 <a href=#17 id=17 data-nosnippet>17</a>    <span class="attr">#[error(<span class="string">"no ansible config in fleet configuration"</span>)]
 <a href=#18 id=18 data-nosnippet>18</a>    </span>NoConfig,
 <a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a>    <span class="attr">#[error(<span class="string">"nix error: {0}"</span>)]
-<a href=#21 id=21 data-nosnippet>21</a>    </span>Nix(<span class="attr">#[from] </span>consortium_nix::NixError),
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="attr">#[error(<span class="string">"staging error: {0}"</span>)]
+<a href=#21 id=21 data-nosnippet>21</a>    </span>Staging(<span class="attr">#[from] </span>consortium_integration::StagingError),
 <a href=#22 id=22 data-nosnippet>22</a>
-<a href=#23 id=23 data-nosnippet>23</a>    <span class="attr">#[error(<span class="string">"dag error: {0}"</span>)]
-<a href=#24 id=24 data-nosnippet>24</a>    </span>Dag(String),
+<a href=#23 id=23 data-nosnippet>23</a>    <span class="attr">#[error(<span class="string">"exec error: {0}"</span>)]
+<a href=#24 id=24 data-nosnippet>24</a>    </span>Exec(<span class="attr">#[from] </span>consortium_integration::ExecError),
 <a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a>    <span class="attr">#[error(<span class="string">"{0}"</span>)]
-<a href=#27 id=27 data-nosnippet>27</a>    </span>General(String),
-<a href=#28 id=28 data-nosnippet>28</a>}
-<a href=#29 id=29 data-nosnippet>29</a>
-<a href=#30 id=30 data-nosnippet>30</a><span class="kw">pub type </span><span class="prelude-ty">Result</span>&lt;T&gt; = std::result::Result&lt;T, AnsibleError&gt;;
+<a href=#26 id=26 data-nosnippet>26</a>    <span class="attr">#[error(<span class="string">"dag error: {0}"</span>)]
+<a href=#27 id=27 data-nosnippet>27</a>    </span>Dag(String),
+<a href=#28 id=28 data-nosnippet>28</a>
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="attr">#[error(<span class="string">"{0}"</span>)]
+<a href=#30 id=30 data-nosnippet>30</a>    </span>General(String),
+<a href=#31 id=31 data-nosnippet>31</a>}
+<a href=#32 id=32 data-nosnippet>32</a>
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub type </span><span class="prelude-ty">Result</span>&lt;T&gt; = std::result::Result&lt;T, AnsibleError&gt;;
 </code></pre></div></section></main></body></html>
