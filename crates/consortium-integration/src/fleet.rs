@@ -76,6 +76,7 @@ fn default_protocol() -> String {
 
 /// Complete fleet configuration produced by Nix evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FleetConfig {
     /// Deployment nodes keyed by hostname.
     pub nodes: HashMap<String, DeploymentNode>,
@@ -411,7 +412,7 @@ mod tests {
                     "protocol": "ssh-ng"
                 }
             },
-            "flakeUri": "."
+            "flakeUri": "github:example/fleet-contract"
         }"#
     }
 
@@ -420,7 +421,24 @@ mod tests {
         let config = FleetConfig::from_json(sample_config_json()).unwrap();
         assert_eq!(config.nodes.len(), 2);
         assert_eq!(config.builders.len(), 1);
-        assert_eq!(config.flake_uri, ".");
+        assert_eq!(config.flake_uri, "github:example/fleet-contract");
+    }
+
+    /// Regression: `FleetConfig` originally had no container-level
+    /// `#[serde(rename_all = "camelCase")]`, so Deserialize only accepted a
+    /// snake_case `flake_uri` key while the Nix producer (`mkFleet`) emits
+    /// `flakeUri`; a non-default URI therefore silently fell back to the
+    /// `"."` default. The `rename_all` attribute restores the contract.
+    #[test]
+    fn test_flake_uri_round_trip_preserved() {
+        let config = FleetConfig::from_json(sample_config_json()).unwrap();
+        let serialized = serde_json::to_string(&config).unwrap();
+        let reparsed = FleetConfig::from_json(&serialized).unwrap();
+        assert_eq!(
+            reparsed.flake_uri, "github:example/fleet-contract",
+            "flakeUri must survive a serialize/deserialize round trip; \
+             serialized JSON was: {serialized}"
+        );
     }
 
     #[test]
