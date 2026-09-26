@@ -9,8 +9,9 @@ use consortium::dag::DagBuilder;
 use consortium_integration::exec::Executor;
 use consortium_integration::staging::{self, StagingError};
 
-use crate::config::DeploymentPlan;
+use crate::config::{DeploymentPlan, ProfileType};
 use crate::error::{NixError, Result};
+use crate::eval;
 use crate::health::HealthStatus;
 
 /// Build results keyed by hostname.
@@ -126,39 +127,70 @@ pub fn build_flake_attr_with(
     flake_attr: &str,
     machines_file: Option<&str>,
 ) -> Result<String> {
-    staging::build_flake_attr(exec, flake_attr, machines_file).map_err(|e| match e {
-        StagingError::BuildFailed { message, .. } => NixError::BuildFailed {
-            host: flake_attr.to_string(),
-            message,
-        },
-        StagingError::EmptyPath { .. } => NixError::BuildFailed {
-            host: flake_attr.to_string(),
-            message: "nix build returned empty path".to_string(),
-        },
-        StagingError::Exec(source) => NixError::BuildFailed {
-            host: flake_attr.to_string(),
-            message: format!("failed to run nix build: {}", source),
-        },
-        // Unreachable from `nix build`, mapped for exhaustiveness.
-        StagingError::CopyFailed { message, .. } => NixError::BuildFailed {
-            host: flake_attr.to_string(),
-            message,
-        },
+    build_flake_attr_with_args(exec, flake_attr, machines_file, &[])
+}
+
+/// [`build_flake_attr_with`] with extra words appended to `nix build`
+/// (e.g. `--override-input foo path:./stub`).
+pub fn build_flake_attr_with_args(
+    exec: &dyn Executor,
+    flake_attr: &str,
+    machines_file: Option<&str>,
+    extra_args: &[String],
+) -> Result<String> {
+    staging::build_flake_attr_with_args(exec, flake_attr, machines_file, extra_args).map_err(|e| {
+        match e {
+            StagingError::BuildFailed { message, .. } => NixError::BuildFailed {
+                host: flake_attr.to_string(),
+                message,
+            },
+            StagingError::EmptyPath { .. } => NixError::BuildFailed {
+                host: flake_attr.to_string(),
+                message: "nix build returned empty path".to_string(),
+            },
+            StagingError::Exec(source) => NixError::BuildFailed {
+                host: flake_attr.to_string(),
+                message: format!("failed to run nix build: {}", source),
+            },
+            // Unreachable from `nix build`, mapped for exhaustiveness.
+            StagingError::CopyFailed { message, .. } => NixError::BuildFailed {
+                host: flake_attr.to_string(),
+                message,
+            },
+        }
     })
 }
 
-/// Build the system closure for a single host.
+/// Build the system closure for a single NixOS host. Use
+/// [`build_system_toplevel`] for nix-darwin hosts or extra nix arguments.
 pub fn build_host(
     exec: &dyn Executor,
     flake_uri: &str,
     hostname: &str,
     machines_file: Option<&str>,
 ) -> Result<String> {
-    let attr = format!(
-        "{}#nixosConfigurations.{}.config.system.build.toplevel",
-        flake_uri, hostname
-    );
-    build_flake_attr_with(exec, &attr, machines_file)
+    build_system_toplevel(
+        exec,
+        flake_uri,
+        hostname,
+        &ProfileType::Nixos,
+        machines_file,
+        &[],
+    )
+}
+
+/// Build the system closure for a host of either profile type, appending
+/// `extra_args` to the `nix build` command line.
+pub fn build_system_toplevel(
+    exec: &dyn Executor,
+    flake_uri: &str,
+    hostname: &str,
+    profile_type: &ProfileType,
+    machines_file: Option<&str>,
+    extra_args: &[String],
+) -> Result<String> {
+    let attr = eval::toplevel_attr(flake_uri, hostname, profile_type);
+    build_flake_attr_with_args(exec, &attr, machines_file, extra_args)
 }
 
 /// Generate a temporary machines file from healthy builders.
@@ -248,6 +280,30 @@ mod tests {
              --no-link --print-out-paths",
         );
         exec.assert_invoked_containing("--builders @/tmp/machines");
+    }
+
+    #[test]
+    fn test_build_system_toplevel_darwin_with_extra_args() {
+        let exec = ScriptedExecutor::new().on("nix build", ExecOutput::ok("/nix/store/abc-mac\n"));
+        let extra = vec![
+            "--option".to_string(),
+            "builders".to_string(),
+            "".to_string(),
+        ];
+        let path = build_system_toplevel(
+            &exec,
+            ".",
+            "mac01",
+            &ProfileType::NixDarwin,
+            Some("/tmp/machines"),
+            &extra,
+        )
+        .unwrap();
+        assert_eq!(path, "/nix/store/abc-mac");
+        exec.assert_invoked_containing(
+            "nix build .#darwinConfigurations.mac01.config.system.build.toplevel \
+             --no-link --print-out-paths --builders @/tmp/machines --option builders ",
+        );
     }
 
     #[test]
