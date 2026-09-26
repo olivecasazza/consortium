@@ -458,7 +458,20 @@ pub const PINNED_ROOT_LONGS: &[(&str, &[&str])] = &[
             "format",
         ],
     ),
-    ("cast", &["config", "flake", "verbose", "color", "format"]),
+    (
+        "cast",
+        &[
+            "config",
+            "flake",
+            "user",
+            "nix-args",
+            "darwin-nix-args",
+            "nixos-nix-args",
+            "verbose",
+            "color",
+            "format",
+        ],
+    ),
 ];
 
 /// `global-flags` rule against exact root long spellings: every pinned
