@@ -65,8 +65,18 @@ and nixbuild.net's analysis
    clients "will not be aware of each other".
 4. **No builder-to-builder transfer.** If builder A produces an input that
    builder B needs, it travels A → requester → B.
+5. **Output registration is serial on the requester.** After every build the
+   daemon worker reads and hashes each file of the output (observed in stack
+   samples as `RewritingSink` / `RefScanSink` over `PosixSourceAccessor::readFile`)
+   before it reaps finished builds or starts new ones. On the §1 build, a
+   frontier of 14 derivations stalled for tens of minutes behind registration
+   of very large trees (two `rust-docs` outputs of ~50k files each, several
+   `node_modules` trees) on a disk shared with other work; a fetcher that had
+   been killed was not even noticed until registration finished. Scattering
+   the graph also scatters this cost: each node registers its own outputs in
+   parallel, and the requester registers only the gathered runtime closure.
 
-Existing tools that route around (1):
+Existing tools that route around (1) (and, by keeping outputs remote, (5)):
 
 - **Remote store builds** (`nix build --store ssh-ng://host --eval-store auto`)
   build entirely on one remote host; intermediates never touch the requester.
