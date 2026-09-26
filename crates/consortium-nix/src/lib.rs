@@ -32,13 +32,17 @@ pub mod cascade_strategies;
 pub mod cascade_trace;
 pub mod config;
 pub mod copy;
+pub mod endpoint;
 pub mod error;
 pub mod eval;
+pub mod fleet_source;
 pub mod health;
+pub mod options;
 pub mod tasks;
 
 pub use config::{DeployAction, DeploymentNode, DeploymentPlan, FleetConfig, ProfileType};
 pub use error::{NixError, Result};
+pub use options::{DeployOptions, NixArgs};
 
 use std::sync::Arc;
 
@@ -116,7 +120,7 @@ use crate::cascade_integration::{cascade_copy_grouped, CascadeCopyConfig, Cascad
 /// scripted.assert_invoked_containing(
 ///     "nix build .#nixosConfigurations.web1.config.system.build.toplevel",
 /// );
-/// scripted.assert_invoked_containing("switch-to-configuration switch");
+/// scripted.assert_invoked_containing("switch-to-configuration' 'switch'");
 /// # Ok::<(), consortium_nix::NixError>(())
 /// ```
 pub fn deploy(
@@ -127,37 +131,44 @@ pub fn deploy(
     max_parallel: usize,
     use_builders: bool,
 ) -> Result<DeployReport> {
+    deploy_with_options(
+        exec,
+        config,
+        target_nodes,
+        action,
+        max_parallel,
+        use_builders,
+        &DeployOptions::default(),
+    )
+}
+
+/// [`deploy`] with [`DeployOptions`]: per-platform extra nix arguments and
+/// hosts activated locally (no copy, `sudo` activation, no ssh).
+#[allow(clippy::too_many_arguments)]
+pub fn deploy_with_options(
+    exec: Arc<dyn Executor>,
+    config: &FleetConfig,
+    target_nodes: &[String],
+    action: DeployAction,
+    max_parallel: usize,
+    use_builders: bool,
+    options: &DeployOptions,
+) -> Result<DeployReport> {
     // Validate targets before ANY command runs (builder health probes
     // included): an unknown target is a configuration error, not a
     // runtime failure.
     validate_targets(config, target_nodes)?;
 
     // Phase 0: Health check builders and prepare machines file
-    let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
-        let statuses = health::check_builders_with(&*exec, config);
-        let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
-        if healthy.is_empty() {
-            eprintln!("warning: no healthy builders available, building locally");
-            None
-        } else {
-            match build::generate_machines_file_from_healthy(&healthy) {
-                Ok(path) => Some(path),
-                Err(e) => {
-                    eprintln!("warning: failed to generate machines file: {}", e);
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
+    let machines_file = prepare_builders(&*exec, config, use_builders);
 
     // Set up shared context
     let ctx = DagContext::new();
     ctx.set_state("fleet_config", config.clone());
     ctx.set_state("action", action);
     ctx.set_state("executor", exec);
-    if let Some(ref path) = machines_file {
+    ctx.set_state("deploy_options", options.clone());
+    if let Some(path) = &machines_file {
         ctx.set_state("machines_file", path.clone());
     }
 
@@ -207,6 +218,31 @@ pub fn deploy(
     ))
 }
 
+/// Probe the configured builders when `use_builders` is set and write a
+/// machines file for the healthy ones. `None` means build locally.
+fn prepare_builders(
+    exec: &dyn Executor,
+    config: &FleetConfig,
+    use_builders: bool,
+) -> Option<String> {
+    if !use_builders || config.builders.is_empty() {
+        return None;
+    }
+    let statuses = health::check_builders_with(exec, config);
+    let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
+    if healthy.is_empty() {
+        eprintln!("warning: no healthy builders available, building locally");
+        return None;
+    }
+    match build::generate_machines_file_from_healthy(&healthy) {
+        Ok(path) => Some(path),
+        Err(e) => {
+            eprintln!("warning: failed to generate machines file: {}", e);
+            None
+        }
+    }
+}
+
 /// Cascade-driven deploy: same eval/build/activate as [`deploy`], but
 /// the per-host `nix copy` stage is replaced by a single whole-fleet
 /// cascade that distributes each toplevel peer-to-peer.
@@ -249,48 +285,63 @@ pub fn deploy_with_cascade(
     seed_addr: &str,
     event_sink: Option<&dyn EventSink>,
 ) -> Result<DeployReport> {
+    deploy_with_cascade_options(
+        exec,
+        config,
+        target_nodes,
+        action,
+        max_parallel,
+        use_builders,
+        cascade_fanout,
+        seed_addr,
+        event_sink,
+        &DeployOptions::default(),
+    )
+}
+
+/// [`deploy_with_cascade`] with [`DeployOptions`]. Local hosts never enter
+/// the cascade: their closure is already here, so they go straight to
+/// local activation alongside the hosts the cascade reached.
+#[allow(clippy::too_many_arguments)]
+pub fn deploy_with_cascade_options(
+    exec: Arc<dyn Executor>,
+    config: &FleetConfig,
+    target_nodes: &[String],
+    action: DeployAction,
+    max_parallel: usize,
+    use_builders: bool,
+    cascade_fanout: u32,
+    seed_addr: &str,
+    event_sink: Option<&dyn EventSink>,
+    options: &DeployOptions,
+) -> Result<DeployReport> {
     // Same upfront validation as deploy(): fail on unknown targets before
     // issuing any command.
     validate_targets(config, target_nodes)?;
 
     // Build-only path: no copy, no cascade — defer to deploy().
     if action == DeployAction::Build {
-        return deploy(
+        return deploy_with_options(
             exec,
             config,
             target_nodes,
             action,
             max_parallel,
             use_builders,
+            options,
         );
     }
 
     // Phase 0: builder health check (same as deploy()).
-    let machines_file: Option<String> = if use_builders && !config.builders.is_empty() {
-        let statuses = health::check_builders_with(&*exec, config);
-        let healthy: Vec<_> = statuses.iter().filter(|s| s.healthy).cloned().collect();
-        if healthy.is_empty() {
-            eprintln!("warning: no healthy builders available, building locally");
-            None
-        } else {
-            match build::generate_machines_file_from_healthy(&healthy) {
-                Ok(path) => Some(path),
-                Err(e) => {
-                    eprintln!("warning: failed to generate machines file: {}", e);
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
+    let machines_file = prepare_builders(&*exec, config, use_builders);
 
     // Phase 1 DAG: eval + build only.
     let ctx1 = DagContext::new();
     ctx1.set_state("fleet_config", config.clone());
     ctx1.set_state("action", action);
     ctx1.set_state("executor", exec.clone());
-    if let Some(ref path) = machines_file {
+    ctx1.set_state("deploy_options", options.clone());
+    if let Some(path) = &machines_file {
         ctx1.set_state("machines_file", path.clone());
     }
     let phase1_report = StageBuilder::new()
@@ -309,8 +360,10 @@ pub fn deploy_with_cascade(
         .map_err(|e| NixError::General(e.to_string()))?;
 
     // Collect successfully-built (host, toplevel) pairs from ctx1
-    // outputs. Skip hosts whose eval or build failed.
+    // outputs. Skip hosts whose eval or build failed. Local hosts skip
+    // the cascade entirely and go straight to activation.
     let mut targets_for_cascade: Vec<CascadeCopyTarget> = Vec::new();
+    let mut local_targets: Vec<(String, String)> = Vec::new();
     let mut eval_failures: Vec<(String, String)> = Vec::new();
     let mut build_failures: Vec<(String, String)> = Vec::new();
     for host in target_nodes {
@@ -335,6 +388,10 @@ pub fn deploy_with_cascade(
             build_failures.push((host.clone(), "host missing from fleet config".into()));
             continue;
         };
+        if options.is_local(host) {
+            local_targets.push((host.clone(), toplevel));
+            continue;
+        }
         targets_for_cascade.push(CascadeCopyTarget {
             host_name: host.clone(),
             ssh_addr: format!("{}@{}", node.target_user, node.target_host),
@@ -357,12 +414,19 @@ pub fn deploy_with_cascade(
     ctx2.set_state("fleet_config", config.clone());
     ctx2.set_state("action", action);
     ctx2.set_state("executor", exec);
+    ctx2.set_state("deploy_options", options.clone());
 
     // Carry the toplevels forward so activate can find them. Hosts
     // whose copy failed are excluded — they won't be in the activate
-    // resource list.
+    // resource list. Local hosts count as copied.
     let copied_set: std::collections::HashSet<&String> = cascade_result.copied.iter().collect();
     let mut activate_targets: Vec<String> = Vec::new();
+    let mut copied = cascade_result.copied.clone();
+    for (host, toplevel) in &local_targets {
+        ctx2.set_output(TaskId(format!("copy:{}", host)), toplevel.clone());
+        activate_targets.push(host.clone());
+        copied.push(host.clone());
+    }
     for t in &targets_for_cascade {
         if copied_set.contains(&t.host_name) {
             ctx2.set_output(
@@ -420,7 +484,7 @@ pub fn deploy_with_cascade(
 
     Ok(DeployReport {
         built,
-        copied: cascade_result.copied,
+        copied,
         activated,
         eval_failures,
         build_failures,

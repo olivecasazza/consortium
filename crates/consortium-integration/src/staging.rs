@@ -74,11 +74,24 @@ pub fn build_flake_attr(
     flake_attr: &str,
     machines_file: Option<&str>,
 ) -> Result<String, StagingError> {
+    build_flake_attr_with_args(exec, flake_attr, machines_file, &[])
+}
+
+/// [`build_flake_attr`] with extra words appended to the `nix build`
+/// command line (e.g. `--override-input foo path:./stub`). The words are
+/// passed through verbatim, after `--builders`.
+pub fn build_flake_attr_with_args(
+    exec: &dyn Executor,
+    flake_attr: &str,
+    machines_file: Option<&str>,
+    extra_args: &[String],
+) -> Result<String, StagingError> {
     let mut spec =
         CommandSpec::new("nix").args(["build", flake_attr, "--no-link", "--print-out-paths"]);
     if let Some(path) = machines_file {
         spec = spec.args(["--builders".to_string(), format!("@{}", path)]);
     }
+    spec = spec.args(extra_args.iter().cloned());
 
     let output = exec.exec(&spec)?;
 
