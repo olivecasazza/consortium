@@ -159,6 +159,10 @@
             inherit (pkgs) writeText;
           };
 
+          # ── cast-on: push deploys for NixOS / nix-darwin fleets ────────
+          # Shell tool around `pinch` + `nix build/copy`; see nix/cast-on.nix.
+          cast-on = pkgs.callPackage ./nix/cast-on.nix { inherit consortium-cli; };
+
           # ── Fleet contract fixture ─────────────────────────────────────
           # Real mkFleet JSON over an inexpensive stub node; consumed by
           # crates/consortium-integration/tests/nix_fleet_contract.rs.
@@ -334,7 +338,12 @@
           # ── Packages ───────────────────────────────────────────────────
           packages =
             {
-              inherit consortium consortium-cli consortium-nix;
+              inherit
+                consortium
+                consortium-cli
+                consortium-nix
+                cast-on
+                ;
               default = consortium-cli;
 
               # Skill catalog for downstream consumers. `$out` is a directory
