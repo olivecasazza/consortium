@@ -1,5 +1,28 @@
 # Changelog
 
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+
+## Features
+
+- add executor abstraction and shared integration contract
+- adopt integration contract suite; fix eval-failure accounting and target validation
+
+## Refactoring
+
+- route all command execution through the Executor abstraction
+- drop deprecated pre-executor staging shims
+
+## Testing
+
+- add SimExecutor-based deploy pipeline sim tests
+
+## style
+
+- apply cargo fmt --all
+
+
 ## Bug Fixes
 
 - transient-vs-permanent error semantic + summary alignment

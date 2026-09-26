@@ -1,5 +1,24 @@
 # Changelog
 
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+
+## Features
+
+- port upstream index, stepped slices, mapall upcall
+- introspected grammar module with TDD suite
+- gate grammar drift with an embedded baseline
+
+## Refactoring
+
+- route all command execution through the Executor abstraction
+
+## style
+
+- apply cargo fmt across workspace crates
+
+
 ## Bug Fixes
 
 - use alt screen buffer to fix multi-n0 stacking
