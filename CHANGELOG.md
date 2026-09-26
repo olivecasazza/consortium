@@ -15,6 +15,11 @@ All notable changes to this project will be documented in this file.
 - Added a strict, introspected CLI grammar gate for `claw`, `molt`, `pinch`,
   and `cast`, with an embedded zero-violation baseline, drift checks, and
   a dedicated CI invocation.
+- Added `packages.<system>.cast-on`: a push-based NixOS / nix-darwin fleet
+  deploy tool (build locally, `nix copy`, activate concurrently) whose
+  `@group` targets are expanded from a ClusterShell `groups.d` file via
+  `pinch`. Flake, default targets, groups file, SSH user, and per-platform
+  extra nix args are configurable via flags/environment.
 
 ### Bug Fixes
 

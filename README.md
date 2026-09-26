@@ -76,6 +76,29 @@ file is missing. `dump` prints the introspected rows as JSON, including
 registry placeholders for binaries without exported clap arguments. Review
 rule changes rather than adding new violations to the baseline.
 
+### cast-on: push deploys for NixOS / nix-darwin fleets
+
+`cast-on` (`nix/cast-on.nix`, exported as `packages.<system>.cast-on`) drives
+a flake deploy from one workstation: every target's system closure is built
+locally, `nix copy`'d to its host, then activated — copies and activations run
+concurrently across hosts. Targets are hostnames or `@group` entries from a
+ClusterShell `groups.d` file, expanded with `pinch -e`, so bracket ranges and
+comma lists work. A host's configuration attribute is its hostname up to the
+first dot, looked up in `darwinConfigurations` then `nixosConfigurations`.
+
+```sh
+nix run .#cast-on -- --help
+nix run .#cast-on -- --flake ~/src/my-config --dry-run node[1-3]
+nix run .#cast-on -- @darwin              # group from ~/.config/clustershell/groups.d/cluster.cfg
+```
+
+Defaults come from the environment: `CAST_ON_FLAKE` (else the git toplevel of
+`$PWD`), `CAST_ON_DEFAULT_TARGETS` (`@all-deploy`), `CAST_ON_GROUPS_FILE`,
+`CAST_ON_SSH_USER` (`$USER`), and `CAST_ON_DARWIN_NIX_ARGS` /
+`CAST_ON_NIXOS_NIX_ARGS` for extra `nix eval`/`nix build` words such as
+`--override-input`. Downstream flakes can bake their own defaults by wrapping
+the package with `makeWrapper` / `--set-default`.
+
 ## Integrations
 
 Consortium replaces ClusterShell and adds scheduler and infrastructure
