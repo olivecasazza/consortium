@@ -116,6 +116,60 @@ fn test_eval_by_tag() {
         .stdout(predicate::str::contains("Evaluating 1 host(s)"));
 }
 
+/// `@group` in `--on` expands through a flat `groups.d` file under
+/// `$XDG_CONFIG_HOME/clustershell`; `host2.local` maps to node `host2`.
+#[test]
+fn test_eval_group_from_xdg_groups_d() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_fleet_config(dir.path());
+    let groups_d = dir.path().join("xdg/clustershell/groups.d");
+    std::fs::create_dir_all(&groups_d).unwrap();
+    std::fs::write(
+        groups_d.join("lab.cfg"),
+        "# lab\nfront: host2.local\nall: host[1-2]\n",
+    )
+    .unwrap();
+
+    cast()
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+        .env("HOME", dir.path())
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "eval",
+            "--on",
+            "@front",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Evaluating 1 host(s)"))
+        .stdout(predicate::str::contains("host2 →"));
+
+    cast()
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg"))
+        .env("HOME", dir.path())
+        .args(["--config", config.to_str().unwrap(), "eval", "-w", "@nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("group '@nope' not found"))
+        .stderr(predicate::str::contains("clustershell/groups.d/*"));
+}
+
+/// Without `--config`, a `fleet.json` in the working directory is used
+/// before any flake discovery.
+#[test]
+fn test_implicit_fleet_json_in_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    write_fleet_config(dir.path());
+
+    cast()
+        .current_dir(dir.path())
+        .args(["eval"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Evaluating 2 host(s)"));
+}
+
 #[test]
 fn test_unknown_node() {
     let dir = tempfile::tempdir().unwrap();
