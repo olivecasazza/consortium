@@ -336,6 +336,35 @@
             {
               inherit consortium consortium-cli consortium-nix;
               default = consortium-cli;
+
+              # Skill catalog for downstream consumers. `$out` is a directory
+              # of skill directories whose names equal their SKILL.md `name:`
+              # frontmatter value (never the source directory name), each
+              # holding SKILL.md plus its `agents assets examples references
+              # scripts tests` resource dirs. Consumed by `local.skills.sources`
+              # in nixos-config and by the olive-skills catalog, both of which
+              # merge it with `cp -rL $skills/. $out/`.
+              #
+              # Assembly loop mirrors olive-skills' own `packages.default`, so
+              # a consumer of either catalog sees an identical layout. The
+              # `test -n` guard fails the build rather than silently shipping
+              # a skill under the literal name "".
+              skills = pkgs.runCommand "consortium-skills" { nativeBuildInputs = [ pkgs.findutils ]; } ''
+                mkdir -p $out
+                for skill_file in ${./skills}/*/SKILL.md; do
+                  source_dir="$(dirname "$skill_file")"
+                  skill_name="$(sed -n 's/^name:[[:space:]]*//p' "$skill_file" | head -n1)"
+                  test -n "$skill_name"
+                  destination="$out/$skill_name"
+                  mkdir -p "$destination"
+                  find "$source_dir" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+                  for resource in agents assets examples references scripts tests; do
+                    if test -d "$source_dir/$resource"; then
+                      cp -rL "$source_dir/$resource" "$destination/$resource"
+                    fi
+                  done
+                done
+              '';
             }
             # microVM test-fleet qemu runners (x86_64-linux only; they can
             # only RUN on a linux KVM host, but build from anywhere):
