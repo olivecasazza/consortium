@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- `cascade-copy` now accepts SSH ports in node addresses (`user@host:port`,
+  bracketed IPv6) for non-seed cascade sources, so guests behind per-node
+  host forwards can relay to each other.
+
 ### Bug Fixes
 
 - Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,

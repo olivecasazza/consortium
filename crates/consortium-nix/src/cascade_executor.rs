@@ -16,6 +16,12 @@
 //! - Otherwise: SSH into `src` and run `nix copy ...` THERE (the source
 //!   forwards the closure it received in a prior round)
 //!
+//! Source addresses may carry a port (`root@10.0.2.2:22201`); it is parsed
+//! and forwarded to the ssh invocation. This is what lets a fleet of guests
+//! behind per-node host forwards cascade to each other. The destination URI
+//! (`ssh-ng://user@host:port`) carries the port natively, so targets need no
+//! special handling.
+//!
 //! ## Trust + signing
 //!
 //! `--no-check-sigs` is passed because closures built locally are NOT
@@ -48,7 +54,10 @@ pub struct NixCopyExecutor {
     /// Command executor every `nix copy` / `ssh` invocation runs through.
     /// `ProcessExecutor` in production, `ScriptedExecutor` in tests.
     pub exec: Arc<dyn Executor>,
-    /// NodeId → SSH address (e.g. `"root@hp01"` or `"olive@seir"`).
+    /// NodeId → SSH address. Accepts `user`, `user@host`, `user@host:port`,
+    /// and bracketed IPv6 with an optional port (`root@[2001:db8::1]:22201`);
+    /// a bare host defaults to `root`. The port, when present, is passed to
+    /// the ssh invocation via [`consortium_integration::exec::SshTarget::port`].
     /// Seed node also has an entry here for symmetry, even though
     /// edges originating from it run locally.
     pub addrs: HashMap<NodeId, String>,
@@ -57,9 +66,17 @@ pub struct NixCopyExecutor {
     /// NodeId of the seed — edges originating from it run via local
     /// `nix copy`; all other src edges run via `ssh <src> 'nix copy …'`.
     pub seed: NodeId,
-    /// Per-edge command timeout. Cascade halts the edge if the SSH
-    /// or `nix copy` hasn't returned by this point — typically the
-    /// remote is unreachable. Default 5 minutes.
+    /// Intended per-edge command timeout, default 5 minutes.
+    ///
+    /// NOT CURRENTLY APPLIED. [`crate::cascade::run_cascade`] has no edge
+    /// deadline, [`consortium_integration::exec::CommandSpec`] carries no
+    /// timeout, and `ProcessExecutor` blocks on `wait_with_output()`, so a
+    /// hung `nix copy` over ssh blocks its dispatch thread indefinitely.
+    /// Enforcing this would mean adding a duration to the `Executor` trait
+    /// and every implementation — a workspace-wide published-API change.
+    /// Until then the CALLER must bound execution (the fanout benchmark
+    /// does so in `nix/fanout-vms/bench.py`). Kept, rather than deleted,
+    /// because it is a public field of a published crate.
     pub timeout: Duration,
 }
 
@@ -126,12 +143,17 @@ impl NixCopyExecutor {
                     stderr: format!("no SSH address registered for src {src}"),
                 });
             };
-            let (user, host) = split_ssh_addr(src_addr);
+            let (user, host, port) = split_ssh_addr(src_addr)
+                .map_err(|stderr| CascadeError::Copy { node: tgt, stderr })?;
+            let mut ssh_target = SshTarget::new(user, host);
+            if let Some(port) = port {
+                ssh_target = ssh_target.port(port);
+            }
             // accept-new overrides the DEFAULT_SSH_OPTS StrictHostKeyChecking=no
             // (extra opts come after the defaults).
             CommandSpec::new("nix")
                 .args(copy_args)
-                .ssh(SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"))
+                .ssh(ssh_target.extra_opt("-oStrictHostKeyChecking=accept-new"))
         };
 
         let result = self.exec.exec(&spec);
@@ -161,7 +183,7 @@ impl RoundExecutor for NixCopyExecutor {
         thread::scope(|scope| {
             for &(src, tgt) in edges {
                 let tx = tx.clone();
-                let me = &*self;
+                let me = self;
                 scope.spawn(move || {
                     let outcome = me.run_edge(src, tgt);
                     let _ = tx.send(((src, tgt), outcome));
@@ -205,15 +227,40 @@ fn classify_copy_error(tgt: NodeId, src: NodeId, stderr: &str) -> CascadeError {
     }
 }
 
-/// Split a `user@host` SSH address into its parts.
+/// Split a `user@host[:port]` SSH address into its parts.
 ///
-/// Fleet addresses are always `user@host`; a bare host falls back to
-/// `root` so hand-rolled inventories keep working.
-fn split_ssh_addr(addr: &str) -> (String, String) {
-    match addr.split_once('@') {
-        Some((user, host)) => (user.to_string(), host.to_string()),
-        None => ("root".to_string(), addr.to_string()),
-    }
+/// A bare host defaults to `root`. Brackets disambiguate an IPv6 host
+/// with a port; unbracketed IPv6 remains a host without a port.
+fn split_ssh_addr(addr: &str) -> Result<(&str, &str, Option<u16>), String> {
+    let (user, host) = addr.split_once('@').unwrap_or(("root", addr));
+    let (host, port) = if let Some(bracketed) = host.strip_prefix('[') {
+        let (host, suffix) = bracketed
+            .split_once(']')
+            .ok_or_else(|| format!("invalid SSH address {addr:?}: missing closing bracket"))?;
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':').ok_or_else(|| {
+                format!("invalid SSH address {addr:?}: expected port after closing bracket")
+            })?)
+        };
+        (host, port)
+    } else if host.bytes().filter(|&byte| byte == b':').count() == 1 {
+        let (host, port) = host.split_once(':').expect("one colon is present");
+        (host, Some(port))
+    } else {
+        (host, None)
+    };
+    let port = port
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .ok()
+                .filter(|&port| port != 0 && value.bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or_else(|| format!("invalid SSH port in address {addr:?}"))
+        })
+        .transpose()?;
+    Ok((user, host, port))
 }
 
 #[cfg(test)]
@@ -223,22 +270,35 @@ mod tests {
 
     #[test]
     fn split_ssh_addr_user_at_host() {
-        assert_eq!(
-            split_ssh_addr("root@hp01"),
-            ("root".to_string(), "hp01".to_string())
-        );
+        assert_eq!(split_ssh_addr("root@hp01"), Ok(("root", "hp01", None)));
         assert_eq!(
             split_ssh_addr("olive@192.168.1.121"),
-            ("olive".to_string(), "192.168.1.121".to_string())
+            Ok(("olive", "192.168.1.121", None))
         );
     }
 
     #[test]
     fn split_ssh_addr_bare_host_defaults_to_root() {
+        assert_eq!(split_ssh_addr("hp01"), Ok(("root", "hp01", None)));
+    }
+
+    #[test]
+    fn split_ssh_addr_preserves_ipv6_hosts() {
         assert_eq!(
-            split_ssh_addr("hp01"),
-            ("root".to_string(), "hp01".to_string())
+            split_ssh_addr("root@2001:db8::1"),
+            Ok(("root", "2001:db8::1", None))
         );
+        assert_eq!(
+            split_ssh_addr("root@[2001:db8::1]:22201"),
+            Ok(("root", "2001:db8::1", Some(22201)))
+        );
+    }
+
+    #[test]
+    fn split_ssh_addr_rejects_invalid_port_ranges() {
+        for addr in ["root@host:0", "root@host:65536", "root@host:"] {
+            assert!(split_ssh_addr(addr).is_err(), "{addr}");
+        }
     }
 
     #[test]
@@ -301,7 +361,56 @@ mod tests {
             .find(|c| c.starts_with("ssh ") && c.contains("ssh-ng://root@n2"))
             .expect("relayed edge should be ssh-wrapped");
         assert!(relay.contains("-l root"), "{}", relay);
+        assert!(!relay.contains(" -p "), "{}", relay);
         assert!(relay.contains("accept-new n1 "), "{}", relay);
+    }
+
+    #[test]
+    fn dispatch_relays_via_explicit_source_ssh_port() {
+        let scripted = Arc::new(ScriptedExecutor::new().on("", ExecOutput::ok("")));
+        let addrs = HashMap::from([
+            (NodeId(1), "root@10.0.2.2:22201".to_string()),
+            (NodeId(2), "root@10.0.2.2:22202".to_string()),
+        ]);
+        let exec = NixCopyExecutor::new(scripted.clone(), addrs, "/nix/store/abc", NodeId(0));
+
+        let out = exec.dispatch(&[], &[(NodeId(1), NodeId(2))], &NetworkProfile::default());
+
+        assert!(out[&(NodeId(1), NodeId(2))].is_ok());
+        let commands = scripted.invocations();
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].contains("-l root -p 22201 "), "{}", commands[0]);
+        assert!(
+            commands[0].contains("accept-new 10.0.2.2 "),
+            "{}",
+            commands[0]
+        );
+        assert!(
+            commands[0].contains("ssh-ng://root@10.0.2.2:22202"),
+            "{}",
+            commands[0]
+        );
+    }
+
+    #[test]
+    fn dispatch_rejects_invalid_source_ssh_port_before_invoking_ssh() {
+        let scripted = Arc::new(ScriptedExecutor::new());
+        let addrs = HashMap::from([
+            (NodeId(1), "root@10.0.2.2:invalid".to_string()),
+            (NodeId(2), "root@10.0.2.2:22202".to_string()),
+        ]);
+        let exec = NixCopyExecutor::new(scripted.clone(), addrs, "/nix/store/abc", NodeId(0));
+
+        let out = exec.dispatch(&[], &[(NodeId(1), NodeId(2))], &NetworkProfile::default());
+
+        match &out[&(NodeId(1), NodeId(2))] {
+            Err(CascadeError::Copy { node, stderr }) => {
+                assert_eq!(*node, NodeId(2));
+                assert!(stderr.contains("invalid SSH port"), "{stderr}");
+            }
+            other => panic!("expected invalid port error, got {other:?}"),
+        }
+        assert!(scripted.invocations().is_empty());
     }
 
     #[test]
