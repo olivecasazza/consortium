@@ -10,4 +10,5 @@ pub mod inventory;
 pub mod molt;
 pub mod output;
 pub mod pinch;
+pub mod sandbox;
 pub mod tree;

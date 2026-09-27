@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 description = "CLI tools for consortium — claw, molt, pinch"
 
+[features]
+# Hypervisor-backed sandbox. libkrun is Linux-only in nixpkgs, so this stays
+# off by default: the crate must build and test on darwin too.
+libkrun = []
+
 [dependencies]
 consortium.workspace = true
 consortium-integration.workspace = true
