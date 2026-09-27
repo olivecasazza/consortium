@@ -46,6 +46,7 @@ All notable changes to this project will be documented in this file.
 - Configure the parity runner's nested loopback SSH sessions with the
   ClusterShell hostname fixture and quiet host-key handling, so tree copy,
   reverse-copy, and abort tests exercise simulated node identities reliably.
-- Put the parity venv on the loopback SSH login PATH so tree gateways, which
-  upstream launches as `python` from that PATH, load the Rust backend instead
-  of dying at import and surfacing as `No route available`.
+- Give the parity runner's gateway login shells a working Rust backend: the
+  venv's `python` on PATH and `LIB_CLUSTERSHELL`, which upstream does not
+  forward to gateways. Without them every tree gateway failed to import
+  `ClusterShell.Gateway` and surfaced as `No route available`.
