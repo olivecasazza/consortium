@@ -190,6 +190,7 @@
             name = "semver-check";
             runtimeInputs = [
               pkgs.cargo-semver-checks
+              pkgs.stdenv.cc
               rustToolchain
             ];
             text = ''
