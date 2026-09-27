@@ -78,13 +78,21 @@ impl VfkitSandbox {
             return Err(SandboxError::UnsupportedReadOnlyShare { path: path.clone() });
         }
 
+        // vfkit has no separate flag for appending to the kernel command line:
+        // the only way to pass a command is inside the bootloader's cmdline=.
+        let payload = std::iter::once(command.program.as_str())
+            .chain(command.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let cmdline = format!("{} -- {payload}", self.cmdline);
+
         let mut argv = vec![
             "--bootloader".to_string(),
             format!(
                 "linux,kernel={},initrd={},cmdline=\"{}\"",
                 self.kernel.display(),
                 self.initrd.display(),
-                self.cmdline
+                cmdline
             ),
             "--memory".to_string(),
             self.memory_mib.to_string(),
@@ -100,16 +108,11 @@ impl VfkitSandbox {
         if spec.network == NetworkPolicy::Deny && !spec.writable_paths.is_empty() {
             return Err(SandboxError::Unsupported("a network-denying policy"));
         }
+        // vfkit requires exactly one of nat/fd/unixSocketPath; a bare
+        // "virtio-net" is rejected with "one of 'nat' or 'fd' or
+        // 'unixSocketPath' must be set". nat is vfkit's own default.
         argv.push("--device".to_string());
-        argv.push("virtio-net".to_string());
-
-        // The guest boots to run exactly this command.
-        let payload = std::iter::once(command.program.as_str())
-            .chain(command.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
-        argv.push("--cmdline-append".to_string());
-        argv.push(payload);
+        argv.push("virtio-net,nat".to_string());
 
         Ok(argv)
     }
@@ -198,6 +201,35 @@ mod tests {
         assert!(argv
             .iter()
             .any(|a| a == "virtio-fs,sharedDir=/srv/data,mountTag=share0"));
+    }
+
+    #[test]
+    fn command_payload_lands_in_the_bootloader_cmdline() {
+        // Regression: an invented `--cmdline-append` flag was used here once.
+        // vfkit only accepts `--bootloader linux,...,cmdline="..."`, so the
+        // command must ride in that value or every invocation fails with
+        // "unknown flag".
+        let spec = SandboxSpec::deny_all().with_network(NetworkPolicy::Allow);
+        let cmd = SandboxCommand::new("/bin/echo").arg("hello");
+        let argv = backend().build_argv(&spec, &cmd).expect("should build");
+        let bootloader = argv.get(1).expect("bootloader arg");
+        assert!(bootloader.starts_with("linux,"), "{bootloader}");
+        assert!(
+            bootloader.contains("cmdline=\"console=ttyS0 -- /bin/echo hello\""),
+            "{bootloader}"
+        );
+        // Nothing outside the documented flag set may appear.
+        for arg in &argv {
+            if arg.starts_with("--") {
+                assert!(
+                    matches!(
+                        arg.as_str(),
+                        "--bootloader" | "--memory" | "--cpus" | "--device"
+                    ),
+                    "unexpected flag {arg}"
+                );
+            }
+        }
     }
 
     #[test]
