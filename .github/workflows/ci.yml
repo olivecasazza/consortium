@@ -36,10 +36,12 @@ jobs:
 
       - name: Run unit tests
         run: |
+          # The ci profile writes target/nextest/ci/junit.xml itself. The old
+          # `| tee` into that path failed (directory not yet created) and,
+          # under pipefail, failed the step even when every test passed.
           cargo nextest run --workspace \
             --profile ci \
-            --no-fail-fast \
-            2>&1 | tee target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -120,8 +122,7 @@ jobs:
             --test docker_integration \
             --profile ci \
             --test-threads=1 \
-            --no-fail-fast \
-            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -137,7 +138,7 @@ jobs:
           docker ps -a --filter "name=consortium-test" -q | xargs -r docker rm -f
           docker network ls --filter "name=consortium-test" -q | xargs -r docker network rm
 
-  # ── Layer 2b: Tool Integration Tests (self-hosted, needs Docker + nix) ─
+  # ── Layer 2b: Tool Integration Tests (ARC runner, Docker + Nix) ──
   tool-integration:
     name: Tool Integration Tests
     needs: unit
@@ -145,6 +146,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure Nix is installed
+        uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          force-no-systemd: true
 
       - name: Check out consortium-tests
         uses: actions/checkout@v4
@@ -161,8 +167,7 @@ jobs:
 
       - name: Setup Rust toolchain
         run: |
-          # Rust and cargo-nextest are in the runner's extraPackages (NixOS module).
-          # Fallback: install rustup if cargo is missing from the runner image.
+          # ARC runner images may not include Rust, so install it when absent.
           if ! command -v cargo >/dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
@@ -199,7 +204,7 @@ jobs:
 
       - name: Run tool integration tests
         run: |
-          # Host build needs a C linker; the NixOS runner provides one via nix.
+          # Use Nix to supply the host C linker independently of the runner image.
           nix shell nixpkgs#stdenv.cc -c \
             cargo nextest run \
             --manifest-path consortium-tests/Cargo.toml \
@@ -208,8 +213,7 @@ jobs:
             --test tool_integration \
             --profile ci \
             --test-threads=1 \
-            --no-fail-fast \
-            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -224,14 +228,14 @@ jobs:
         run: |
           RUNNER_HOST=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "$RUNNER_NAME")
           echo "## Tool Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "**Runner:** \`${RUNNER_HOST}\` (self-hosted NixOS)" >> $GITHUB_STEP_SUMMARY
+          echo "**Runner:** \`${RUNNER_HOST}\` (self-hosted ARC)" >> $GITHUB_STEP_SUMMARY
 
       - name: Cleanup containers
         if: always()
         run: |
           docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
 
-  # ── Layer 3: Nix Integration Gates (self-hosted NixOS Mac Minis) ───
+  # ── Layer 3: Nix Integration Gates (self-hosted ARC runner) ──────
   # Non-advisory premerge gate: Nix-native integration checks plus Git-base
   # API compatibility and crates.io release-version checks. Both SemVer
   # comparisons run via `nix run` outside the Nix build sandbox.
@@ -245,10 +249,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Ensure Nix is installed
+        uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          force-no-systemd: true
+
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Resolve current Nix system
-        run: echo "SYSTEM=$(nix eval --raw --impure --expr 'builtins.currentSystem')" >> "$GITHUB_ENV"
+        run: |
+          SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          test -n "$SYSTEM"
+          echo "SYSTEM=$SYSTEM" >> "$GITHUB_ENV"
 
       - name: Build Nix-native integration checks
         run: |
@@ -276,7 +288,7 @@ jobs:
           echo "| Cargo contract tests | \`checks.${SYSTEM}.cargo-test\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SemVer | \`apps.${SYSTEM}.semver-check\` |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Layer 4: Nix Integration (self-hosted NixOS Mac Minis) ────────
+  # ── Layer 4: Nix Integration (self-hosted ARC runner) ────────────
   nix-integration:
     name: Nix Integration (self-hosted)
     needs: [docker-integration, tool-integration]
@@ -284,6 +296,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure Nix is installed
+        uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          force-no-systemd: true
 
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
