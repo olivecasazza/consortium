@@ -36,10 +36,12 @@ jobs:
 
       - name: Run unit tests
         run: |
+          # The ci profile writes target/nextest/ci/junit.xml itself. The old
+          # `| tee` into that path failed (directory not yet created) and,
+          # under pipefail, failed the step even when every test passed.
           cargo nextest run --workspace \
             --profile ci \
-            --no-fail-fast \
-            2>&1 | tee target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
