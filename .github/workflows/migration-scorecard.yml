@@ -117,13 +117,20 @@ jobs:
             LogLevel ERROR
           EOF
           chmod 600 ~/.ssh/config
-          { printf 'export PATH="%s/consortium-tests/tests/bin:$PATH"\n' "$GITHUB_WORKSPACE"; cat ~/.bashrc; } > ~/.bashrc.new
+          # Gateways run `basename(sys.executable)` (`python`) in an SSH login
+          # shell, so the venv holding the Rust extension must be on that PATH,
+          # as upstream expects the gateway's `python` to have ClusterShell. The
+          # hostname fixture stays first so it shadows the system hostname.
+          { printf 'export PATH="%s/consortium-tests/tests/bin:%s/.venv/bin:$PATH"\n' "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE"; cat ~/.bashrc; } > ~/.bashrc.new
           mv ~/.bashrc.new ~/.bashrc
 
           # Prove nested tree commands observe the simulated destination node.
           for node in 127.0.0.{2..7}; do
             test "$(ssh "$node" hostname -s)" = "$node"
           done
+          # Prove gateways resolve the venv interpreter and can load the backend.
+          test "$(ssh 127.0.0.2 command -v python)" = "$GITHUB_WORKSPACE/.venv/bin/python"
+          ssh 127.0.0.2 python -c 'import ClusterShell._consortium'
 
       # ── Python tests: original backend ─────────────────────────
       - name: Run Python tests (original backend)
