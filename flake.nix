@@ -190,6 +190,9 @@
             name = "semver-check";
             runtimeInputs = [
               pkgs.cargo-semver-checks
+              # cargo-semver-checks runs `cargo rustdoc`, whose proc-macro
+              # build scripts need a C linker; without `cc` on PATH every
+              # published crate fails with "linker `cc` not found".
               pkgs.stdenv.cc
               rustToolchain
             ];
