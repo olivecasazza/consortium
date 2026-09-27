@@ -41,3 +41,6 @@ All notable changes to this project will be documented in this file.
 - Gate Rust workspace tests, Nix fleet/adapter contracts, and the native Python
   API in CI; enforce Rust API compatibility against the Git base commit and
   release versioning against crates.io outside the Nix build sandbox.
+- Configure the parity runner's nested loopback SSH sessions with the
+  ClusterShell hostname fixture and quiet host-key handling, so tree copy,
+  reverse-copy, and abort tests exercise simulated node identities reliably.
