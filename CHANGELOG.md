@@ -20,6 +20,8 @@ All notable changes to this project will be documented in this file.
 
 - Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,
   correctly in the Rust fleet consumer.
+- Launch Rust-backed tree gateways with the active Python interpreter so they
+  retain access to the compiled extension across SSH login shells.
 
 ### Performance
 

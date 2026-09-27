@@ -6,8 +6,9 @@ Exercises real consumer-visible Rust<->Python behavior, end to end:
   1. the compiled PyO3 extension ``ClusterShell._consortium`` is importable;
   2. ``ClusterShell.RangeSet`` hands out the native RangeSet and the Rust
      folding algorithm honors the ``autostep`` property (fold/unfold);
-  3. the vendored ``ClusterShell.NodeSet`` shim folds/expands node patterns
-     by delegating ``str(RangeSet)`` to the extension (NodeSetBase.__str__).
+  3. importing the Rust backend pins tree gateways to the current Python
+     interpreter, so nested workers can import the compiled extension;
+  4. the vendored ``ClusterShell.NodeSet`` shim folds/expands node patterns
      Expected values are the module's own documented example.
 
 Deterministic and hermetic: no network, no oracle checkout. Requires the
@@ -23,6 +24,7 @@ import sys
 
 # This gate exercises the Rust backend specifically; never let an ambient
 # CONSORTIUM_BACKEND redirect ClusterShell to the pure-Python oracle.
+os.environ.pop("CLUSTERSHELL_GW_PYTHON_EXECUTABLE", None)
 os.environ["CONSORTIUM_BACKEND"] = "rust"
 
 
@@ -43,8 +45,16 @@ def main():
             file=sys.stderr,
         )
         return 2
+    # 2. A gateway launched by the hybrid Python layer must use the same
+    # interpreter that imported the native module. The upstream fallback to
+    # basename(sys.executable) loses the active virtualenv over SSH.
+    expect(
+        os.environ.get("CLUSTERSHELL_GW_PYTHON_EXECUTABLE"),
+        sys.executable,
+        "gateway Python executable",
+    )
 
-    # 2. RangeSet: the shim must re-export the native class and the Rust
+    # 3. RangeSet: the shim must re-export the native class and the Rust
     # folding must honor autostep. Default autostep is disabled, so step-2
     # elements stay unfolded; autostep=3 collapses them to a /step slice.
     from ClusterShell.RangeSet import RangeSet
@@ -62,7 +72,7 @@ def main():
     rs.autostep = None  # disabling stepping must unfold on the next fold
     expect(str(rs), "0,2,4,6,8", "str() after rs.autostep = None")
 
-    # 3. NodeSet shim on top of the native RangeSet. NodeSetBase.__str__
+    # 4. NodeSet shim on top of the native RangeSet. NodeSetBase.__str__
     # renders patterns via str(rset) of the Rust-backed RangeSet.
     from ClusterShell.NodeSet import NodeSet, expand, fold
 
@@ -87,5 +97,5 @@ if __name__ == "__main__":
         print("nix_smoke: FAIL: %s" % exc, file=sys.stderr)
         code = 1
     if code == 0:
-        print("nix_smoke: OK (rust RangeSet autostep folding + NodeSet shim)")
+        print("nix_smoke: OK (gateway interpreter + rust RangeSet/NodeSet)")
     sys.exit(code)

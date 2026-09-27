@@ -77,6 +77,14 @@ if BACKEND == "python":
             "containing the original."
         )
 else:
+    # TreeWorker defaults to basename(sys.executable), which loses an active
+    # virtualenv when SSH starts a gateway login shell. The Rust backend is a
+    # compiled extension installed for this interpreter, so nested gateways
+    # must use the interpreter that successfully imported it. Keep an explicit
+    # deployment override authoritative.
+    if sys.executable:
+        os.environ.setdefault("CLUSTERSHELL_GW_PYTHON_EXECUTABLE", sys.executable)
+
     # Rust backend: let modules/subpackages that have no rust-backed shim yet
     # (CLI, Engine, Worker, Task, MsgTree, ...) resolve from the original
     # lib/ tree. Shims in this directory take precedence (they are listed
