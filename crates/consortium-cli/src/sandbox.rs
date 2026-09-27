@@ -162,6 +162,8 @@ pub enum SandboxError {
     Spawn(io::Error),
     /// The backend does not implement the requested capability.
     Unsupported(&'static str),
+    /// A read-only grant cannot be expressed by this backend.
+    UnsupportedReadOnlyShare { path: PathBuf },
 }
 
 impl std::fmt::Display for SandboxError {
@@ -170,6 +172,11 @@ impl std::fmt::Display for SandboxError {
             Self::Spec(err) => write!(f, "invalid sandbox policy: {err}"),
             Self::Spawn(err) => write!(f, "sandbox spawn failed: {err}"),
             Self::Unsupported(what) => write!(f, "sandbox backend does not support {what}"),
+            Self::UnsupportedReadOnlyShare { path, .. } => write!(
+                f,
+                "sandbox backend cannot express {} as read-only",
+                path.display()
+            ),
         }
     }
 }
@@ -276,6 +283,9 @@ impl Sandbox for DirectSandbox {
         })
     }
 }
+
+#[cfg(feature = "vfkit")]
+pub mod vfkit;
 
 // A hypervisor backend lands here behind `#[cfg(feature = "libkrun")]`
 // once one exists that builds on this platform. libkrun itself supports
