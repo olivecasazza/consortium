@@ -133,6 +133,7 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m pytest consortium-tests/tests/ -v \
+            --capture=no \
             --timeout=30 \
             --tb=short \
             --junit-xml=consortium-tests/results/python-original.xml
@@ -145,6 +146,7 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m pytest consortium-tests/tests/ -v \
+            --capture=no \
             --timeout=30 \
             --tb=short \
             --junit-xml=consortium-tests/results/python-rust.xml
