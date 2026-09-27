@@ -87,3 +87,31 @@ else:
         _lib_pkg = os.path.join(_lib_dir, "ClusterShell")
         if os.path.isdir(_lib_pkg) and _lib_pkg not in __path__:
             __path__.append(_lib_pkg)
+
+        # The inherited TreeWorker reduces sys.executable to its basename,
+        # which loses the active environment in a remote login shell. Wrap
+        # construction only for the Rust-backed package so each gateway keeps
+        # the interpreter that loaded the extension. Explicit overrides remain
+        # authoritative inside the native helper.
+        from functools import wraps as _wraps
+
+        from ClusterShell.Worker import Tree as _tree_worker
+        from ClusterShell._consortium import _use_importing_python_for_gateway
+
+        def _wrap_tree_worker_init(init):
+            @_wraps(init)
+            def rust_tree_worker_init(self, *args, **kwargs):
+                init(self, *args, **kwargs)
+                _use_importing_python_for_gateway(self)
+
+            rust_tree_worker_init._consortium_gateway_wrapper = True
+            return rust_tree_worker_init
+
+        if not getattr(
+            _tree_worker.TreeWorker.__init__,
+            "_consortium_gateway_wrapper",
+            False,
+        ):
+            _tree_worker.TreeWorker.__init__ = _wrap_tree_worker_init(
+                _tree_worker.TreeWorker.__init__
+            )
