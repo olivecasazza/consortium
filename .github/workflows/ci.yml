@@ -122,8 +122,7 @@ jobs:
             --test docker_integration \
             --profile ci \
             --test-threads=1 \
-            --no-fail-fast \
-            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
@@ -210,8 +209,7 @@ jobs:
             --test tool_integration \
             --profile ci \
             --test-threads=1 \
-            --no-fail-fast \
-            2>&1 | tee consortium-tests/target/nextest/ci/junit.xml
+            --no-fail-fast
 
       - name: Publish test results
         uses: mikepenz/action-junit-report@v5
