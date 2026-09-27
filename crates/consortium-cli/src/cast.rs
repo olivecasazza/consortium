@@ -766,6 +766,21 @@ mod tests {
         );
     }
 
+    /// Regression for nixos-config's retired cast-on script: a comma list was
+    /// kept as ONE target whose flake attr was cut at the first dot, so every
+    /// host got the first host's system. Each listed host must resolve to its
+    /// own node.
+    #[test]
+    fn resolve_targets_splits_comma_lists_into_distinct_nodes() {
+        let mut config = FleetConfig::from_json(FLEET_JSON).unwrap();
+        let mut second = config.nodes["filehost"].clone();
+        second.name = "gpuhost".into();
+        second.target_host = "gpuhost".into();
+        config.nodes.insert("gpuhost".into(), second);
+        let targets = resolve_targets(&config, Some("filehost.local,gpuhost.local"), &[]).unwrap();
+        assert_eq!(targets, vec!["filehost", "gpuhost"]);
+    }
+
     #[test]
     fn resolve_endpoints_splits_local_and_rewrites_remote_target_host() {
         let mut config = FleetConfig::from_json(FLEET_JSON).unwrap();
