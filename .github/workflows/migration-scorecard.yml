@@ -130,7 +130,8 @@ jobs:
           done
           # Prove gateways resolve the venv interpreter and can load the backend.
           test "$(ssh 127.0.0.2 command -v python)" = "$GITHUB_WORKSPACE/.venv/bin/python"
-          ssh 127.0.0.2 python -c 'import ClusterShell._consortium'
+          # ssh joins its arguments into one remote command line: quote it whole.
+          ssh 127.0.0.2 "python -c 'import ClusterShell._consortium, sys; print(sys.executable)'"
 
       # ── Python tests: original backend ─────────────────────────
       - name: Run Python tests (original backend)
