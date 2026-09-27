@@ -141,6 +141,7 @@ jobs:
 
       # ── Python tests: Rust backend ─────────────────────────────
       - name: Run Python tests (Rust backend)
+        if: ${{ !cancelled() }}
         env:
           CONSORTIUM_BACKEND: rust
           LIB_CLUSTERSHELL: ${{ github.workspace }}/consortium-tests/lib
@@ -154,11 +155,13 @@ jobs:
 
       # ── Generate scorecard ─────────────────────────────────────
       - name: Generate test mapping
+        if: always()
         env:
           CONSORTIUM_REPO: .
         run: python consortium-tests/harness/generate_test_mapping.py --update
 
       - name: Render scorecard
+        if: always()
         run: python consortium-tests/harness/render_summary.py --results-dir=results >> $GITHUB_STEP_SUMMARY
 
       # ── Upload artifacts ───────────────────────────────────────
