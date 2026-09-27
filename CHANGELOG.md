@@ -38,6 +38,8 @@ All notable changes to this project will be documented in this file.
 
 ### CI/CD
 
+- Run the upstream Python parity suite without pytest stream capture so clush
+  receives a real stdin file descriptor, matching ClusterShell's test runner.
 - Gate Rust workspace tests, Nix fleet/adapter contracts, and the native Python
   API in CI; enforce Rust API compatibility against the Git base commit and
   release versioning against crates.io outside the Nix build sandbox.
