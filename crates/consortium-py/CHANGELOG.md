@@ -3,6 +3,7 @@
 
 ## Bug Fixes
 
+- Keep remote tree gateways on the Python interpreter that loaded the Rust extension
 - PyO3 bindings use contains_int/intiter/i64, auto-create venv in nix shell
 
 ## Features
