@@ -7,9 +7,15 @@
 //! the context under the `"executor"` state key (see `deploy()`); a task
 //! fails with `executor not in context` when the key is absent. The
 //! optional `"deploy_options"` state key ([`DeployOptions`]) carries extra
-//! nix arguments and the set of hosts activated locally.
+//! nix arguments, the set of hosts activated locally, and the activation
+//! time limit.
+//!
+//! Copy and activation print a start line and a finish line per host on
+//! stderr, so a host that blocks mid-stage names itself.
 
+use std::fmt::Display;
 use std::sync::Arc;
+use std::time::Instant;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
 use consortium_integration::exec::Executor;
@@ -201,7 +207,9 @@ impl DagTask for NixCopyTask {
 
         let store_uri = format!("ssh-ng://{}@{}", node.target_user, node.target_host);
 
-        match copy::copy_closure_with(&*exec, &toplevel_path, &store_uri) {
+        match stage(&self.host, "copy", || {
+            copy::copy_closure_with(&*exec, &toplevel_path, &store_uri)
+        }) {
             Ok(()) => {
                 ctx.set_output(TaskId(format!("copy:{}", self.host)), toplevel_path);
                 TaskOutcome::Success
@@ -267,24 +275,29 @@ impl DagTask for NixActivateTask {
             Err(outcome) => return outcome,
         };
 
-        let result = if options_from(ctx).is_local(&self.host) {
-            activate::activate_local(
-                &*exec,
-                &self.host,
-                &toplevel_path,
-                &node.profile_type,
-                action,
-            )
-        } else {
-            activate::activate_host(
-                &*exec,
-                &node.target_host,
-                &node.target_user,
-                &toplevel_path,
-                &node.profile_type,
-                action,
-            )
-        };
+        let options = options_from(ctx);
+        let result = stage(&self.host, "activate", || {
+            if options.is_local(&self.host) {
+                activate::activate_local_bounded(
+                    &*exec,
+                    &self.host,
+                    &toplevel_path,
+                    &node.profile_type,
+                    action,
+                    options.activate_timeout,
+                )
+            } else {
+                activate::activate_host_bounded(
+                    &*exec,
+                    &node.target_host,
+                    &node.target_user,
+                    &toplevel_path,
+                    &node.profile_type,
+                    action,
+                    options.activate_timeout,
+                )
+            }
+        });
         match result {
             Ok(()) => TaskOutcome::Success,
             Err(e) => TaskOutcome::Failed(format!("activate {}: {}", self.host, e)),
@@ -294,6 +307,19 @@ impl DagTask for NixActivateTask {
     fn describe(&self) -> String {
         format!("activate {}", self.host)
     }
+}
+
+/// Run one host's `name` stage, reporting its start and outcome on stderr.
+fn stage<T, E: Display>(host: &str, name: &str, f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    eprintln!("[{host}] {name}: started");
+    let started = Instant::now();
+    let result = f();
+    let secs = started.elapsed().as_secs_f64();
+    match &result {
+        Ok(_) => eprintln!("[{host}] {name}: done in {secs:.1}s"),
+        Err(e) => eprintln!("[{host}] {name}: failed after {secs:.1}s: {e}"),
+    }
+    result
 }
 
 #[cfg(test)]

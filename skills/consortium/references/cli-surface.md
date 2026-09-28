@@ -110,7 +110,7 @@ flake URI from the config.
 | --- | --- | --- |
 | `eval` | `-w, --on`, `-g, --tag` | Evaluate which hosts need a deployment. |
 | `build` | `-w, --on`, `-g, --tag`, `--builders`, `-f, --fanout` (default 4) | Build the system closures. |
-| `deploy [ACTION]` | `-w, --on`, `-g, --tag`, `--builders`, `-f, --fanout` (default 4), `--cascade`, `--cascade-fanout` (default 2) | Build, copy, and activate. ACTION defaults to `switch`. `--cascade` swaps per-host serial copy for the peer-to-peer cascade, cutting copy time from O(N) to O(log N) for hosts sharing a toplevel. |
+| `deploy [ACTION]` | `-w, --on`, `-g, --tag`, `--builders`, `-f, --fanout` (default 4), `--cascade`, `--cascade-fanout` (default 2), `--activate-timeout SECONDS` | Build, copy, and activate. ACTION defaults to `switch`. Prints per-host start/finish lines for copy and activate. `--activate-timeout` kills any activation command running longer and fails only that host. `--cascade` swaps per-host serial copy for the peer-to-peer cascade, cutting copy time from O(N) to O(log N) for hosts sharing a toplevel. |
 | `health` | — | Probe builder health. |
 | `status` | `-w, --on`, `-g, --tag` | Show current system versions on the targets. |
 

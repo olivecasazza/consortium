@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -140,6 +141,12 @@ enum Commands {
         /// per-source bandwidth contention for fewer rounds.
         #[arg(long = "cascade-fanout", default_value = "2")]
         cascade_fanout: u32,
+
+        /// Kill any single activation command on a host after this many
+        /// seconds and mark that host failed; other hosts continue. By
+        /// default activation may run indefinitely.
+        #[arg(long = "activate-timeout", value_name = "SECONDS")]
+        activate_timeout: Option<u64>,
     },
 
     /// Probe builder health.
@@ -202,6 +209,7 @@ pub fn run() {
             fanout,
             false,
             2,
+            None,
             nix_args,
         ),
         Commands::Deploy {
@@ -212,6 +220,7 @@ pub fn run() {
             fanout,
             cascade,
             cascade_fanout,
+            activate_timeout,
         } => cmd_deploy(
             exec,
             &config,
@@ -222,6 +231,7 @@ pub fn run() {
             fanout,
             cascade,
             cascade_fanout,
+            activate_timeout.map(Duration::from_secs),
             nix_args,
         ),
         Commands::Health => cmd_health(&config),
@@ -446,6 +456,7 @@ fn cmd_deploy(
     fanout: usize,
     cascade: bool,
     cascade_fanout: u32,
+    activate_timeout: Option<Duration>,
     nix_args: NixArgs,
 ) -> anyhow::Result<()> {
     let mut targets = resolve_targets(config, on, tags)?;
@@ -458,6 +469,9 @@ fn cmd_deploy(
 
     let mut config = config.clone();
     let mut options = DeployOptions::new().nix_args(nix_args);
+    if let Some(limit) = activate_timeout {
+        options = options.activate_timeout(limit);
+    }
     let mut unreachable = Vec::new();
     if action != DeployAction::Build {
         println!("Resolving ssh endpoints for {} host(s)...", targets.len());

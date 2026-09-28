@@ -90,6 +90,7 @@ cast --flake . build --on box[01-03]             # build only
 cast --flake . deploy --on @darwin switch        # a ClusterShell group
 cast --flake github:me/cfg deploy --on mac01,@gpu switch
 cast --flake . --nixos-nix-args '--override-input secrets path:./stub' deploy
+cast --flake . deploy --on @darwin --activate-timeout 600 switch  # fail hosts stuck >10 min
 ```
 
 **Fleet source.** In order of precedence: `--config FILE`; `./fleet.json`
