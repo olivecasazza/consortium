@@ -16,6 +16,9 @@ build/
 /result
 /result-*
 
+# Agent skill discovery symlinks (populated by the dev shell's shellHook)
+/.agents/
+
 # IDE
 .idea/
 .vscode/

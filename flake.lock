@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "context-engineering-kit": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787778481,
+        "narHash": "sha256-HiF7c6a6EPsIbGka/ZFqggx9OfJm90N1w3Fh7IRv81s=",
+        "ref": "refs/heads/master",
+        "rev": "23e2428e809d77717f8acc9659c374a3a1fcb93e",
+        "revCount": 410,
+        "type": "git",
+        "url": "https://github.com/NeoLabHQ/context-engineering-kit"
+      },
+      "original": {
+        "rev": "23e2428e809d77717f8acc9659c374a3a1fcb93e",
+        "type": "git",
+        "url": "https://github.com/NeoLabHQ/context-engineering-kit"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1775236976,
@@ -160,6 +177,7 @@
     },
     "root": {
       "inputs": {
+        "context-engineering-kit": "context-engineering-kit",
         "crane": "crane",
         "flake-parts": "flake-parts",
         "git-hooks-nix": "git-hooks-nix",
