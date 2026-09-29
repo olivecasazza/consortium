@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["NetworkPolicy","SandboxError","SpecError"],"struct":["DirectSandbox","SandboxCommand","SandboxOutput","SandboxSpec"],"trait":["Sandbox"]};
