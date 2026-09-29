@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["activate_all","activate_host","activate_local"],"struct":["ActivationResults"]};
+window.SIDEBAR_ITEMS = {"fn":["activate_all","activate_host","activate_host_bounded","activate_local","activate_local_bounded"],"struct":["ActivationResults"]};
