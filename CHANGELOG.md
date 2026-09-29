@@ -56,6 +56,9 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- `cast --nix-args/--darwin-nix-args/--nixos-nix-args` accept values that start
+  with `--` in the space-separated form (`--nixos-nix-args '--override-input …'`),
+  as the README documents; clap previously rejected them as unknown flags.
 - Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,
   correctly in the Rust fleet consumer.
 

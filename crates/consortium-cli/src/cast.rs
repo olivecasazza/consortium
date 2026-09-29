@@ -55,17 +55,25 @@ pub struct Args {
 
     /// Extra words for every `nix eval` / `nix build` (whitespace-split,
     /// repeatable), e.g. --nix-args '--option builders ""'.
-    #[arg(long = "nix-args", value_name = "WORDS")]
+    #[arg(long = "nix-args", value_name = "WORDS", allow_hyphen_values = true)]
     nix_args: Vec<String>,
 
     /// Extra words for nix-darwin hosts' `nix eval` / `nix build` only
     /// (whitespace-split, repeatable), e.g. '--override-input foo path:./stub'.
-    #[arg(long = "darwin-nix-args", value_name = "WORDS")]
+    #[arg(
+        long = "darwin-nix-args",
+        value_name = "WORDS",
+        allow_hyphen_values = true
+    )]
     darwin_nix_args: Vec<String>,
 
     /// Extra words for NixOS hosts' `nix eval` / `nix build` only
     /// (whitespace-split, repeatable).
-    #[arg(long = "nixos-nix-args", value_name = "WORDS")]
+    #[arg(
+        long = "nixos-nix-args",
+        value_name = "WORDS",
+        allow_hyphen_values = true
+    )]
     nixos_nix_args: Vec<String>,
 
     #[command(flatten)]

@@ -260,3 +260,29 @@ fn test_eval_shows_target_details() {
         .stdout(predicate::str::contains("x86_64-linux"))
         .stdout(predicate::str::contains("web, prod"));
 }
+
+// ─── Per-platform nix args ──────────────────────────────────────────────────
+
+#[test]
+fn test_nix_args_accept_space_separated_flag_values() {
+    // Values are nix flags, so they start with `--`; the space-separated form
+    // must parse as a value, not as another cast flag.
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_fleet_config(dir.path());
+
+    cast()
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--nixos-nix-args",
+            "--override-input secrets path:./stub",
+            "--darwin-nix-args",
+            "--option builders ''",
+            "--nix-args",
+            "--impure",
+            "eval",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("host1"));
+}
