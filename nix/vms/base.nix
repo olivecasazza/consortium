@@ -61,7 +61,7 @@ in
 
       # One tap interface per node. The KVM host must own 10.99.0.1/24 on
       # the tap side (microvm.nix `nixosModules.host` + systemd-networkd,
-      # or the equivalent by hand). See doc/testing-microvms.md.
+      # or the equivalent by hand). See .specs/draft/testing-microvms.md.
       interfaces = [
         {
           type = "tap";

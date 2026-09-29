@@ -41,7 +41,7 @@
     }:
     let
       # Declarative microVM test fleet (all nodes x86_64-linux).
-      # See nix/vms/ and doc/testing-microvms.md.
+      # See nix/vms/ and .specs/draft/testing-microvms.md.
       vms = import ./nix/vms { inherit inputs; };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {

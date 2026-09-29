@@ -6,7 +6,7 @@ One unified flake design: every test node is a microVM built with
 layered on a shared, minimal base node.
 
 > **Status:** this README documents the design contract. See
-> [`doc/testing-microvms.md`](../../doc/testing-microvms.md) for the full
+> [`.specs/draft/testing-microvms.md`](../../.specs/draft/testing-microvms.md) for the full
 > operator runbook (build, run, test loop, troubleshooting).
 
 ## Layout
@@ -56,5 +56,5 @@ per-operator setup.
 ## Where to go next
 
 - Build / run / E2E test loop / troubleshooting:
-  [`doc/testing-microvms.md`](../../doc/testing-microvms.md)
+  [`.specs/draft/testing-microvms.md`](../../.specs/draft/testing-microvms.md)
 - microvm.nix handbook: <https://microvm-nix.github.io/microvm.nix/>
