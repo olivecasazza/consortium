@@ -33,8 +33,11 @@
 //! # Ok::<(), consortium_integration::exec::ExecError>(())
 //! ```
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Default ssh options applied to every remote invocation.
 ///
@@ -311,6 +314,28 @@ pub enum ExecError {
 pub trait Executor: Send + Sync {
     /// Run `spec` to completion and capture its output.
     fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError>;
+
+    /// Run `spec`, killing it once it has run for `limit`. A killed command
+    /// fails with [`ExecError::Io`] whose source has kind
+    /// [`std::io::ErrorKind::TimedOut`].
+    ///
+    /// The default cannot enforce a limit and runs `spec` unbounded;
+    /// executors that can kill a command override it.
+    fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
+        let _ = limit;
+        self.exec(spec)
+    }
+}
+
+/// The [`ExecError`] for a command killed at its time limit.
+fn timed_out(program: String, limit: Duration) -> ExecError {
+    ExecError::Io {
+        program,
+        source: std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("killed after {}s time limit", limit.as_secs_f64()),
+        ),
+    }
 }
 
 /// Production [`Executor`]: runs commands with [`std::process::Command`].
@@ -327,8 +352,10 @@ impl ProcessExecutor {
     }
 }
 
-impl Executor for ProcessExecutor {
-    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+impl ProcessExecutor {
+    /// Spawn `spec` with stdin closed and stdout/stderr piped, as
+    /// `Command::output()` does; `spawn()` alone inherits the parent's streams.
+    fn spawn(spec: &CommandSpec) -> Result<(String, Child), ExecError> {
         let argv = spec.argv();
         let program = argv[0].clone();
         let mut cmd = Command::new(&program);
@@ -343,27 +370,75 @@ impl Executor for ProcessExecutor {
                 cmd.current_dir(cwd);
             }
         }
-
-        // Mirror what `Command::output()` sets up so `wait_with_output` can
-        // actually capture: spawn() alone inherits the parent's streams.
         let child = cmd
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| ExecError::Spawn {
                 program: program.clone(),
                 source: e,
             })?;
-        let output = child.wait_with_output().map_err(|e| ExecError::Io {
-            program: program.clone(),
-            source: e,
-        })?;
+        Ok((program, child))
+    }
+}
 
+/// Read a child's pipe to the end on its own thread, so a child that writes
+/// more than the pipe buffer never blocks while its parent polls for exit.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+impl Executor for ProcessExecutor {
+    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+        let (program, child) = Self::spawn(spec)?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| ExecError::Io { program, source: e })?;
         Ok(ExecOutput {
             status: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
+        let (program, mut child) = Self::spawn(spec)?;
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+
+        // Poll often enough to land the kill near the deadline, rarely
+        // enough not to spin a core.
+        const POLL: Duration = Duration::from_millis(50);
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => return Err(ExecError::Io { program, source: e }),
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= limit {
+                // Killing ssh closes the session, which ends the remote side.
+                // A child that exits between the poll and the kill is already
+                // gone; that error is expected and ignored.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(timed_out(program, limit));
+            }
+            thread::sleep(POLL.min(limit - elapsed));
+        };
+
+        Ok(ExecOutput {
+            status: status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned(),
         })
     }
 }
@@ -390,6 +465,12 @@ impl Matcher {
 enum Outcome {
     Output(ExecOutput),
     Fail(String),
+    /// Simulates a command that runs for `duration` and then yields `output`;
+    /// no wall clock is spent.
+    Slow {
+        duration: Duration,
+        output: ExecOutput,
+    },
 }
 
 /// One scripted behavior for [`ScriptedExecutor`].
@@ -436,6 +517,22 @@ impl Rule {
         Self {
             matcher: Matcher::All(vec![substring.to_string()]),
             outcome: Outcome::Fail(message.to_string()),
+        }
+    }
+
+    /// Match when the rendered command contains *all* of `substrings`,
+    /// simulating a command that runs for `duration` before returning
+    /// `output`. Under [`Executor::exec_timeout`] with a shorter limit it
+    /// times out instead, as [`ProcessExecutor`] would. No wall clock is
+    /// spent either way.
+    pub fn slow_containing_all<I, S>(substrings: I, duration: Duration, output: ExecOutput) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            matcher: Matcher::All(substrings.into_iter().map(Into::into).collect()),
+            outcome: Outcome::Slow { duration, output },
         }
     }
 
@@ -576,8 +673,8 @@ impl ScriptedExecutor {
     }
 }
 
-impl Executor for ScriptedExecutor {
-    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+impl ScriptedExecutor {
+    fn run(&self, spec: &CommandSpec, limit: Option<Duration>) -> Result<ExecOutput, ExecError> {
         let rendered = spec.render();
         self.invocations.lock().unwrap().push(rendered.clone());
         for rule in &self.rules {
@@ -585,10 +682,24 @@ impl Executor for ScriptedExecutor {
                 return match &rule.outcome {
                     Outcome::Output(output) => Ok(output.clone()),
                     Outcome::Fail(message) => Err(ExecError::Scripted(message.clone())),
+                    Outcome::Slow { duration, output } => match limit {
+                        Some(limit) if *duration > limit => Err(timed_out(rendered, limit)),
+                        _ => Ok(output.clone()),
+                    },
                 };
             }
         }
         Err(ExecError::Unexpected(rendered))
+    }
+}
+
+impl Executor for ScriptedExecutor {
+    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+        self.run(spec, None)
+    }
+
+    fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
+        self.run(spec, Some(limit))
     }
 }
 
@@ -928,5 +1039,62 @@ mod tests {
         exec.assert_invoked_containing("root");
         exec.assert_invoked_containing("submit01");
         exec.assert_invoked_containing("sbatch");
+    }
+
+    // ---------- exec_timeout ----------
+
+    fn is_timeout(err: &ExecError) -> bool {
+        matches!(err, ExecError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
+    }
+
+    #[test]
+    fn process_exec_timeout_kills_a_command_past_its_limit() {
+        let spec = CommandSpec::new("sh").args(["-c", "sleep 30"]);
+        let started = Instant::now();
+        let err = ProcessExecutor::new()
+            .exec_timeout(&spec, Duration::from_millis(300))
+            .unwrap_err();
+        assert!(is_timeout(&err), "expected a timeout, got: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "kill landed late"
+        );
+    }
+
+    #[test]
+    fn process_exec_timeout_returns_full_output_beyond_the_pipe_buffer() {
+        // 1 MiB on stdout: a parent that polls without draining would leave
+        // the child blocked on a full pipe and kill it at the limit.
+        let spec = CommandSpec::new("sh").args([
+            "-c",
+            "head -c 1048576 /dev/zero | tr '\\0' x; echo err >&2; exit 3",
+        ]);
+        let out = ProcessExecutor::new()
+            .exec_timeout(&spec, Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(out.status, 3);
+        assert_eq!(out.stdout.len(), 1 << 20);
+        assert_eq!(out.stderr, "err\n");
+    }
+
+    #[test]
+    fn scripted_slow_rule_times_out_only_under_a_shorter_limit() {
+        let exec = ScriptedExecutor::new().rule(Rule::slow_containing_all(
+            ["activate"],
+            Duration::from_secs(60),
+            ExecOutput::ok("done"),
+        ));
+        let spec = CommandSpec::new("activate");
+        assert_eq!(exec.exec(&spec).unwrap().stdout, "done");
+        assert_eq!(
+            exec.exec_timeout(&spec, Duration::from_secs(120))
+                .unwrap()
+                .stdout,
+            "done"
+        );
+        let err = exec
+            .exec_timeout(&spec, Duration::from_secs(10))
+            .unwrap_err();
+        assert!(is_timeout(&err), "expected a timeout, got: {err}");
     }
 }

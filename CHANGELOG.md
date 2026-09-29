@@ -12,6 +12,14 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- `cast deploy` prints a start line and a finish line (with duration) per
+  host for the copy and activate stages, so a host that blocks mid-stage
+  names itself. `--activate-timeout SECONDS` kills any single activation
+  command that runs longer and fails only that host; others continue.
+  Library: `DeployOptions::activate_timeout`, `activate_host_bounded`,
+  `activate_local_bounded`, and `Executor::exec_timeout` (a provided method;
+  `ProcessExecutor` kills the child, `ScriptedExecutor` simulates it via
+  `Rule::slow_containing_all`).
 - Added a strict, introspected CLI grammar gate for `claw`, `molt`, `pinch`,
   and `cast`, with an embedded zero-violation baseline, drift checks, and
   a dedicated CI invocation.
@@ -48,6 +56,9 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- `cast --nix-args/--darwin-nix-args/--nixos-nix-args` accept values that start
+  with `--` in the space-separated form (`--nixos-nix-args '--override-input …'`),
+  as the README documents; clap previously rejected them as unknown flags.
 - Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,
   correctly in the Rust fleet consumer.
 

@@ -106,6 +106,7 @@ pub const PINNED_SELECTORS: &[(&str, &str, &[&str])] = &[
             "fanout",
             "cascade",
             "cascade-fanout",
+            "activate-timeout",
         ],
     ),
     ("cast", "health", &[]),
@@ -531,7 +532,13 @@ fn selectors(rows: &[Row], out: &mut Vec<Violation>) {
     // `on` is pinned only on cast; claw --fanout must not, because
     // fanout is delivery, not node selection. `cast` subcommands are
     // pinned exactly by their own strict whitelists.
-    let exec_options: [&str; 4] = ["fanout", "builders", "cascade", "cascade-fanout"];
+    let exec_options: [&str; 5] = [
+        "fanout",
+        "builders",
+        "cascade",
+        "cascade-fanout",
+        "activate-timeout",
+    ];
     let vocab: BTreeSet<&str> = PINNED_SELECTORS
         .iter()
         .flat_map(|(_, _, longs)| longs.iter().copied())

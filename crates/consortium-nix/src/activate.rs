@@ -18,6 +18,7 @@
 //! user, matching `darwin-rebuild`'s `sudo --user=$SUDO_USER` behaviour.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
 
@@ -77,11 +78,30 @@ pub fn activate_host(
     profile_type: &ProfileType,
     action: DeployAction,
 ) -> Result<()> {
+    activate_host_bounded(exec, host, user, toplevel_path, profile_type, action, None)
+}
+
+/// [`activate_host`], killing any activation command that runs longer than
+/// `limit` and failing the host with that command's time-out.
+pub fn activate_host_bounded(
+    exec: &dyn Executor,
+    host: &str,
+    user: &str,
+    toplevel_path: &str,
+    profile_type: &ProfileType,
+    action: DeployAction,
+    limit: Option<Duration>,
+) -> Result<()> {
     let site = Site::Remote {
         target: SshTarget::new(user, host).extra_opt("-oConnectTimeout=30"),
         sudo: user != "root",
     };
-    activate_at(exec, &site, host, toplevel_path, profile_type, action)
+    let runner = Runner {
+        exec,
+        label: host,
+        limit,
+    };
+    activate_at(&runner, &site, toplevel_path, profile_type, action)
 }
 
 /// Activate a profile on the machine running the deploy: no ssh, privileged
@@ -93,14 +113,21 @@ pub fn activate_local(
     profile_type: &ProfileType,
     action: DeployAction,
 ) -> Result<()> {
-    activate_at(
-        exec,
-        &Site::Local,
-        label,
-        toplevel_path,
-        profile_type,
-        action,
-    )
+    activate_local_bounded(exec, label, toplevel_path, profile_type, action, None)
+}
+
+/// [`activate_local`] with the per-command time limit of
+/// [`activate_host_bounded`].
+pub fn activate_local_bounded(
+    exec: &dyn Executor,
+    label: &str,
+    toplevel_path: &str,
+    profile_type: &ProfileType,
+    action: DeployAction,
+    limit: Option<Duration>,
+) -> Result<()> {
+    let runner = Runner { exec, label, limit };
+    activate_at(&runner, &Site::Local, toplevel_path, profile_type, action)
 }
 
 /// Where activation commands run.
@@ -141,9 +168,8 @@ impl Site {
 }
 
 fn activate_at(
-    exec: &dyn Executor,
+    runner: &Runner,
     site: &Site,
-    label: &str,
     toplevel_path: &str,
     profile_type: &ProfileType,
     action: DeployAction,
@@ -156,7 +182,7 @@ fn activate_at(
                 "nix-env",
                 &["-p", "/nix/var/nix/profiles/system", "--set", toplevel_path],
             );
-            run_checked(exec, label, &spec)?;
+            runner.run_checked(&spec)?;
         }
         DeployAction::Test | DeployAction::DryActivate | DeployAction::Build => {}
     }
@@ -164,16 +190,15 @@ fn activate_at(
     match profile_type {
         ProfileType::Nixos => {
             let program = format!("{}/bin/switch-to-configuration", toplevel_path);
-            let spec = site.privileged(&program, &[&action.to_string()]);
-            run_checked(exec, label, &spec)?;
+            runner.run_checked(&site.privileged(&program, &[&action.to_string()]))?;
         }
         ProfileType::NixDarwin => {
             let activate_user = format!("{}/activate-user", toplevel_path);
-            if has_legacy_activate_user(exec, site, label, &activate_user)? {
-                run_checked(exec, label, &site.spec(&activate_user, &[]))?;
+            if has_legacy_activate_user(runner, site, &activate_user)? {
+                runner.run_checked(&site.spec(&activate_user, &[]))?;
             }
             let activate = format!("{}/activate", toplevel_path);
-            run_checked(exec, label, &site.privileged(&activate, &[]))?;
+            runner.run_checked(&site.privileged(&activate, &[]))?;
         }
     }
 
@@ -187,39 +212,49 @@ const ACTIVATE_USER_DEPRECATED_MARKER: &str = "# nix-darwin: deprecated";
 /// Whether `<toplevel>/activate-user` exists, is executable, and is a real
 /// legacy user-activation script rather than the deprecated stub. Mirrors
 /// the `darwin-rebuild` check; the probe's exit status is the answer.
-fn has_legacy_activate_user(
-    exec: &dyn Executor,
-    site: &Site,
-    label: &str,
-    activate_user: &str,
-) -> Result<bool> {
+fn has_legacy_activate_user(runner: &Runner, site: &Site, activate_user: &str) -> Result<bool> {
     let script = format!(
         "test -x {p} && ! grep -q \"^{marker}$\" {p}",
         p = activate_user,
         marker = ACTIVATE_USER_DEPRECATED_MARKER
     );
-    let output = run(exec, label, &site.spec("sh", &["-c", &script]))?;
+    let output = runner.run(&site.spec("sh", &["-c", &script]))?;
     Ok(output.success())
 }
 
-/// Run `spec`, mapping a spawn/transport failure to [`NixError::ActivationFailed`].
-fn run(exec: &dyn Executor, label: &str, spec: &CommandSpec) -> Result<ExecOutput> {
-    exec.exec(spec).map_err(|e| NixError::ActivationFailed {
-        host: label.to_string(),
-        message: format!("failed to run activation: {}", e),
-    })
+/// Runs one host's activation commands, each bounded by `limit` when set.
+struct Runner<'a> {
+    exec: &'a dyn Executor,
+    /// Names the host in error messages.
+    label: &'a str,
+    limit: Option<Duration>,
 }
 
-/// Run `spec` and require exit status 0, surfacing stderr otherwise.
-fn run_checked(exec: &dyn Executor, label: &str, spec: &CommandSpec) -> Result<()> {
-    let output = run(exec, label, spec)?;
-    if !output.success() {
-        return Err(NixError::ActivationFailed {
-            host: label.to_string(),
-            message: output.stderr,
-        });
+impl Runner<'_> {
+    /// Run `spec`, mapping a spawn/transport failure or time-out to
+    /// [`NixError::ActivationFailed`].
+    fn run(&self, spec: &CommandSpec) -> Result<ExecOutput> {
+        let result = match self.limit {
+            Some(limit) => self.exec.exec_timeout(spec, limit),
+            None => self.exec.exec(spec),
+        };
+        result.map_err(|e| NixError::ActivationFailed {
+            host: self.label.to_string(),
+            message: format!("failed to run activation: {}", e),
+        })
     }
-    Ok(())
+
+    /// Run `spec` and require exit status 0, surfacing stderr otherwise.
+    fn run_checked(&self, spec: &CommandSpec) -> Result<()> {
+        let output = self.run(spec)?;
+        if !output.success() {
+            return Err(NixError::ActivationFailed {
+                host: self.label.to_string(),
+                message: output.stderr,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

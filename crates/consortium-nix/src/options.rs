@@ -1,6 +1,8 @@
 //! Per-run deployment settings beyond the positional arguments of
-//! [`crate::deploy`]: extra nix words per platform and hosts to activate
-//! locally.
+//! [`crate::deploy`]: extra nix words per platform, hosts to activate
+//! locally, and a time limit on activation.
+
+use std::time::Duration;
 
 use crate::config::ProfileType;
 
@@ -35,10 +37,13 @@ pub struct DeployOptions {
     /// Node names that are *this* machine: their closure is not copied and
     /// activation runs locally through `sudo` instead of over ssh.
     pub local_hosts: Vec<String>,
+    /// Kill any single activation command that runs longer than this and
+    /// fail that host (others continue). `None` waits indefinitely.
+    pub activate_timeout: Option<Duration>,
 }
 
 impl DeployOptions {
-    /// No extra nix arguments, no local hosts.
+    /// No extra nix arguments, no local hosts, no activation time limit.
     pub fn new() -> Self {
         Self::default()
     }
@@ -56,6 +61,12 @@ impl DeployOptions {
         S: Into<String>,
     {
         self.local_hosts = hosts.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Limit how long each activation command may run.
+    pub fn activate_timeout(mut self, limit: Duration) -> Self {
+        self.activate_timeout = Some(limit);
         self
     }
 
