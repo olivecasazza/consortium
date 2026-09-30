@@ -22,6 +22,36 @@ use consortium_nix::cascade_events::{CascadeEvent, EventSink};
 use crate::tree::{NodeStatus, OutputFormat, TreeNode};
 
 // ============================================================================
+// Sink selection
+// ============================================================================
+
+/// Which event sink a run should wire, decided before any node is contacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkKind {
+    /// The live tree renderer, for a human watching a terminal.
+    LiveTree,
+    /// One JSON object per line on stdout, for a consumer reading the run.
+    Jsonl,
+}
+
+/// Pick the event sink for an output format.
+///
+/// A run only emits anything when there is somewhere to emit it. The live tree
+/// needs a TTY, so piped and redirected runs historically got `NullSink` and no
+/// output at all — which is exactly the case that matters to a caller reading
+/// the stream: over SSH stdout is never a TTY, so a cascade driven from another
+/// host said nothing about the tree it built.
+///
+/// `jsonl` is therefore honoured regardless of TTY. The visual formats keep the
+/// old behaviour, so the default experience for a human is unchanged.
+pub fn sink_for_format(format: &str, tty: bool) -> Option<SinkKind> {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "jsonl" => Some(SinkKind::Jsonl),
+        _ if tty => Some(SinkKind::LiveTree),
+        _ => None,
+    }
+}
+
 // JsonlWriter
 // ============================================================================
 
