@@ -126,12 +126,17 @@ impl NixCopyExecutor {
                     stderr: format!("no SSH address registered for src {src}"),
                 });
             };
-            let (user, host) = split_ssh_addr(src_addr);
+            let (user, host, port) = split_ssh_addr(src_addr);
             // accept-new overrides the DEFAULT_SSH_OPTS StrictHostKeyChecking=no
             // (extra opts come after the defaults).
-            CommandSpec::new("nix")
-                .args(copy_args)
-                .ssh(SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"))
+            CommandSpec::new("nix").args(copy_args).ssh(match port {
+                // The port belongs on the command line; leaving it on the
+                // host makes ssh resolve "host:port" as a single name.
+                Some(p) => SshTarget::new(user, host)
+                    .extra_opt("-oStrictHostKeyChecking=accept-new")
+                    .extra_opt(format!("-p{p}")),
+                None => SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"),
+            })
         };
 
         let result = self.exec.exec(&spec);
@@ -205,14 +210,35 @@ fn classify_copy_error(tgt: NodeId, src: NodeId, stderr: &str) -> CascadeError {
     }
 }
 
-/// Split a `user@host` SSH address into its parts.
+/// Split a `user@host[:port]` SSH address into its parts.
 ///
-/// Fleet addresses are always `user@host`; a bare host falls back to
-/// `root` so hand-rolled inventories keep working.
-fn split_ssh_addr(addr: &str) -> (String, String) {
-    match addr.split_once('@') {
+/// Fleet addresses are normally `user@host`; a bare host falls back to `root`
+/// so hand-rolled inventories keep working.
+///
+/// A port in the address is returned separately rather than left on the host.
+/// `ssh` reads `10.0.2.2:22202` as one hostname and fails with "Could not
+/// resolve hostname", so an inventory that puts the port in the address — which
+/// is how a port-forwarded fleet addresses its guests — silently loses every
+/// edge that goes through here.
+fn split_ssh_addr(addr: &str) -> (String, String, Option<u16>) {
+    let (user, host) = match addr.split_once('@') {
         Some((user, host)) => (user.to_string(), host.to_string()),
         None => ("root".to_string(), addr.to_string()),
+    };
+    // An IPv6 literal has several colons, and its last group is often all
+    // digits (`fe80::1`). Only a single colon can introduce a port.
+    if host.matches(':').count() != 1 {
+        return (user, host, None);
+    }
+    match host.rsplit_once(':') {
+        // Only a trailing all-digits port counts.
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            match port.parse::<u16>() {
+                Ok(port) => (user, host.to_string(), Some(port)),
+                Err(_) => (user, host.to_string(), None),
+            }
+        }
+        _ => (user, host, None),
     }
 }
 
@@ -225,11 +251,44 @@ mod tests {
     fn split_ssh_addr_user_at_host() {
         assert_eq!(
             split_ssh_addr("root@hp01"),
-            ("root".to_string(), "hp01".to_string())
+            ("root".to_string(), "hp01".to_string(), None)
         );
         assert_eq!(
             split_ssh_addr("olive@192.168.1.121"),
-            ("olive".to_string(), "192.168.1.121".to_string())
+            ("olive".to_string(), "192.168.1.121".to_string(), None)
+        );
+    }
+
+    /// A fleet that puts the SSH port in the address — fanout64 addresses every
+    /// guest as `root@10.0.2.2:<port>` — must not hand ssh `10.0.2.2:22202` as a
+    /// single hostname. That is what makes every peer edge of a real cascade
+    /// fail with "Could not resolve hostname 10.0.2.2:22202" while the seed's
+    /// own edges, which go through an `ssh-ng://` URI, succeed.
+    #[test]
+    fn split_ssh_addr_extracts_the_port() {
+        let (user, host, port) = split_ssh_addr("root@10.0.2.2:22202");
+        assert_eq!(user, "root");
+        assert_eq!(host, "10.0.2.2");
+        assert_eq!(port, Some(22202));
+    }
+
+    /// An IPv6 literal is full of colons and its last group is often all
+    /// digits, so a naive trailing-`:port` split turns `fe80::1` into host
+    /// `fe80:` and port 1 — and ssh would be pointed at the wrong thing with no
+    /// error. Only a single colon can introduce a port.
+    #[test]
+    fn split_ssh_addr_leaves_an_ipv6_literal_alone() {
+        let (user, host, port) = split_ssh_addr("root@fe80::1");
+        assert_eq!(user, "root");
+        assert_eq!(host, "fe80::1");
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn split_ssh_addr_no_port_is_none() {
+        assert_eq!(
+            split_ssh_addr("root@hp01"),
+            ("root".to_string(), "hp01".to_string(), None)
         );
     }
 
@@ -237,7 +296,7 @@ mod tests {
     fn split_ssh_addr_bare_host_defaults_to_root() {
         assert_eq!(
             split_ssh_addr("hp01"),
-            ("root".to_string(), "hp01".to_string())
+            ("root".to_string(), "hp01".to_string(), None)
         );
     }
 
