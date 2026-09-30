@@ -19,6 +19,8 @@ of the library features.
 
 This repository uses **conventional commits** and **semantic versioning** for automated releases.
 
+Design documents, task specs, and the planning roadmap live in [`.specs/`](.specs/).
+
 ### Commit Message Format
 
 All commits must follow the [conventional commits](https://www.conventionalcommits.org/) format:

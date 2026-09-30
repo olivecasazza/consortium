@@ -23,7 +23,7 @@
 #   nix build .#packages.x86_64-linux.vm-base        # build the qemu runner
 #   nix run  .#packages.x86_64-linux.vm-base         # boot vm-base (as root, for tap)
 #   ssh -i nix/vms/keys/id_test root@10.99.0.10      # log in (TEST-ONLY key)
-# Full operator runbook: doc/testing-microvms.md
+# Full operator runbook: .specs/draft/testing-microvms.md
 { inputs }:
 
 let

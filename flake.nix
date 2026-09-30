@@ -16,6 +16,17 @@
       url = "github:astro/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Vendored agent skills (plugins/<plugin>/skills/<skill>/SKILL.md),
+    # merged into the `skills` package below. Pinned to an exact commit on
+    # purpose: this is a vendored copy, not a floating "latest" track. Public
+    # repo, so https rather than ssh — CI runners hold no SSH key. `rev` is
+    # not a valid flake-input attribute, so the pin rides in the URL; a full
+    # 40-hex commit needs no `ref=`.
+    context-engineering-kit.url = "git+https://github.com/NeoLabHQ/context-engineering-kit?rev=23e2428e809d77717f8acc9659c374a3a1fcb93e";
+    # Upstream ships no flake.nix, so declare it a plain source: Nix then
+    # fetches the tree and hands us its store path, with no nixpkgs input
+    # declared and therefore none to follow.
+    context-engineering-kit.flake = false;
   };
 
   outputs =
@@ -25,11 +36,12 @@
       crane,
       rust-overlay,
       git-hooks-nix,
+      context-engineering-kit,
       ...
     }:
     let
       # Declarative microVM test fleet (all nodes x86_64-linux).
-      # See nix/vms/ and doc/testing-microvms.md.
+      # See nix/vms/ and .specs/draft/testing-microvms.md.
       vms = import ./nix/vms { inherit inputs; };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -101,6 +113,58 @@
           };
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+
+          # ── Skill catalog ─────────────────────────────────────────────
+          # $out is a directory of skill directories whose names equal their
+          # SKILL.md `name:` frontmatter value (never the source directory
+          # name), each holding SKILL.md plus its `agents assets examples
+          # references scripts tests` resource dirs. Consumed by
+          # `packages.skills` below, which downstream consumers read as
+          # `local.skills.sources` in nixos-config and the olive-skills
+          # catalog (both merge it with `cp -rL $skills/. $out/`), and by
+          # `devShells.default`, which symlinks it into .agents/skills/.
+          #
+          # Two sources, one output. The repo's own `./skills/*/SKILL.md` plus
+          # the vendored context-engineering-kit, pinned to an exact commit
+          # (see `inputs.context-engineering-kit`) and laid out as
+          # `plugins/<plugin>/skills/<skill>/SKILL.md`. Both go through the
+          # same `harvest_skill` function, so neither source can drift from
+          # the other's naming or resource-copy rules.
+          #
+          # Assembly loop mirrors olive-skills' own `packages.default`, so a
+          # consumer of either catalog sees an identical layout. The
+          # `test -n` guard fails the build rather than silently shipping a
+          # skill under the literal name ""; the `test ! -e` guard fails it on
+          # a name collision between the two sources rather than letting
+          # whichever comes second overwrite the other.
+          skillsPkg = pkgs.runCommand "consortium-skills" { nativeBuildInputs = [ pkgs.findutils ]; } ''
+            mkdir -p $out
+
+            # harvest_skill SKILL_MD — copy the skill owning $1 into $out,
+            # under the `name:` in its frontmatter.
+            harvest_skill() {
+              source_dir="$(dirname "$1")"
+              skill_name="$(sed -n 's/^name:[[:space:]]*//p' "$1" | head -n1)"
+              test -n "$skill_name"
+              test ! -e "$out/$skill_name"
+              destination="$out/$skill_name"
+              mkdir -p "$destination"
+              find "$source_dir" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+              for resource in agents assets examples references scripts tests; do
+                if test -d "$source_dir/$resource"; then
+                  cp -rL "$source_dir/$resource" "$destination/$resource"
+                fi
+              done
+            }
+
+            # The repo's own skills, then the vendored toolkit's.
+            for skill_file in ${./skills}/*/SKILL.md; do
+              harvest_skill "$skill_file"
+            done
+            for skill_file in ${context-engineering-kit}/plugins/*/skills/*/SKILL.md; do
+              harvest_skill "$skill_file"
+            done
+          '';
 
           # ── Source filtering ───────────────────────────────────────────
           src = lib.cleanSourceWith {
@@ -341,34 +405,9 @@
               inherit consortium consortium-cli consortium-nix;
               default = consortium-cli;
 
-              # Skill catalog for downstream consumers. `$out` is a directory
-              # of skill directories whose names equal their SKILL.md `name:`
-              # frontmatter value (never the source directory name), each
-              # holding SKILL.md plus its `agents assets examples references
-              # scripts tests` resource dirs. Consumed by `local.skills.sources`
-              # in nixos-config and by the olive-skills catalog, both of which
-              # merge it with `cp -rL $skills/. $out/`.
-              #
-              # Assembly loop mirrors olive-skills' own `packages.default`, so
-              # a consumer of either catalog sees an identical layout. The
-              # `test -n` guard fails the build rather than silently shipping
-              # a skill under the literal name "".
-              skills = pkgs.runCommand "consortium-skills" { nativeBuildInputs = [ pkgs.findutils ]; } ''
-                mkdir -p $out
-                for skill_file in ${./skills}/*/SKILL.md; do
-                  source_dir="$(dirname "$skill_file")"
-                  skill_name="$(sed -n 's/^name:[[:space:]]*//p' "$skill_file" | head -n1)"
-                  test -n "$skill_name"
-                  destination="$out/$skill_name"
-                  mkdir -p "$destination"
-                  find "$source_dir" -maxdepth 1 -type f -exec cp {} "$destination/" \;
-                  for resource in agents assets examples references scripts tests; do
-                    if test -d "$source_dir/$resource"; then
-                      cp -rL "$source_dir/$resource" "$destination/$resource"
-                    fi
-                  done
-                done
-              '';
+              # Skill catalog for downstream consumers; see the
+              # `skillsPkg` definition above.
+              skills = skillsPkg;
             }
             # microVM test-fleet qemu runners (x86_64-linux only; they can
             # only RUN on a linux KVM host, but build from anywhere):
@@ -408,6 +447,11 @@
               # Nix tools
               pkgs.statix
               pkgs.deadnix
+
+              # Skill catalog: the repo's own skills plus the vendored
+              # context-engineering-kit, made discoverable to agents by the
+              # shellHook below.
+              skillsPkg
             ];
 
             shellHook = ''
@@ -424,6 +468,27 @@
               if [ -d ../consortium-tests/lib ]; then
                 export PYTHONPATH="$PWD/../consortium-tests/lib:$PYTHONPATH"
               fi
+
+              # Make the built skill catalog discoverable to an agent working
+              # in this checkout: one symlink per skill under
+              # .agents/skills/<name>, which is the same agents/skills/<name>
+              # layout used by the user-level catalog in ~/.agents/skills.
+              #
+              # Repo-local rather than ~/.agents/skills on purpose: the
+              # user-level dir is a Home-Manager-managed symlink farm into
+              # the Nix store that this dev shell must not write to, and
+              # keeping the vendored toolkit here scopes it to the project
+              # that actually declares it. Entries are symlinks into the
+              # store, so /.agents/ is gitignored.
+              skills_root="$PWD"
+              while [ ! -e "$skills_root/flake.nix" ] && [ "$skills_root" != / ]; do
+                skills_root="$(dirname "$skills_root")"
+              done
+              export CONSORTIUM_SKILLS_DIR="$skills_root/.agents/skills"
+              mkdir -p "$CONSORTIUM_SKILLS_DIR"
+              for skill_dir in ${skillsPkg}/*; do
+                ln -sfn "$skill_dir" "$CONSORTIUM_SKILLS_DIR/$(basename "$skill_dir")"
+              done
               ${config.pre-commit.installationScript}
 
               echo ""
@@ -436,6 +501,7 @@
               echo "                                — Python parity tests (original ClusterShell)"
               echo "  (cd ../consortium-tests && CONSORTIUM_BACKEND=rust pytest tests/ -v)"
               echo "                                — Python parity tests (Rust-backed)"
+              echo "  .agents/skills                — $(ls -1 "$CONSORTIUM_SKILLS_DIR" | wc -l | tr -d ' ') agent skills (own + context-engineering-kit)"
               echo ""
             '';
           };
