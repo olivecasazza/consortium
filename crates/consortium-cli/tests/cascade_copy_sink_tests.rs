@@ -16,27 +16,18 @@ use consortium_cli::event_render::{sink_for_format, SinkKind};
 fn jsonl_selects_the_streaming_sink_even_without_a_tty() {
     // live_eligible is false whenever stdout is piped, which is always true
     // over SSH. This is the case that made the harness blind.
-    assert_eq!(
-        sink_for_format("jsonl", false),
-        Some(SinkKind::Jsonl)
-    );
+    assert_eq!(sink_for_format("jsonl", false), Some(SinkKind::Jsonl));
 }
 
 #[test]
 fn jsonl_selects_the_streaming_sink_on_a_tty_too() {
-    assert_eq!(
-        sink_for_format("jsonl", true),
-        Some(SinkKind::Jsonl)
-    );
+    assert_eq!(sink_for_format("jsonl", true), Some(SinkKind::Jsonl));
 }
 
 #[test]
 fn the_default_tree_format_keeps_its_live_renderer_on_a_tty() {
     // Not a regression: the live tree is the default experience for a human.
-    assert_eq!(
-        sink_for_format("tree", true),
-        Some(SinkKind::LiveTree)
-    );
+    assert_eq!(sink_for_format("tree", true), Some(SinkKind::LiveTree));
 }
 
 #[test]
@@ -49,8 +40,5 @@ fn a_non_tty_run_emits_nothing_for_the_visual_formats() {
 
 #[test]
 fn the_format_match_is_case_insensitive() {
-    assert_eq!(
-        sink_for_format("JSONL", false),
-        Some(SinkKind::Jsonl)
-    );
+    assert_eq!(sink_for_format("JSONL", false), Some(SinkKind::Jsonl));
 }

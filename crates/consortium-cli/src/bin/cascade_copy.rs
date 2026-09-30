@@ -22,10 +22,10 @@ use clap::Parser;
 use is_terminal::IsTerminal;
 
 use consortium_cli::event_render::{sink_for_format, JsonlWriter, LiveTreeRenderer, SinkKind};
-use consortium_nix::cascade_events::EventSink;
 use consortium_cli::inventory::load_inventory;
 use consortium_cli::output::{CliOutput, OutputArgs};
 use consortium_nix::cascade::{Cascade, Log2FanOut, NetworkProfile};
+use consortium_nix::cascade_events::EventSink;
 use consortium_nix::cascade_executor::NixCopyExecutor;
 use consortium_nix::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
 
