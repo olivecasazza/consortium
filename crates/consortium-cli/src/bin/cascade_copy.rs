@@ -21,10 +21,11 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use is_terminal::IsTerminal;
 
-use consortium_cli::event_render::LiveTreeRenderer;
+use consortium_cli::event_render::{sink_for_format, JsonlWriter, LiveTreeRenderer, SinkKind};
 use consortium_cli::inventory::load_inventory;
 use consortium_cli::output::{CliOutput, OutputArgs};
 use consortium_nix::cascade::{Cascade, Log2FanOut, NetworkProfile};
+use consortium_nix::cascade_events::EventSink;
 use consortium_nix::cascade_executor::NixCopyExecutor;
 use consortium_nix::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
 
@@ -138,6 +139,17 @@ fn run(args: Args) -> Result<i32> {
     let live_eligible = io::stdout().is_terminal() && !args.no_watch;
     let renderer = LiveTreeRenderer::new(out.color, args.max_depth).with_header_lines(header_lines);
 
+    // Where this run's events go. `jsonl` is honoured even without a TTY: the
+    // harness that drives a cascade over SSH reads that stream to check the
+    // payload really was relayed, and a non-TTY stdout is exactly what SSH
+    // gives us.
+    let jsonl = JsonlWriter::new(Box::new(io::stdout()));
+    let sink: &dyn EventSink = match sink_for_format(&args.output.format, live_eligible) {
+        Some(SinkKind::Jsonl) => &jsonl,
+        Some(SinkKind::LiveTree) => &renderer,
+        None => &consortium_nix::cascade_events::NullSink,
+    };
+
     let level_tree = LevelTreeFanOut::new(args.fanout.max(1));
     let result = match args.strategy.as_str() {
         "level-tree" | "level" | "tree" => Cascade::new()
@@ -147,11 +159,7 @@ fn run(args: Args) -> Result<i32> {
             .strategy(&level_tree)
             .executor(&executor)
             .max_rounds(args.max_rounds)
-            .events(if live_eligible {
-                &renderer as _
-            } else {
-                &consortium_nix::cascade_events::NullSink as _
-            })
+            .events(sink)
             .run(),
         "log2-fanout" | "log2" => Cascade::new()
             .nodes(nodes)
@@ -160,11 +168,7 @@ fn run(args: Args) -> Result<i32> {
             .strategy(&Log2FanOut)
             .executor(&executor)
             .max_rounds(args.max_rounds)
-            .events(if live_eligible {
-                &renderer as _
-            } else {
-                &consortium_nix::cascade_events::NullSink as _
-            })
+            .events(sink)
             .run(),
         "max-bottleneck" | "max-bottleneck-spanning" => Cascade::new()
             .nodes(nodes)
@@ -173,11 +177,7 @@ fn run(args: Args) -> Result<i32> {
             .strategy(&MaxBottleneckSpanning)
             .executor(&executor)
             .max_rounds(args.max_rounds)
-            .events(if live_eligible {
-                &renderer as _
-            } else {
-                &consortium_nix::cascade_events::NullSink as _
-            })
+            .events(sink)
             .run(),
         "steiner" | "steiner-greedy" => Cascade::new()
             .nodes(nodes)
@@ -186,11 +186,7 @@ fn run(args: Args) -> Result<i32> {
             .strategy(&SteinerGreedy)
             .executor(&executor)
             .max_rounds(args.max_rounds)
-            .events(if live_eligible {
-                &renderer as _
-            } else {
-                &consortium_nix::cascade_events::NullSink as _
-            })
+            .events(sink)
             .run(),
         other => anyhow::bail!(
             "unknown strategy: {other} (use level-tree, log2-fanout, max-bottleneck, or steiner)"

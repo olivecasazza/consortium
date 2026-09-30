@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The parity suite (tests/, lib/, harness/, TEST_MAPPING.toml,
+      # The parity suite (tests/, lib/, tools/, TEST_MAPPING.toml,
       # UPSTREAM_REF, tests/docker) moved to the consortium-tests repo —
       # fetch it into a subdirectory and satisfy its ../consortium path
       # deps with a self-symlink.
@@ -69,9 +69,9 @@ jobs:
         run: |
           REF="${{ github.event.inputs.upstream_ref }}"
           if [ -z "$REF" ]; then
-            bash consortium-tests/harness/sync_upstream_tests.sh
+            bash consortium-tests/tools/sync_upstream_tests.sh
           else
-            bash consortium-tests/harness/sync_upstream_tests.sh "$REF"
+            bash consortium-tests/tools/sync_upstream_tests.sh "$REF"
           fi
 
       # ── Build ──────────────────────────────────────────────────
@@ -95,7 +95,7 @@ jobs:
 
           # Generate JUnit XML from cargo test output
           cargo test -p consortium-crate 2>&1 | \
-            python consortium-tests/harness/cargo_to_junit.py > consortium-tests/results/rust-unit.xml
+            python consortium-tests/tools/cargo_to_junit.py > consortium-tests/results/rust-unit.xml
 
       # ── Loopback SSH for ClusterShell tree tests ────────────────
       # TreeWorker/GW tests ssh to localhost/127.0.0.1-7, while CLIClush
@@ -173,11 +173,11 @@ jobs:
         if: always()
         env:
           CONSORTIUM_REPO: .
-        run: python consortium-tests/harness/generate_test_mapping.py --update
+        run: python consortium-tests/tools/generate_test_mapping.py --update
 
       - name: Render scorecard
         if: always()
-        run: python consortium-tests/harness/render_summary.py --results-dir=results >> $GITHUB_STEP_SUMMARY
+        run: python consortium-tests/tools/render_summary.py --results-dir=results >> $GITHUB_STEP_SUMMARY
 
       # ── Upload artifacts ───────────────────────────────────────
       - name: Upload test results
