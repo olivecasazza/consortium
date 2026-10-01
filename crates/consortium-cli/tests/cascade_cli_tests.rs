@@ -444,3 +444,139 @@ fn cast_cascade_live_unknown_strategy_errors() {
         .stderr(predicate::str::contains("unknown strategy 'warp-drive'"))
         .stderr(predicate::str::contains("level-tree"));
 }
+
+// ─── --order flag ─────────────────────────────────────────────────────────────
+
+/// An unknown order is an error naming the available set, generated
+/// from the order table — never a silent default fallback.
+#[test]
+fn cast_cascade_live_unknown_order_errors() {
+    cast_cascade()
+        .args(["live", "-n", "4", "--order", "warp", "--no-watch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown order 'warp'"))
+        .stderr(predicate::str::contains("bfs"))
+        .stderr(predicate::str::contains("dfs"));
+}
+
+/// `--order bfs` is a real run: on a uniform fleet it converges in the
+/// log2 strategy's own round count, so verify accepts the trace exactly
+/// as it accepts a default-order run.
+#[test]
+fn cast_cascade_live_log2_with_bfs_order_verifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let trace_path = dir.path().join("bfs.jsonl");
+    let output = cast_cascade()
+        .args([
+            "live",
+            "-n",
+            "15",
+            "-s",
+            "log2",
+            "--order",
+            "bfs",
+            "--format",
+            "jsonl",
+            "--no-watch",
+        ])
+        .output()
+        .expect("bfs live run must execute");
+    assert!(output.status.success(), "bfs live run must succeed");
+    std::fs::write(&trace_path, &output.stdout).unwrap();
+
+    cast_cascade()
+        .args(["verify", trace_path.to_str().unwrap(), "--fanout", "2"])
+        .assert()
+        .success();
+}
+
+/// The `default` order is byte-for-byte the historical pairing: a run
+/// with `--order default` produces the same per-round plan sequence as
+/// a run with the flag omitted.
+#[test]
+fn cast_cascade_live_default_order_matches_omitted_flag() {
+    let plans = |extra: &[&str]| {
+        let output = cast_cascade()
+            .args([
+                "live",
+                "-n",
+                "15",
+                "-s",
+                "log2",
+                "--format",
+                "jsonl",
+                "--no-watch",
+            ])
+            .args(extra)
+            .output()
+            .expect("live run must execute");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|ev| ev["kind"] == "plan")
+            .map(|ev| ev["assignments"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(plans(&[]), plans(&["--order", "default"]));
+}
+
+/// `--order` parameterizes the log2 fanout pairing: combined with a
+/// strategy that does not consume it, that is an error naming both —
+/// never a silent no-op.
+#[test]
+fn cast_cascade_live_order_rejects_non_fanout_strategy() {
+    cast_cascade()
+        .args([
+            "live",
+            "-n",
+            "8",
+            "-s",
+            "level-tree",
+            "--order",
+            "bfs",
+            "--no-watch",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "traversal order 'bfs' parameterizes the log2 fanout pairing",
+        ))
+        .stderr(predicate::str::contains("level-tree"));
+}
+
+/// Discovery: the strategies listing also presents the traversal
+/// orders, generated from the same table `parse_fanout_order` reads.
+#[test]
+fn cast_cascade_strategies_lists_the_traversal_orders() {
+    use consortium_nix::cascade::FANOUT_ORDERS;
+
+    let output = cast_cascade()
+        .args(["strategies"])
+        .output()
+        .expect("failed to run cast cascade strategies");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("traversal orders (--order; parameterize the log2 fanout pairing):"),
+        "listing must present the order table: {stdout}"
+    );
+    for spec in FANOUT_ORDERS {
+        assert!(
+            stdout.contains(spec.canonical),
+            "strategies output must list order '{}': {stdout}",
+            spec.canonical
+        );
+        for alias in spec.aliases {
+            assert!(
+                stdout.contains(alias),
+                "strategies output must list order alias '{alias}': {stdout}"
+            );
+        }
+    }
+}
