@@ -14,13 +14,14 @@
 //! [`NodeId`](crate::cascade::NodeId)s.
 //!
 //! The expected round count is NOT restated here: the verifier asks the
-//! strategy that ran (`CascadeStrategy::expected_rounds`) what shape its own
-//! rule produces, so a log2 run is measured against log2's rule and a
+//! strategy that ran — via its inherent `expected_rounds` — what shape its
+//! own rule produces, so a log2 run is measured against log2's rule and a
 //! level-tree run against level-tree's.
 
 use std::collections::BTreeMap;
 
-use crate::cascade::CascadeStrategy;
+use crate::cascade::Log2FanOut;
+use crate::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
 
 /// A cascade run's event stream does not describe a tree we can trust.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -203,7 +204,7 @@ pub fn parse_cascade_events(stream: &str) -> Result<CascadeTopology, CascadeTree
 /// strategy is measured against its own rule.
 pub fn assert_relay_was_used(
     topology: &CascadeTopology,
-    strategy: &dyn CascadeStrategy,
+    strategy: &NamedStrategy,
     fanout: u32,
 ) -> Result<(), CascadeTreeError> {
     // A target served twice by one parent is the same defect seen from the
@@ -268,12 +269,23 @@ pub fn assert_relay_was_used(
         )));
     }
 
-    // The rounds expectation is deliberately absent for now: it belongs to
-    // `CascadeStrategy::expected_rounds` (landing in a parallel change) so
-    // each strategy is measured against its own rule. Until that method
-    // exists there is nothing to ask; `strategy` is carried on the signature
-    // so this is a one-line flip. See the PR notes.
-    let _ = strategy;
+    // The rounds expectation is not restated here: the strategy that ran
+    // is asked — through the inherent `expected_rounds` on its concrete
+    // type, deliberately not a trait method (that would be a semver
+    // break) — what its own rule produces.
+    let expected = strategy.expected_rounds(topology.n_nodes as usize, topology.seeded.len());
+    if topology.rounds != expected {
+        return Err(CascadeTreeError(format!(
+            "the trace ran in {} rounds, but the '{}' strategy produces {} \
+             for {} node(s) with {} seeded; the round count does not match \
+             the strategy's relay shape",
+            topology.rounds,
+            strategy.name(),
+            expected,
+            topology.n_nodes,
+            topology.seeded.len()
+        )));
+    }
     Ok(())
 }
 
@@ -281,16 +293,56 @@ pub fn assert_relay_was_used(
 // Strategy resolution
 // ============================================================================
 
+/// A strategy a trace's `started` event names, held concretely.
+///
+/// [`crate::cascade::CascadeStrategy`] stays dispatch-only (`next_round` +
+/// `name`); `expected_rounds` is deliberately an inherent method on each
+/// concrete type — a required trait method would be a semver-breaking
+/// change — so this enum is how the verifier reaches the concrete
+/// implementation without putting anything new on the trait.
+pub enum NamedStrategy {
+    Log2FanOut(Log2FanOut),
+    LevelTreeFanOut(LevelTreeFanOut),
+    MaxBottleneckSpanning(MaxBottleneckSpanning),
+    SteinerGreedy(SteinerGreedy),
+}
+
+impl NamedStrategy {
+    /// The round count the strategy's own rule produces for a fleet of
+    /// `n_nodes` with `seeded` sources, partition-free.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        match self {
+            Self::Log2FanOut(s) => s.expected_rounds(n_nodes, seeded),
+            Self::LevelTreeFanOut(s) => s.expected_rounds(n_nodes, seeded),
+            Self::MaxBottleneckSpanning(s) => s.expected_rounds(n_nodes, seeded),
+            Self::SteinerGreedy(s) => s.expected_rounds(n_nodes, seeded),
+        }
+    }
+
+    /// The strategy's canonical name, for diagnostics.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Log2FanOut(_) => "log2-fanout",
+            Self::LevelTreeFanOut(_) => "level-tree",
+            Self::MaxBottleneckSpanning(_) => "max-bottleneck-spanning",
+            Self::SteinerGreedy(_) => "steiner-greedy",
+        }
+    }
+}
+
 /// The strategy a trace's `started` event names, as an instance whose
 /// `expected_rounds` can be asked for the expected shape. `fanout` only
 /// parameterizes level-tree; the other strategies ignore it.
-pub fn strategy_by_name(name: &str, fanout: u32) -> Option<Box<dyn CascadeStrategy>> {
-    use crate::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
+pub fn strategy_by_name(name: &str, fanout: u32) -> Option<NamedStrategy> {
     match name {
-        "level-tree" | "level" | "tree" => Some(Box::new(LevelTreeFanOut::new(fanout.max(1)))),
-        "max-bottleneck" | "max-bottleneck-spanning" => Some(Box::new(MaxBottleneckSpanning)),
-        "steiner" | "steiner-greedy" => Some(Box::new(SteinerGreedy)),
-        "log2-fanout" => Some(Box::new(crate::cascade::Log2FanOut)),
+        "level-tree" | "level" | "tree" => Some(NamedStrategy::LevelTreeFanOut(
+            LevelTreeFanOut::new(fanout.max(1)),
+        )),
+        "max-bottleneck" | "max-bottleneck-spanning" => {
+            Some(NamedStrategy::MaxBottleneckSpanning(MaxBottleneckSpanning))
+        }
+        "steiner" | "steiner-greedy" => Some(NamedStrategy::SteinerGreedy(SteinerGreedy)),
+        "log2-fanout" => Some(NamedStrategy::Log2FanOut(Log2FanOut)),
         _ => None,
     }
 }
@@ -302,7 +354,6 @@ pub fn strategy_by_name(name: &str, fanout: u32) -> Option<Box<dyn CascadeStrate
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cascade::Log2FanOut;
 
     /// A level-tree run over 15 nodes, seed 0, fanout 2: the documented
     /// wire shape. 2 + 4 + 8 = 14 deliveries, 3 rounds, depth 3.
@@ -471,9 +522,74 @@ mod tests {
     fn assert_accepts_a_relayed_run() {
         let t = relay_15();
         assert_eq!(
-            assert_relay_was_used(&t, &Log2FanOut, 2),
+            assert_relay_was_used(&t, &strategy_by_name(&t.strategy, 2).unwrap(), 2),
             Ok(()),
             "a 15-node relay at depth 3 is a relay"
+        );
+    }
+
+    #[test]
+    fn assert_accepts_a_log2_relay_at_its_own_round_count() {
+        // Log2FanOut has each source serve one target per round, so the
+        // source pool doubles: the 15th node lands in round 3 — 4 rounds
+        // where a level-tree run over the same fleet needs 3.
+        let stream = concat!(
+            r#"{"kind":"started","n_nodes":15,"seeded":[0],"strategy":"log2-fanout","at":0}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":1,"src":0,"tgt":2,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":1,"src":1,"tgt":3,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":2,"src":0,"tgt":4,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":2,"src":1,"tgt":5,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":2,"src":2,"tgt":6,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":2,"src":3,"tgt":7,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":4,"tgt":8,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":5,"tgt":9,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":6,"tgt":10,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":7,"tgt":11,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":8,"tgt":12,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":9,"tgt":13,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":3,"src":10,"tgt":14,"duration":1}"#,
+            "\n",
+            r#"{"kind":"finished","converged":15,"failed":0,"rounds":4}"#,
+            "\n",
+        );
+        let t = parse_cascade_events(stream).unwrap();
+        assert_eq!(t.depth(), 4);
+        assert_eq!(
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2),
+            Ok(()),
+            "a log2 relay is measured against log2's own round rule"
+        );
+    }
+
+    #[test]
+    fn assert_rejects_a_round_count_the_strategy_could_not_produce() {
+        // The delivery tree is a perfect level-tree relay, but the trace
+        // claims it finished in 2 rounds — no relay rule produces that
+        // for 15 nodes served from one seed.
+        let t = CascadeTopology {
+            rounds: 2,
+            ..relay_15()
+        };
+        let strategy = strategy_by_name("level-tree", 2).unwrap();
+        let err = assert_relay_was_used(&t, &strategy, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("2 rounds"),
+            "the diagnostic must name the offending round count, got: {err}"
         );
     }
 
@@ -494,7 +610,8 @@ mod tests {
             "\n",
         );
         let t = parse_cascade_events(stream).unwrap();
-        let err = assert_relay_was_used(&t, &Log2FanOut, 2).unwrap_err();
+        let err =
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2).unwrap_err();
         assert_eq!(
             err.to_string(),
             "the payload was not relayed: all 5 nodes were served straight from \
@@ -517,7 +634,10 @@ mod tests {
             "\n",
         );
         let t = parse_cascade_events(stream).unwrap();
-        assert_eq!(assert_relay_was_used(&t, &Log2FanOut, 2), Ok(()));
+        assert_eq!(
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2),
+            Ok(())
+        );
     }
 
     #[test]
@@ -533,7 +653,8 @@ mod tests {
             "\n",
         );
         let t = parse_cascade_events(stream).unwrap();
-        let err = assert_relay_was_used(&t, &Log2FanOut, 2).unwrap_err();
+        let err =
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2).unwrap_err();
         assert_eq!(
             err.to_string(),
             "node(s) [0] appear as a target more than once; the relay tree is \
@@ -552,7 +673,8 @@ mod tests {
             "\n",
         );
         let t = parse_cascade_events(stream).unwrap();
-        let err = assert_relay_was_used(&t, &Log2FanOut, 2).unwrap_err();
+        let err =
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2).unwrap_err();
         assert_eq!(
             err.to_string(),
             "node(s) [2, 3] were never served by anyone; the cascade did not \
@@ -577,7 +699,8 @@ mod tests {
             "\n",
         );
         let t = parse_cascade_events(stream).unwrap();
-        let err = assert_relay_was_used(&t, &Log2FanOut, 2).unwrap_err();
+        let err =
+            assert_relay_was_used(&t, &strategy_by_name("log2-fanout", 2).unwrap(), 2).unwrap_err();
         assert_eq!(
             err.to_string(),
             "3 deliveries landed on 2 distinct nodes; a node was served twice, \

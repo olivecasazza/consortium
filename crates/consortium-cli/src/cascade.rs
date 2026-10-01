@@ -248,7 +248,7 @@ pub fn verify_trace_file(path: &str, fanout: u32, nodes: Option<u32>) -> Result<
     let strategy = strategy_by_name(&topology.strategy, fanout).ok_or_else(|| {
         anyhow::anyhow!("unknown strategy '{}' in started event", topology.strategy)
     })?;
-    assert_relay_was_used(&topology, strategy.as_ref(), fanout)
+    assert_relay_was_used(&topology, &strategy, fanout)
         .map_err(|e| anyhow::anyhow!("cascade relay check failed: {e}"))?;
     // The relay assertion passes on any fleet size; the harness additionally
     // pins how many nodes the run covered.
@@ -638,6 +638,21 @@ mod tests {
                 "relay_depth": 3,
                 "relayed_nodes": 14,
             })
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_round_count_the_strategy_could_not_produce() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_trace(
+            &dir,
+            "too-fast.jsonl",
+            &RELAY_15.replace(r#""rounds":3"#, r#""rounds":2"#),
+        );
+        let err = verify_trace_file(&path, 2, None).unwrap_err();
+        assert!(
+            err.to_string().contains("2 rounds"),
+            "the diagnostic must name the offending round count, got: {err}"
         );
     }
 
