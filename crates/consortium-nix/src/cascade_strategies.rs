@@ -1,6 +1,6 @@
 //! Cost-aware cascade strategies built on petgraph.
 //!
-//! [`Log2FanOut`](crate::cascade::Log2FanOut) ignores the network — it
+//! [`Log2FanOut`] ignores the network — it
 //! pairs sources to targets in id order. That's correct under uniform
 //! topology but pessimal when bandwidth varies: the round wall-time is
 //! the slowest edge in the round, so a single (fast-source, slow-target)
@@ -60,7 +60,7 @@ const DEFAULT_BW_BYTES_SEC: u64 = 100 * 1024 * 1024;
 pub struct MaxBottleneckSpanning;
 
 impl MaxBottleneckSpanning {
-    /// Same structural rule as [`Log2FanOut`](crate::cascade::Log2FanOut): each source serves at
+    /// Same structural rule as [`Log2FanOut`]: each source serves at
     /// most one target per round, and while any unpartitioned target
     /// remains, the greedy matching always saturates the source set,
     /// so the informed set at most doubles per round. Bandwidth skew
