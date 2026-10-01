@@ -73,7 +73,8 @@ python3 examples/python/rangeset_demo.py
 
 See [cli/README.md](cli/README.md) for a full walkthrough of `claw` (clush),
 `pinch` (nodeset), `molt` (clubak/dshbak), `cast` (fleet deployment),
-`cascade-copy`, and `cascade-viz` — including which ones work offline.
+`cast cascade` (replay/simulate/verify cascade streams), and `cascade-copy`
+— including which ones work offline.
 
 ## Inventories
 

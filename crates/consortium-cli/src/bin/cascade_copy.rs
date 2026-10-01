@@ -11,7 +11,7 @@
 //!   `nix copy` to THEIR children — log-N fan-out.
 //! - Live tree visualization shows progress in real time.
 //!
-//! Differs from `cascade-viz live` (sim) in that EVERY edge is a
+//! Differs from `cast cascade live` (sim) in that EVERY edge is a
 //! real subprocess call against actual hosts.
 
 use std::io;

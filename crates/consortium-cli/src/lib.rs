@@ -1,5 +1,6 @@
 //! Shared utilities for consortium CLI tools (claw, molt, pinch, cast).
 
+pub mod cascade;
 pub mod cast;
 pub mod claw;
 pub mod display;

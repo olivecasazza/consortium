@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // When NOT to use it: 1–2 targets (cascade overhead > parallel direct
     // copy), or DeployAction::Build (nothing to copy). See also the
-    // `cascade-copy` and `cascade-viz` CLIs (examples/cli/README.md).
+    // `cascade-copy` and `cast cascade` CLIs (examples/cli/README.md).
 
     Ok(())
 }

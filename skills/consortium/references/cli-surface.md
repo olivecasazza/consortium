@@ -140,9 +140,16 @@ STORE_PATH=$(nix build --no-link --print-out-paths .#hello)
 cascade-copy "$STORE_PATH" -i inventory.toml -s level-tree --fanout 8
 ```
 
-## cascade-viz
+## cast cascade
 
-Replays JSONL traces or runs live cascade scenarios as a tree.
+`cast cascade tree <TRACE_FILE>` replays a JSONL trace, `cast cascade live`
+runs a live cascade scenario as a tree, and `cast cascade verify
+<TRACE_FILE> --fanout N [--nodes N]` asserts the trace relayed peer-to-peer —
+it exits non-zero with a specific diagnostic when the delivery tree is a
+host-push star, and prints the topology summary
+`{"nodes", "rounds", "relay_depth", "relayed_nodes"}` on success.
+
+`live` flags:
 
 | Flag | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -162,6 +169,9 @@ Replays JSONL traces or runs live cascade scenarios as a tree.
 | `-L, --max-depth` | N | — | Rendered tree depth. |
 | `--no-color` | flag | false | Disable color. |
 | `--no-watch` | flag | false | Disable live re-rendering. |
+
+`tree` takes `-f/--format`, `-L/--max-depth`, and `--no-color`; `verify`
+takes `--fanout` (required) and `--nodes` (expected fleet size).
 
 ## ssh_config jump host
 
