@@ -223,6 +223,11 @@ pub struct CascadeState<'a> {
 }
 
 /// Plug-in cascade decision logic.
+///
+/// Per-strategy convergence estimates (`expected_rounds`) live as
+/// inherent methods on each concrete strategy (e.g.
+/// [`Log2FanOut::expected_rounds`]) — they are strategy-specific
+/// rules, not part of the pluggable decision surface.
 pub trait CascadeStrategy: Send + Sync {
     /// Pick edges to fire next. Return an empty plan to halt.
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan;
@@ -936,6 +941,22 @@ pub fn run_cascade_with_events(
 /// uniform topology is ⌈log₂(N - seeded)⌉ rounds.
 pub struct Log2FanOut;
 
+impl Log2FanOut {
+    /// ⌈log₂(N - seeded)⌉, the struct's documented uniform-topology rule:
+    /// each source serves at most one target per round, so the informed
+    /// set at most doubles per round. Computed in integer arithmetic
+    /// (bit-width of `pending - 1`, no floats). Assumes `seeded >= 1`
+    /// (the coordinator always pushes from at least one holder); with
+    /// zero sources the cascade halts unconverged and no count applies.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        let pending = n_nodes.saturating_sub(seeded);
+        if pending == 0 {
+            return 0;
+        }
+        usize::BITS - (pending - 1).leading_zeros()
+    }
+}
+
 impl CascadeStrategy for Log2FanOut {
     fn name(&self) -> &'static str {
         "log2-fanout"
@@ -1246,5 +1267,17 @@ mod tests {
         let merged = CascadeError::merge(NodeId(2), vec![leaf_a, leaf_b]);
         let affected = merged.affected_nodes();
         assert_eq!(affected, vec![NodeId(10), NodeId(11)]);
+    }
+
+    #[test]
+    fn log2_expected_rounds_matches_docstring() {
+        // ⌈log₂(N - seeded)⌉ per the struct's own documentation.
+        assert_eq!(Log2FanOut.expected_rounds(7, 1), 3);
+        assert_eq!(Log2FanOut.expected_rounds(16, 1), 4);
+        assert_eq!(Log2FanOut.expected_rounds(64, 1), 6);
+        // Everything already seeded: no rounds at all.
+        assert_eq!(Log2FanOut.expected_rounds(64, 64), 0);
+        // seeded beyond n_nodes is the same "nothing pending" case.
+        assert_eq!(Log2FanOut.expected_rounds(5, 9), 0);
     }
 }

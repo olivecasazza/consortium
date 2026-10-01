@@ -57,6 +57,25 @@ const DEFAULT_BW_BYTES_SEC: u64 = 100 * 1024 * 1024;
 /// implicitly built up round-by-round.
 pub struct MaxBottleneckSpanning;
 
+impl MaxBottleneckSpanning {
+    /// Same structural rule as [`Log2FanOut`](crate::cascade::Log2FanOut): each source serves at
+    /// most one target per round, and while any unpartitioned target
+    /// remains, the greedy matching always saturates the source set,
+    /// so the informed set at most doubles per round. Bandwidth skew
+    /// changes which edges fire within a round, not how many rounds
+    /// are needed. This is the partition-free count: partitions and
+    /// failed nodes can only stretch it, and this signature cannot see
+    /// them. Assumes `seeded >= 1`; with zero sources the cascade
+    /// halts unconverged and no count applies.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        let pending = n_nodes.saturating_sub(seeded);
+        if pending == 0 {
+            return 0;
+        }
+        usize::BITS - (pending - 1).leading_zeros()
+    }
+}
+
 impl CascadeStrategy for MaxBottleneckSpanning {
     fn name(&self) -> &'static str {
         "max-bottleneck-spanning"
@@ -133,6 +152,26 @@ impl CascadeStrategy for MaxBottleneckSpanning {
 /// by the source's outbound bandwidth in practice. Use when network
 /// is heavily skewed and a few sources dominate capacity.
 pub struct SteinerGreedy;
+
+impl SteinerGreedy {
+    /// The greedy pick has no per-source cap, so on a partition-free
+    /// topology every pending target is matched in the very first
+    /// round: the count is 1 for any non-empty pending set, regardless
+    /// of fleet size. This is an ESTIMATE, not a closed form over real
+    /// networks — partitions and failed nodes can force additional
+    /// rounds (or no convergence at all), and this signature cannot
+    /// see them. A round count of 1 also says nothing about how long
+    /// that round takes; the trade-off is documented on the struct.
+    /// Assumes `seeded >= 1`; with zero sources the cascade halts
+    /// unconverged and no count applies.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        if n_nodes.saturating_sub(seeded) == 0 {
+            0
+        } else {
+            1
+        }
+    }
+}
 
 impl CascadeStrategy for SteinerGreedy {
     fn name(&self) -> &'static str {
@@ -232,6 +271,38 @@ impl LevelTreeFanOut {
     pub fn new(fanout: u32) -> Self {
         assert!(fanout >= 1, "LevelTreeFanOut: fanout must be >= 1");
         Self { fanout }
+    }
+
+    /// Smallest `k` with `sum_{i=1..k} fanout^i >= (n_nodes - seeded)`:
+    /// level `k` contributes `fanout^k` nodes and each round fills
+    /// exactly one level, so `k` is the depth of the deepest pending
+    /// node. This is deliberately NOT `⌈log₂(N - seeded)⌉` — the tree
+    /// fills whole F-ary levels per round, so the counts diverge (2 vs
+    /// 3 at 7 nodes, fanout 2). Assumes `seeded >= 1` (the root); with
+    /// zero sources the cascade halts unconverged and no count applies.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        let pending = n_nodes.saturating_sub(seeded);
+        if pending == 0 {
+            return 0;
+        }
+        // Only reachable by constructing the struct directly (`new`
+        // asserts fanout >= 1): with fanout 0 no level ever fills, so
+        // the honest answer is "never" rather than an infinite loop.
+        if self.fanout == 0 {
+            return u32::MAX;
+        }
+        let fanout = u128::from(self.fanout);
+        let mut covered: u128 = 0;
+        let mut level = fanout; // level r adds fanout^r nodes, r >= 1
+        let mut rounds: u32 = 0;
+        while covered < u128::from(pending as u64) {
+            covered += level;
+            level = level.saturating_mul(fanout);
+            rounds += 1;
+        }
+        // fanout 1 grows the tree by one node per level, so `rounds`
+        // can reach `pending`, which may exceed u32 on a 64-bit usize.
+        u32::try_from(rounds).unwrap_or(u32::MAX)
     }
 
     /// Children of `id` in the heap-style F-ary tree.
@@ -794,5 +865,78 @@ mod tests {
             mb_total,
             log2_total,
         );
+    }
+
+    #[test]
+    fn level_tree_expected_rounds_matches_tree_depth() {
+        // Binary tree: level k adds 2^k nodes, one level per round, so
+        // rounds = smallest k with sum_{i=1..k} 2^i >= pending.
+        let tree = LevelTreeFanOut::new(2);
+        assert_eq!(tree.expected_rounds(7, 1), 2); // 2 + 4 = 6 >= 6
+        assert_eq!(tree.expected_rounds(15, 1), 3); // 2 + 4 + 8 = 14 >= 14
+        assert_eq!(tree.expected_rounds(16, 1), 4); // 14 < 15, need level 4
+        assert_eq!(tree.expected_rounds(64, 1), 6); // 62 < 63, need level 6
+    }
+
+    #[test]
+    fn level_tree_expected_rounds_guards() {
+        // Fully seeded (and beyond): zero rounds.
+        assert_eq!(LevelTreeFanOut::new(2).expected_rounds(16, 16), 0);
+        assert_eq!(LevelTreeFanOut::new(2).expected_rounds(5, 9), 0);
+        // fanout 1 is a chain: one node per level, still terminates.
+        assert_eq!(LevelTreeFanOut::new(1).expected_rounds(7, 1), 6);
+        // fanout 0 can only exist via struct literal (`new` asserts
+        // >= 1); no level would ever fill, so the honest answer is
+        // "never", not an infinite loop.
+        assert_eq!(
+            LevelTreeFanOut { fanout: 0 }.expected_rounds(7, 1),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn log2_and_level_tree_disagree_at_seven_nodes() {
+        // The two round rules are NOT interchangeable. They coincide at
+        // 16, 17 and 64 nodes — which hid the divergence for a while —
+        // but at 7 nodes log2 pairing needs 3 rounds while the level
+        // tree needs 2. Pin BOTH values so quietly unifying either
+        // formula fails here.
+        use crate::cascade::Log2FanOut;
+
+        let log2 = Log2FanOut.expected_rounds(7, 1);
+        let tree = LevelTreeFanOut::new(2).expected_rounds(7, 1);
+        assert_eq!(log2, 3);
+        assert_eq!(tree, 2);
+        assert_ne!(log2, tree);
+        // And at 15: 4 vs 3.
+        assert_ne!(
+            Log2FanOut.expected_rounds(15, 1),
+            LevelTreeFanOut::new(2).expected_rounds(15, 1)
+        );
+    }
+
+    #[test]
+    fn max_bottleneck_expected_rounds_matches_source_once_rule() {
+        // Same structural rule as Log2FanOut: each source serves at
+        // most one target per round, so the informed set at most
+        // doubles per round. Bandwidth skew changes WHICH edges fire,
+        // not how many rounds are needed.
+        let mb = MaxBottleneckSpanning;
+        assert_eq!(mb.expected_rounds(7, 1), 3);
+        assert_eq!(mb.expected_rounds(16, 1), 4);
+        assert_eq!(mb.expected_rounds(64, 1), 6);
+        assert_eq!(mb.expected_rounds(64, 64), 0);
+    }
+
+    #[test]
+    fn steiner_greedy_expected_rounds_single_round_partition_free() {
+        // No per-source cap: on a partition-free topology every pending
+        // target is matched in the very first round, regardless of
+        // fleet size. Partitions can push the real count higher, but
+        // this signature cannot see them (documented estimate).
+        let sg = SteinerGreedy;
+        assert_eq!(sg.expected_rounds(7, 1), 1);
+        assert_eq!(sg.expected_rounds(64, 1), 1);
+        assert_eq!(sg.expected_rounds(64, 64), 0);
     }
 }
