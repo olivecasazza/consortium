@@ -21,7 +21,9 @@
 use std::collections::BTreeMap;
 
 use crate::cascade::Log2FanOut;
-use crate::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
+use crate::cascade_strategies::{
+    find_strategy, LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy,
+};
 
 /// A cascade run's event stream does not describe a tree we can trust.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -207,6 +209,25 @@ pub fn assert_relay_was_used(
     strategy: &NamedStrategy,
     fanout: u32,
 ) -> Result<(), CascadeTreeError> {
+    assert_relay_shape(
+        topology,
+        strategy.name(),
+        strategy.expected_rounds(topology.n_nodes as usize, topology.seeded.len()),
+        fanout,
+    )
+}
+
+/// [`assert_relay_was_used`] with the strategy resolved by name: the
+/// canonical name for diagnostics plus the strategy's own round count
+/// from its inherent `expected_rounds` (via the registry's
+/// `rounds_rule`). This is the assertion every verify path shares, so
+/// a strategy registered later is measured by exactly the same rules.
+pub fn assert_relay_shape(
+    topology: &CascadeTopology,
+    strategy_name: &str,
+    expected_rounds: u32,
+    fanout: u32,
+) -> Result<(), CascadeTreeError> {
     // A target served twice by one parent is the same defect seen from the
     // other side of the parent map; check the served sets first because its
     // message names the offending parents.
@@ -273,15 +294,12 @@ pub fn assert_relay_was_used(
     // is asked — through the inherent `expected_rounds` on its concrete
     // type, deliberately not a trait method (that would be a semver
     // break) — what its own rule produces.
-    let expected = strategy.expected_rounds(topology.n_nodes as usize, topology.seeded.len());
-    if topology.rounds != expected {
+    if topology.rounds != expected_rounds {
         return Err(CascadeTreeError(format!(
-            "the trace ran in {} rounds, but the '{}' strategy produces {} \
-             for {} node(s) with {} seeded; the round count does not match \
-             the strategy's relay shape",
+            "the trace ran in {} rounds, but the '{strategy_name}' strategy \
+             produces {expected_rounds} for {} node(s) with {} seeded; the \
+             round count does not match the strategy's relay shape",
             topology.rounds,
-            strategy.name(),
-            expected,
             topology.n_nodes,
             topology.seeded.len()
         )));
@@ -333,15 +351,22 @@ impl NamedStrategy {
 /// The strategy a trace's `started` event names, as an instance whose
 /// `expected_rounds` can be asked for the expected shape. `fanout` only
 /// parameterizes level-tree; the other strategies ignore it.
+///
+/// Alias resolution goes through the strategy registry, so the accepted
+/// spellings are exactly the registry's — this can only grow with the
+/// table. Strategies without a [`NamedStrategy`] variant (the enum is
+/// frozen; growing it would be a semver-major change) resolve through
+/// the registry directly — `find_strategy` + `StrategySpec::rounds_rule`
+/// — which is the path `cast cascade verify` uses.
 pub fn strategy_by_name(name: &str, fanout: u32) -> Option<NamedStrategy> {
-    match name {
-        "level-tree" | "level" | "tree" => Some(NamedStrategy::LevelTreeFanOut(
-            LevelTreeFanOut::new(fanout.max(1)),
-        )),
-        "max-bottleneck" | "max-bottleneck-spanning" => {
+    match find_strategy(name)?.canonical {
+        "level-tree" => Some(NamedStrategy::LevelTreeFanOut(LevelTreeFanOut::new(
+            fanout.max(1),
+        ))),
+        "max-bottleneck-spanning" => {
             Some(NamedStrategy::MaxBottleneckSpanning(MaxBottleneckSpanning))
         }
-        "steiner" | "steiner-greedy" => Some(NamedStrategy::SteinerGreedy(SteinerGreedy)),
+        "steiner-greedy" => Some(NamedStrategy::SteinerGreedy(SteinerGreedy)),
         "log2-fanout" => Some(NamedStrategy::Log2FanOut(Log2FanOut)),
         _ => None,
     }
@@ -739,5 +764,66 @@ mod tests {
         // The level-tree instance carries the verify --fanout; others ignore it.
         let s = strategy_by_name("level-tree", 3).unwrap();
         assert_eq!(s.name(), "level-tree");
+    }
+
+    // ─── relay shape (registry-driven) ──────────────────────────────────────
+
+    /// A real log2 relay over 7 nodes, seed 0: r0 (0→1); r1 (0→2) (1→3);
+    /// r2 (0→4) (1→5) (2→6). Depth 2, 6 relayed nodes, 3 rounds —
+    /// ⌈log₂(6)⌉ = 3, the strategy's own rule.
+    const LOG2_RELAY_7: &str = concat!(
+        r#"{"kind":"started","n_nodes":7,"seeded":[0],"strategy":"log2-fanout","at":0}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":1,"src":0,"tgt":2,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":1,"src":1,"tgt":3,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":2,"src":0,"tgt":4,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":2,"src":1,"tgt":5,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":2,"src":2,"tgt":6,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"finished","converged":7,"failed":0,"rounds":3}"#,
+    );
+
+    /// Resolve a trace's strategy through the registry and run the relay
+    /// shape assertion — the exact path `cast cascade verify` takes.
+    fn check_trace(trace: &str, fanout: u32) -> Result<(), CascadeTreeError> {
+        let t = parse_cascade_events(trace)?;
+        let spec = find_strategy(&t.strategy).ok_or_else(|| {
+            CascadeTreeError(format!(
+                "unknown strategy '{}' in started event",
+                t.strategy
+            ))
+        })?;
+        let expected = (spec.rounds_rule)(t.n_nodes as usize, t.seeded.len(), fanout);
+        assert_relay_shape(&t, spec.canonical, expected, fanout)
+    }
+
+    #[test]
+    fn verify_accepts_a_log2_relay_through_the_registry_path() {
+        // The positive control over the same code path: a genuine
+        // peer-to-peer log2 relay passes the assertion.
+        check_trace(LOG2_RELAY_7, 2).expect("log2 relay trace must be accepted");
+    }
+
+    #[test]
+    fn verify_unknown_strategy_names_the_registered_set() {
+        let stream = concat!(
+            r#"{"kind":"started","n_nodes":4,"seeded":[0],"strategy":"warp-drive","at":0}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":2,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":3,"duration":1}"#,
+            "\n",
+            r#"{"kind":"finished","converged":4,"failed":0,"rounds":1}"#,
+        );
+        let err = check_trace(stream, 2).unwrap_err();
+        assert!(err.to_string().contains("unknown strategy"), "got: {err}");
     }
 }

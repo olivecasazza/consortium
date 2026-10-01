@@ -24,10 +24,10 @@ use is_terminal::IsTerminal;
 use consortium_cli::event_render::{sink_for_format, JsonlWriter, LiveTreeRenderer, SinkKind};
 use consortium_cli::inventory::load_inventory;
 use consortium_cli::output::{CliOutput, OutputArgs};
-use consortium_nix::cascade::{Cascade, Log2FanOut, NetworkProfile};
+use consortium_nix::cascade::{Cascade, NetworkProfile};
 use consortium_nix::cascade_events::EventSink;
 use consortium_nix::cascade_executor::NixCopyExecutor;
-use consortium_nix::cascade_strategies::{LevelTreeFanOut, MaxBottleneckSpanning, SteinerGreedy};
+use consortium_nix::cascade_strategies::parse_strategy;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -43,8 +43,9 @@ struct Args {
     #[arg(short = 'i', long = "inventory")]
     inventory: String,
 
-    /// Cascade strategy: level-tree (default), log2-fanout,
-    /// max-bottleneck, or steiner.
+    /// Cascade strategy (default `level-tree`). Resolved through the
+    /// registry: every strategy has a canonical name plus short
+    /// aliases — see them all with `cast cascade strategies`.
     #[arg(short = 's', long = "strategy", default_value = "level-tree")]
     strategy: String,
 
@@ -150,48 +151,20 @@ fn run(args: Args) -> Result<i32> {
         None => &consortium_nix::cascade_events::NullSink,
     };
 
-    let level_tree = LevelTreeFanOut::new(args.fanout.max(1));
-    let result = match args.strategy.as_str() {
-        "level-tree" | "level" | "tree" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&level_tree)
-            .executor(&executor)
-            .max_rounds(args.max_rounds)
-            .events(sink)
-            .run(),
-        "log2-fanout" | "log2" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&Log2FanOut)
-            .executor(&executor)
-            .max_rounds(args.max_rounds)
-            .events(sink)
-            .run(),
-        "max-bottleneck" | "max-bottleneck-spanning" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&MaxBottleneckSpanning)
-            .executor(&executor)
-            .max_rounds(args.max_rounds)
-            .events(sink)
-            .run(),
-        "steiner" | "steiner-greedy" => Cascade::new()
-            .nodes(nodes)
-            .seeded(seeded)
-            .network(net)
-            .strategy(&SteinerGreedy)
-            .executor(&executor)
-            .max_rounds(args.max_rounds)
-            .events(sink)
-            .run(),
-        other => anyhow::bail!(
-            "unknown strategy: {other} (use level-tree, log2-fanout, max-bottleneck, or steiner)"
-        ),
-    };
+    // One strategy, resolved through the registry — the same table the
+    // live scenario and the verifier read. Adding a strategy never adds
+    // another copy of the builder below. Unknown names fail with the
+    // registry-generated list of what IS available.
+    let strategy = parse_strategy(&args.strategy, args.fanout)?;
+    let result = Cascade::new()
+        .nodes(nodes)
+        .seeded(seeded)
+        .network(net)
+        .strategy(strategy.as_ref())
+        .executor(&executor)
+        .max_rounds(args.max_rounds)
+        .events(sink)
+        .run();
 
     let total: Duration = result.round_durations.iter().sum();
     out.info(format!(

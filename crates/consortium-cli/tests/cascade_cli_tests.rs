@@ -316,3 +316,14 @@ fn cast_cascade_verify_fanout_is_required() {
         .failure()
         .stderr(predicate::str::contains("--fanout"));
 }
+/// The live path resolves through the registry: an unknown strategy is
+/// an error naming the available set, never a silent log2 fallback.
+#[test]
+fn cast_cascade_live_unknown_strategy_errors() {
+    cast_cascade()
+        .args(["live", "-n", "4", "-s", "warp-drive", "--no-watch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown strategy 'warp-drive'"))
+        .stderr(predicate::str::contains("level-tree"));
+}

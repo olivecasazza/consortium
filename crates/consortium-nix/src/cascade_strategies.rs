@@ -22,7 +22,9 @@
 
 use std::collections::HashSet;
 
-use crate::cascade::{CascadePlan, CascadeState, CascadeStrategy, NetworkProfile, NodeId};
+use crate::cascade::{
+    CascadePlan, CascadeState, CascadeStrategy, Log2FanOut, NetworkProfile, NodeId,
+};
 
 // Default bandwidth used when an edge has no entry in NetworkProfile.
 // 100 MB/s is a reasonable LAN baseline — strategies with no bandwidth
@@ -452,11 +454,129 @@ impl CascadeStrategy for LevelTreeFanOut {
     }
 }
 
+// ============================================================================
+// Strategy registry — the single source of strategy names
+// ============================================================================
+
+/// One registered cascade strategy: its canonical name, its friendly
+/// aliases, how to build it, and its own round rule.
+///
+/// Everything that names a strategy reads this table —
+/// [`parse_strategy`], the unknown-name error,
+/// [`strategy_catalog`], `cascade_tree`'s strategy resolution, and the
+/// `cast cascade strategies` discovery command. Adding a strategy is
+/// one `StrategySpec` entry; no other code grows.
+pub struct StrategySpec {
+    /// The name traces carry and diagnostics print.
+    pub canonical: &'static str,
+    /// Short friendly spellings accepted alongside the canonical name.
+    pub aliases: &'static [&'static str],
+    /// Build the runnable strategy. `fanout` only parameterizes
+    /// level-tree; values < 1 are clamped to 1.
+    pub build: fn(fanout: u32) -> Box<dyn CascadeStrategy>,
+    /// The strategy's own round rule — its inherent `expected_rounds`
+    /// as a fn, so the verifier can ask the rule without a concrete
+    /// instance. Args: `(n_nodes, seeded, fanout)`. This is the
+    /// partition-free count each inherent method documents.
+    pub rounds_rule: fn(n_nodes: usize, seeded: usize, fanout: u32) -> u32,
+}
+
+/// Every cascade strategy, in display order. `level-tree` is first
+/// because it is the CLI default.
+pub const STRATEGIES: &[StrategySpec] = &[
+    StrategySpec {
+        canonical: "level-tree",
+        aliases: &["level", "tree"],
+        build: |fanout| Box::new(LevelTreeFanOut::new(fanout.max(1))),
+        rounds_rule: |n, seeded, fanout| {
+            LevelTreeFanOut::new(fanout.max(1)).expected_rounds(n, seeded)
+        },
+    },
+    StrategySpec {
+        canonical: "log2-fanout",
+        aliases: &["log2"],
+        build: |_| Box::new(Log2FanOut),
+        rounds_rule: |n, seeded, _| Log2FanOut.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "max-bottleneck-spanning",
+        aliases: &["max-bottleneck"],
+        build: |_| Box::new(MaxBottleneckSpanning),
+        rounds_rule: |n, seeded, _| MaxBottleneckSpanning.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "steiner-greedy",
+        aliases: &["steiner"],
+        build: |_| Box::new(SteinerGreedy),
+        rounds_rule: |n, seeded, _| SteinerGreedy.expected_rounds(n, seeded),
+    },
+];
+
+/// Resolve a strategy by canonical name or friendly alias.
+pub fn find_strategy(name: &str) -> Option<&'static StrategySpec> {
+    STRATEGIES
+        .iter()
+        .find(|s| s.canonical == name || s.aliases.contains(&name))
+}
+
+/// Every registered strategy as "`canonical` (aliases: a, b)", in table
+/// order. Generated from [`STRATEGIES`] — this is what the
+/// unknown-name error prints and what `cast cascade strategies` reads,
+/// so the two cannot drift apart.
+pub fn strategy_catalog() -> String {
+    STRATEGIES
+        .iter()
+        .map(|s| {
+            if s.aliases.is_empty() {
+                s.canonical.to_string()
+            } else {
+                format!("{} (aliases: {})", s.canonical, s.aliases.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A strategy name no entry in [`STRATEGIES`] claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownStrategyError {
+    pub name: String,
+}
+
+impl std::fmt::Display for UnknownStrategyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown strategy '{}'; available: {}",
+            self.name,
+            strategy_catalog()
+        )
+    }
+}
+
+impl std::error::Error for UnknownStrategyError {}
+
+/// Resolve `name` through [`STRATEGIES`] and build the strategy.
+/// `fanout` only parameterizes level-tree (values < 1 clamp to 1).
+/// Unknown or empty names fail with an error listing what IS
+/// available — generated from the table, never a hardcoded list.
+pub fn parse_strategy(
+    name: &str,
+    fanout: u32,
+) -> Result<Box<dyn CascadeStrategy>, UnknownStrategyError> {
+    find_strategy(name)
+        .map(|spec| (spec.build)(fanout))
+        .ok_or_else(|| UnknownStrategyError {
+            name: name.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cascade::{
-        run_cascade, CascadeNode, NetworkProfile, NodeId, NodeIdAlloc, RoundExecutor,
+        run_cascade, CascadeNode, CascadeState, Log2FanOut, NetworkBuilder, NetworkProfile, NodeId,
+        NodeIdAlloc, RoundExecutor, RoundSnapshot, TraceSink,
     };
     use std::collections::HashMap;
     use std::time::Duration;
@@ -938,5 +1058,176 @@ mod tests {
         assert_eq!(sg.expected_rounds(7, 1), 1);
         assert_eq!(sg.expected_rounds(64, 1), 1);
         assert_eq!(sg.expected_rounds(64, 64), 0);
+    }
+
+    // ─── strategy registry ──────────────────────────────────────────────────
+
+    /// Every spelling accepted by the pre-registry string matches (the
+    /// `cascade_copy` match arms, `run_scenario`, and
+    /// `cascade_tree::strategy_by_name`) must keep resolving through
+    /// the registry — the table may only grow.
+    #[test]
+    fn legacy_strategy_spellings_still_resolve() {
+        for name in [
+            "level-tree",
+            "level",
+            "tree",
+            "log2-fanout",
+            "log2",
+            "max-bottleneck",
+            "max-bottleneck-spanning",
+            "steiner",
+            "steiner-greedy",
+        ] {
+            let spec = find_strategy(name)
+                .unwrap_or_else(|| panic!("legacy spelling '{name}' must stay registered"));
+            let built = parse_strategy(name, 2)
+                .unwrap_or_else(|e| panic!("parse_strategy('{name}') failed: {e}"));
+            assert_eq!(built.name(), spec.canonical, "parse_strategy('{name}')");
+        }
+    }
+
+    /// One canonical name per strategy, and each strategy carries at
+    /// least one short friendly alias — the whole point of the table.
+    #[test]
+    fn registry_gives_every_strategy_a_canonical_and_an_alias() {
+        let mut canonicals = HashSet::new();
+        let mut claims = HashSet::new();
+        for spec in STRATEGIES {
+            assert!(
+                !spec.canonical.is_empty(),
+                "canonical names must be non-empty"
+            );
+            assert!(
+                !spec.aliases.is_empty(),
+                "{} needs a friendly alias",
+                spec.canonical
+            );
+            assert!(
+                canonicals.insert(spec.canonical),
+                "canonical '{}' is registered twice",
+                spec.canonical
+            );
+            for alias in spec.aliases {
+                assert!(
+                    claims.insert(*alias),
+                    "alias '{alias}' is claimed by more than one strategy"
+                );
+            }
+        }
+        for spec in STRATEGIES {
+            for alias in spec.aliases {
+                assert!(
+                    !canonicals.contains(alias),
+                    "alias '{alias}' collides with a canonical name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_alias_resolves_to_its_own_strategy() {
+        for spec in STRATEGIES {
+            for alias in spec.aliases {
+                let resolved = find_strategy(alias).unwrap_or_else(|| {
+                    panic!("alias '{alias}' of '{}' must resolve", spec.canonical)
+                });
+                assert_eq!(
+                    resolved.canonical, spec.canonical,
+                    "alias '{alias}' is ambiguous"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_names_resolve_to_themselves() {
+        for spec in STRATEGIES {
+            assert_eq!(
+                find_strategy(spec.canonical)
+                    .unwrap_or_else(|| panic!("'{}' must resolve", spec.canonical))
+                    .canonical,
+                spec.canonical
+            );
+        }
+    }
+
+    /// The unknown-name error is generated from the table — it must
+    /// name every registered strategy, whatever the table holds.
+    #[test]
+    fn unknown_name_error_lists_every_registered_strategy() {
+        let msg = parse_strategy("warp-drive", 2)
+            .err()
+            .expect("must fail")
+            .to_string();
+        assert!(msg.contains("unknown strategy"), "got: {msg}");
+        for spec in STRATEGIES {
+            assert!(
+                msg.contains(spec.canonical),
+                "error must list '{}': {msg}",
+                spec.canonical
+            );
+        }
+    }
+
+    #[test]
+    fn empty_name_error_lists_every_registered_strategy() {
+        let msg = parse_strategy("", 2).err().expect("must fail").to_string();
+        assert!(msg.contains("unknown strategy"), "got: {msg}");
+        for spec in STRATEGIES {
+            assert!(
+                msg.contains(spec.canonical),
+                "error must list '{}': {msg}",
+                spec.canonical
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_lists_every_canonical_with_its_aliases() {
+        let catalog = strategy_catalog();
+        for spec in STRATEGIES {
+            assert!(
+                catalog.contains(spec.canonical),
+                "catalog must list '{}': {catalog}",
+                spec.canonical
+            );
+            for alias in spec.aliases {
+                assert!(
+                    catalog.contains(alias),
+                    "catalog must list alias '{alias}': {catalog}"
+                );
+            }
+        }
+    }
+
+    /// The spec's round rule is the strategy's own inherent
+    /// `expected_rounds`, parameterized by the verify `--fanout` for
+    /// level-tree and ignoring it everywhere else.
+    #[test]
+    fn rounds_rule_delegates_to_the_strategys_own_expected_rounds() {
+        let lt = find_strategy("level-tree").unwrap();
+        assert_eq!(
+            (lt.rounds_rule)(7, 1, 2),
+            LevelTreeFanOut::new(2).expected_rounds(7, 1)
+        );
+        assert_eq!((lt.rounds_rule)(7, 1, 1), 6);
+
+        let l2 = find_strategy("log2-fanout").unwrap();
+        assert_eq!((l2.rounds_rule)(7, 1, 9), Log2FanOut.expected_rounds(7, 1));
+
+        let sg = find_strategy("steiner-greedy").unwrap();
+        assert_eq!(
+            (sg.rounds_rule)(64, 1, 2),
+            SteinerGreedy.expected_rounds(64, 1)
+        );
+    }
+
+    /// `LevelTreeFanOut::new` asserts fanout >= 1; the registry's
+    /// builder clamps so a bad `--fanout` can never panic a run.
+    #[test]
+    fn build_tolerates_a_zero_fanout() {
+        let built = (find_strategy("level-tree").unwrap().build)(0);
+        assert_eq!(built.name(), "level-tree");
     }
 }
