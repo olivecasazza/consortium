@@ -661,6 +661,15 @@ pub fn parse_strategy(
         })
 }
 
+/// Whether the fanout traversal order
+/// ([`crate::cascade::FanoutOrder`], read next to the registry it
+/// complements) parameterizes this strategy's pairing. Only the log2
+/// fanout's "which source serves which target" loop consumes bfs/dfs;
+/// every other strategy's pairing is its own policy.
+pub fn strategy_takes_traversal_order(name: &str) -> bool {
+    find_strategy(name).is_some_and(|spec| spec.canonical == "log2-fanout")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

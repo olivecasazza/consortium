@@ -101,6 +101,130 @@ impl CascadeNode {
 }
 
 // ============================================================================
+// Fanout traversal order
+// ============================================================================
+
+/// Which source-pool traversal a fanout round uses when pairing
+/// sources to targets — a fanout dimension, orthogonal to the strategy
+/// registry (an ordering of edges within a round, not a topology).
+///
+/// It reaches the pairing through the strategy, not through
+/// [`CascadeState`] or [`NetworkProfile`]: both are public structs
+/// exhaustively constructible downstream, so a new field on either is
+/// a semver-major break (the gate rejects it) — while a new strategy
+/// type implementing the unchanged [`CascadeStrategy`] trait is purely
+/// additive. See [`OrderedFanout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum FanoutOrder {
+    /// The historical pairing: sources in id order, targets in id
+    /// order, greedily paired in that order. Byte-for-byte what
+    /// [`Log2FanOut`] has always done.
+    #[default]
+    Default,
+    /// Shallowest sources first: nodes nearest a seeded root serve
+    /// before their own descendants, so the relay tree stays shallow.
+    /// Ties break by id.
+    Bfs,
+    /// Deepest sources first: the deepest branch is extended before
+    /// moving sideways. Ties break by id.
+    Dfs,
+}
+
+/// One registered traversal order: its canonical name, friendly
+/// aliases, the value, and a one-line description. Everything that
+/// names an order reads this table — [`parse_fanout_order`], the
+/// unknown-name error, and the discovery listing.
+pub struct OrderSpec {
+    /// The name diagnostics print.
+    pub canonical: &'static str,
+    /// Short friendly spellings accepted alongside the canonical name.
+    pub aliases: &'static [&'static str],
+    /// The value a [`NetworkProfile`] carries.
+    pub order: FanoutOrder,
+    /// One-line description for discovery output.
+    pub description: &'static str,
+}
+
+/// Every fanout traversal order, in display order. `default` is first
+/// because it is what runs when `--order` is omitted.
+pub const FANOUT_ORDERS: &[OrderSpec] = &[
+    OrderSpec {
+        canonical: "default",
+        aliases: &["id"],
+        order: FanoutOrder::Default,
+        description: "sources in id order (the historical pairing)",
+    },
+    OrderSpec {
+        canonical: "bfs",
+        aliases: &["breadth-first"],
+        order: FanoutOrder::Bfs,
+        description: "shallowest sources first (nearest the root)",
+    },
+    OrderSpec {
+        canonical: "dfs",
+        aliases: &["depth-first"],
+        order: FanoutOrder::Dfs,
+        description: "deepest branch first",
+    },
+];
+
+/// Resolve a traversal order by canonical name or friendly alias.
+pub fn find_fanout_order(name: &str) -> Option<&'static OrderSpec> {
+    FANOUT_ORDERS
+        .iter()
+        .find(|o| o.canonical == name || o.aliases.contains(&name))
+}
+
+/// Every registered order as "`canonical` (aliases: a, b)", in table
+/// order. Generated from [`FANOUT_ORDERS`] — this is what the
+/// unknown-name error prints and what the discovery listing reads, so
+/// the two cannot drift apart.
+pub fn fanout_order_catalog() -> String {
+    FANOUT_ORDERS
+        .iter()
+        .map(|o| {
+            if o.aliases.is_empty() {
+                o.canonical.to_string()
+            } else {
+                format!("{} (aliases: {})", o.canonical, o.aliases.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// An order name no entry in [`FANOUT_ORDERS`] claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownOrderError {
+    pub name: String,
+}
+
+impl std::fmt::Display for UnknownOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown order '{}'; available: {}",
+            self.name,
+            fanout_order_catalog()
+        )
+    }
+}
+
+impl std::error::Error for UnknownOrderError {}
+
+/// Resolve `name` through [`FANOUT_ORDERS`]. Unknown or empty names
+/// fail with an error listing what IS available — generated from the
+/// table, never a hardcoded list.
+pub fn parse_fanout_order(name: &str) -> Result<FanoutOrder, UnknownOrderError> {
+    find_fanout_order(name)
+        .map(|spec| spec.order)
+        .ok_or_else(|| UnknownOrderError {
+            name: name.to_string(),
+        })
+}
+
+// ============================================================================
 // Network profile
 // ============================================================================
 
@@ -957,63 +1081,170 @@ impl Log2FanOut {
     }
 }
 
+/// Parent-hop distance from the nearest seeded root, for every node.
+/// Seeded nodes have no parent → depth 0; everyone else is one deeper
+/// than their parent. Chains terminate on the first node with a known
+/// depth or on a parentless (seeded) node; parents recorded on failed
+/// deliveries are never consulted for depths of closure-holding
+/// sources, whose chains are real relay paths.
+fn node_depths(nodes: &[CascadeNode]) -> HashMap<NodeId, u32> {
+    let parent_of: HashMap<NodeId, NodeId> = nodes
+        .iter()
+        .filter_map(|n| n.parent.map(|p| (n.id, p)))
+        .collect();
+    let mut depths: HashMap<NodeId, u32> = HashMap::new();
+    for node in nodes {
+        let mut chain = Vec::new();
+        let mut cur = node.id;
+        let base = loop {
+            if let Some(&d) = depths.get(&cur) {
+                break d;
+            }
+            let Some(&parent) = parent_of.get(&cur) else {
+                break 0;
+            };
+            chain.push(cur);
+            cur = parent;
+        };
+        depths.insert(cur, base);
+        for (i, id) in chain.iter().rev().enumerate() {
+            depths.insert(*id, base + (i as u32) + 1);
+        }
+    }
+    depths
+}
+
+/// Sources (closure-holding, non-failed nodes) in id order.
+fn fanout_sources(state: &CascadeState) -> Vec<NodeId> {
+    let mut sources: Vec<NodeId> = state
+        .nodes
+        .iter()
+        .filter(|n| state.has_closure.contains(&n.id))
+        .filter(|n| !state.failed_nodes.contains(&n.id))
+        .map(|n| n.id)
+        .collect();
+    sources.sort();
+    sources
+}
+
+/// Targets (pending, non-failed nodes) in id order.
+fn fanout_targets(state: &CascadeState) -> Vec<NodeId> {
+    let mut targets: Vec<NodeId> = state
+        .nodes
+        .iter()
+        .filter(|n| !state.has_closure.contains(&n.id))
+        .filter(|n| !state.failed_nodes.contains(&n.id))
+        .map(|n| n.id)
+        .collect();
+    targets.sort();
+    targets
+}
+
+/// Greedy 1:1 pairing in pool order, skipping partitioned +
+/// already-attempted edges. Each source and each target is used at
+/// most once.
+fn greedy_pairing(
+    sources: &[NodeId],
+    targets: &[NodeId],
+    state: &CascadeState,
+    net: &NetworkProfile,
+) -> Vec<(NodeId, NodeId)> {
+    let n = sources.len().min(targets.len());
+    let mut assignments = Vec::with_capacity(n);
+    let mut used_targets: HashSet<NodeId> = HashSet::new();
+
+    let mut src_iter = sources.iter().copied();
+    for tgt in targets.iter().copied() {
+        if used_targets.len() >= n {
+            break;
+        }
+        // find next source that isn't partitioned from tgt and hasn't already
+        // attempted this edge
+        let chosen = loop {
+            let Some(src) = src_iter.next() else {
+                break None;
+            };
+            if net.is_partitioned(src, tgt) {
+                continue;
+            }
+            if state.attempted.contains(&(src, tgt)) {
+                continue;
+            }
+            break Some(src);
+        };
+        if let Some(src) = chosen {
+            assignments.push((src, tgt));
+            used_targets.insert(tgt);
+        }
+    }
+    assignments
+}
+
 impl CascadeStrategy for Log2FanOut {
     fn name(&self) -> &'static str {
         "log2-fanout"
     }
 
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
-        let mut sources: Vec<NodeId> = state
-            .nodes
-            .iter()
-            .filter(|n| state.has_closure.contains(&n.id))
-            .filter(|n| !state.failed_nodes.contains(&n.id))
-            .map(|n| n.id)
-            .collect();
-        sources.sort();
-
-        let mut targets: Vec<NodeId> = state
-            .nodes
-            .iter()
-            .filter(|n| !state.has_closure.contains(&n.id))
-            .filter(|n| !state.failed_nodes.contains(&n.id))
-            .map(|n| n.id)
-            .collect();
-        targets.sort();
-
-        let n = sources.len().min(targets.len());
-        let mut assignments = Vec::with_capacity(n);
-        let mut used_targets: HashSet<NodeId> = HashSet::new();
-
-        // Greedy pairing in id order, skipping partitioned + already-attempted edges.
-        let mut src_iter = sources.iter().copied();
-        for tgt in targets.iter().copied() {
-            if used_targets.len() >= n {
-                break;
-            }
-            // find next source that isn't partitioned from tgt and hasn't already
-            // attempted this edge
-            let chosen = loop {
-                let Some(src) = src_iter.next() else {
-                    break None;
-                };
-                if net.is_partitioned(src, tgt) {
-                    continue;
-                }
-                if state.attempted.contains(&(src, tgt)) {
-                    continue;
-                }
-                break Some(src);
-            };
-            if let Some(src) = chosen {
-                assignments.push((src, tgt));
-                used_targets.insert(tgt);
-            }
-        }
-
         CascadePlan {
             round: state.round,
-            assignments,
+            assignments: greedy_pairing(&fanout_sources(state), &fanout_targets(state), state, net),
+        }
+    }
+}
+
+/// The log2 fanout's pairing under an explicit traversal order — the
+/// fanout's orthogonal dimension, not a topology of its own: it names
+/// itself exactly [`Log2FanOut`] and is measured by the same round
+/// rule, so it is never a
+/// [`STRATEGIES`](crate::cascade_strategies::STRATEGIES) entry.
+///
+/// `Default` pairs byte-for-byte like [`Log2FanOut`]. `Bfs` re-sorts
+/// the source pool shallowest-first (nodes nearest a seeded root serve
+/// before their own descendants); `Dfs` deepest-first (the deepest
+/// branch is extended before moving sideways). Both re-sorts are
+/// stable, so depth ties keep id order.
+///
+/// This type — not a field on [`CascadeState`] or [`NetworkProfile`] —
+/// is how the order reaches the pairing: those structs are
+/// exhaustively constructible downstream, so a new field on either is
+/// a semver-major break, while a new strategy type over the unchanged
+/// [`CascadeStrategy`] trait is purely additive.
+pub struct OrderedFanout {
+    order: FanoutOrder,
+}
+
+impl OrderedFanout {
+    pub fn new(order: FanoutOrder) -> Self {
+        Self { order }
+    }
+
+    /// The fanout round rule — the same ⌈log₂(N - seeded)⌉ as
+    /// [`Log2FanOut::expected_rounds`]: the order changes which source
+    /// serves which target within a round, never how many rounds a
+    /// uniform fleet needs.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        Log2FanOut.expected_rounds(n_nodes, seeded)
+    }
+}
+
+impl CascadeStrategy for OrderedFanout {
+    fn name(&self) -> &'static str {
+        Log2FanOut.name()
+    }
+
+    fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
+        let mut sources = fanout_sources(state);
+        let depths = node_depths(state.nodes);
+        match self.order {
+            FanoutOrder::Bfs => sources.sort_by_key(|id| depths[id]),
+            FanoutOrder::Dfs => sources.sort_by_key(|id| std::cmp::Reverse(depths[id])),
+            FanoutOrder::Default => {}
+        }
+        let targets = fanout_targets(state);
+        CascadePlan {
+            round: state.round,
+            assignments: greedy_pairing(&sources, &targets, state, net),
         }
     }
 }
@@ -1279,5 +1510,389 @@ mod tests {
         assert_eq!(Log2FanOut.expected_rounds(64, 64), 0);
         // seeded beyond n_nodes is the same "nothing pending" case.
         assert_eq!(Log2FanOut.expected_rounds(5, 9), 0);
+    }
+
+    // ─── fanout traversal order ──────────────────────────────────────────
+
+    /// Collects one snapshot per round so tests can pin per-round plans.
+    struct PlanCollector(parking_lot::Mutex<Vec<RoundSnapshot>>);
+
+    impl TraceSink for PlanCollector {
+        fn record(&self, snapshot: &RoundSnapshot) {
+            self.0.lock().push(snapshot.clone());
+        }
+    }
+
+    /// Depth of every served node by walking parent chains to a
+    /// seeded root.
+    fn relay_depth(parent_chain: &HashMap<NodeId, NodeId>) -> u32 {
+        parent_chain
+            .keys()
+            .map(|start| {
+                let mut depth = 0u32;
+                let mut cur = *start;
+                while let Some(&parent) = parent_chain.get(&cur) {
+                    depth += 1;
+                    cur = parent;
+                }
+                depth
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The `default` order must keep the historical id-order pairing,
+    /// byte-for-byte. These vectors are the contract every other order
+    /// is measured against: sources id-sorted, targets id-sorted,
+    /// greedy 1:1 pairing in that order. Seeds {n0, n5} deliberately
+    /// break the depth↔id correlation, so this pairing cannot pass by
+    /// accident under a reordered source pool.
+    #[test]
+    fn default_order_pairing_is_pinned_id_order() {
+        let (nodes, _) = make_nodes(8);
+        let mut has_closure = HashSet::new();
+        has_closure.insert(NodeId(0));
+        has_closure.insert(NodeId(5));
+        let no_attempted = HashSet::new();
+        let no_failed = HashSet::new();
+        let state = CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 0,
+            attempted: &no_attempted,
+            failed_nodes: &no_failed,
+        };
+        let plan = Log2FanOut.next_round(&state, &NetworkProfile::default());
+        assert_eq!(
+            plan.assignments,
+            vec![(NodeId(0), NodeId(1)), (NodeId(5), NodeId(2))]
+        );
+
+        // Round 1: n1 was served by n0, n2 by n5.
+        let mut nodes = nodes;
+        nodes[1].parent = Some(NodeId(0));
+        nodes[2].parent = Some(NodeId(5));
+        let mut has_closure = has_closure;
+        has_closure.insert(NodeId(1));
+        has_closure.insert(NodeId(2));
+        let mut attempted = HashSet::new();
+        attempted.insert((NodeId(0), NodeId(1)));
+        attempted.insert((NodeId(5), NodeId(2)));
+        let state = CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 1,
+            attempted: &attempted,
+            failed_nodes: &no_failed,
+        };
+        let plan = Log2FanOut.next_round(&state, &NetworkProfile::default());
+        assert_eq!(
+            plan.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(1), NodeId(4)),
+                (NodeId(2), NodeId(6)),
+                (NodeId(5), NodeId(7)),
+            ]
+        );
+        // The order dimension's default variant pairs exactly like the
+        // bare strategy — same vectors, both rounds.
+        let ordered_default = OrderedFanout::new(FanoutOrder::Default);
+        assert_eq!(
+            ordered_default
+                .next_round(&state, &NetworkProfile::default())
+                .assignments,
+            plan.assignments
+        );
+        assert_eq!(ordered_default.name(), Log2FanOut.name());
+        assert_eq!(
+            ordered_default.expected_rounds(16, 1),
+            Log2FanOut.expected_rounds(16, 1)
+        );
+    }
+
+    /// bfs and dfs are real orderings of WHICH source serves WHICH
+    /// target, not renames of the default: on a fleet where id order
+    /// and depth order disagree, all three orders produce three
+    /// different plans for the same state.
+    #[test]
+    fn bfs_and_dfs_pairings_differ_from_default() {
+        let (mut nodes, _) = make_nodes(8);
+        nodes[1].parent = Some(NodeId(0));
+        nodes[2].parent = Some(NodeId(5));
+        let mut has_closure = HashSet::new();
+        for id in [0u32, 1, 2, 5] {
+            has_closure.insert(NodeId(id));
+        }
+        let mut attempted = HashSet::new();
+        attempted.insert((NodeId(0), NodeId(1)));
+        attempted.insert((NodeId(5), NodeId(2)));
+        let empty = HashSet::new();
+        let state = CascadeState {
+            nodes: &nodes,
+            has_closure: &has_closure,
+            round: 1,
+            attempted: &attempted,
+            failed_nodes: &empty,
+        };
+        // Depths: n0 = 0, n5 = 0 (seeds), n1 = 1 (under n0), n2 = 1
+        // (under n5). Sources id-sorted [n0, n1, n2, n5]; sources
+        // depth-sorted [n0, n5, n1, n2] — the two orders disagree.
+
+        let bfs =
+            OrderedFanout::new(FanoutOrder::Bfs).next_round(&state, &NetworkProfile::default());
+        assert_eq!(
+            bfs.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(5), NodeId(4)),
+                (NodeId(1), NodeId(6)),
+                (NodeId(2), NodeId(7)),
+            ],
+            "bfs serves from the shallowest sources first (seeds before their own children)"
+        );
+
+        let dfs =
+            OrderedFanout::new(FanoutOrder::Dfs).next_round(&state, &NetworkProfile::default());
+        assert_eq!(
+            dfs.assignments,
+            vec![
+                (NodeId(1), NodeId(3)),
+                (NodeId(2), NodeId(4)),
+                (NodeId(0), NodeId(6)),
+                (NodeId(5), NodeId(7)),
+            ],
+            "dfs extends the deepest branch before moving sideways"
+        );
+
+        let default = Log2FanOut.next_round(&state, &NetworkProfile::default());
+        assert_eq!(
+            default.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(1), NodeId(4)),
+                (NodeId(2), NodeId(6)),
+                (NodeId(5), NodeId(7)),
+            ]
+        );
+        assert_ne!(default.assignments, bfs.assignments);
+        assert_ne!(default.assignments, dfs.assignments);
+        assert_ne!(bfs.assignments, dfs.assignments);
+    }
+
+    /// End-to-end: a default-order run replays the exact historical
+    /// plan sequence on a single-seed fleet (16 nodes, ⌈log₂ 15⌉ = 4
+    /// rounds). This is the byte-for-byte run-level contract.
+    #[test]
+    fn default_order_run_replays_the_historical_plan_trace() {
+        let (nodes, _) = make_nodes(16);
+        let mut seeded = HashSet::new();
+        seeded.insert(NodeId(0));
+        let collector = PlanCollector(parking_lot::Mutex::new(Vec::new()));
+        let exec = AllSuccessExecutor {
+            edge_duration: Duration::from_millis(1),
+        };
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &Log2FanOut,
+            &exec,
+            32,
+            Some(&collector),
+        );
+        assert!(result.is_success());
+        let snapshots = collector.0.lock();
+        let plans: Vec<Vec<(NodeId, NodeId)>> = snapshots
+            .iter()
+            .map(|s| s.plan.assignments.clone())
+            .collect();
+        assert_eq!(
+            plans,
+            vec![
+                vec![(NodeId(0), NodeId(1))],
+                vec![(NodeId(0), NodeId(2)), (NodeId(1), NodeId(3))],
+                vec![
+                    (NodeId(0), NodeId(4)),
+                    (NodeId(1), NodeId(5)),
+                    (NodeId(2), NodeId(6)),
+                    (NodeId(3), NodeId(7)),
+                ],
+                vec![
+                    (NodeId(0), NodeId(8)),
+                    (NodeId(1), NodeId(9)),
+                    (NodeId(2), NodeId(10)),
+                    (NodeId(3), NodeId(11)),
+                    (NodeId(4), NodeId(12)),
+                    (NodeId(5), NodeId(13)),
+                    (NodeId(6), NodeId(14)),
+                    (NodeId(7), NodeId(15)),
+                ],
+            ]
+        );
+    }
+
+    /// On a partitioned fleet the orders stop being interchangeable:
+    /// the default pairing walks the partitioned edge (n5 → n7) so n7
+    /// stalls a round; bfs pairs n7 under n2 instead and converges a
+    /// round earlier.
+    #[test]
+    fn orders_change_convergence_on_a_partitioned_topology() {
+        let run = |order: FanoutOrder| {
+            let (nodes, _) = make_nodes(16);
+            let mut seeded = HashSet::new();
+            seeded.insert(NodeId(0));
+            seeded.insert(NodeId(5));
+            let mut net = NetworkProfile::default();
+            net.partitions.insert((NodeId(5), NodeId(7)));
+            let strategy: Box<dyn CascadeStrategy> = match order {
+                FanoutOrder::Default => Box::new(Log2FanOut),
+                other => Box::new(OrderedFanout::new(other)),
+            };
+            let exec = AllSuccessExecutor {
+                edge_duration: Duration::from_millis(1),
+            };
+            let collector = PlanCollector(parking_lot::Mutex::new(Vec::new()));
+            let result = run_cascade(
+                nodes,
+                seeded,
+                net,
+                strategy.as_ref(),
+                &exec,
+                32,
+                Some(&collector),
+            );
+            let snapshots = collector.0.lock().clone();
+            (result, snapshots)
+        };
+
+        let (default, default_snaps) = run(FanoutOrder::Default);
+        let (bfs, bfs_snaps) = run(FanoutOrder::Bfs);
+        let (dfs, dfs_snaps) = run(FanoutOrder::Dfs);
+
+        assert!(default.is_success() && bfs.is_success() && dfs.is_success());
+        // The default order's round-1 plan is the historical id-order
+        // pairing — the partitioned (n5, n7) edge is exactly the one it
+        // walks into, and n7 waits a round. Pinned byte-for-byte.
+        assert_eq!(
+            default_snaps[1].plan.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(1), NodeId(4)),
+                (NodeId(2), NodeId(6)),
+            ],
+        );
+        // bfs routes n7 under n2 instead and never touches the
+        // partitioned edge.
+        assert_eq!(
+            bfs_snaps[1].plan.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(5), NodeId(4)),
+                (NodeId(1), NodeId(6)),
+                (NodeId(2), NodeId(7)),
+            ],
+        );
+        assert_ne!(
+            dfs_snaps[1].plan.assignments, default_snaps[1].plan.assignments,
+            "dfs pairs the same targets under different sources"
+        );
+
+        assert_eq!(
+            default.rounds, 4,
+            "default keeps the historical 4-round convergence on this fleet"
+        );
+        assert_eq!(
+            bfs.rounds, 3,
+            "bfs converges a round earlier by dodging the partitioned edge"
+        );
+        assert_eq!(dfs.rounds, 4);
+    }
+
+    /// bfs builds a strictly shallower relay tree than the default
+    /// order on a two-seed fleet; dfs goes deeper than bfs. On a
+    /// uniform fleet all three orders saturate the fanout each round,
+    /// so the round count is identical — expected, and exactly why the
+    /// tree shape (which source served which target) is the observable.
+    /// Fleet found by simulation: 13 nodes, seeds {n0, n5}, uniform.
+    #[test]
+    fn bfs_builds_a_shallower_relay_tree_than_default_and_dfs() {
+        let run = |order: FanoutOrder| {
+            let (nodes, _) = make_nodes(13);
+            let mut seeded = HashSet::new();
+            seeded.insert(NodeId(0));
+            seeded.insert(NodeId(5));
+            let net = NetworkProfile::default();
+            let strategy: Box<dyn CascadeStrategy> = match order {
+                FanoutOrder::Default => Box::new(Log2FanOut),
+                other => Box::new(OrderedFanout::new(other)),
+            };
+            let exec = AllSuccessExecutor {
+                edge_duration: Duration::from_millis(1),
+            };
+            let collector = PlanCollector(parking_lot::Mutex::new(Vec::new()));
+            let result = run_cascade(
+                nodes,
+                seeded,
+                net,
+                strategy.as_ref(),
+                &exec,
+                32,
+                Some(&collector),
+            );
+            let snapshots = collector.0.lock().clone();
+            let depth = snapshots
+                .last()
+                .map(|s| relay_depth(&s.parent_chain))
+                .unwrap_or(0);
+            (result.rounds, depth, snapshots)
+        };
+
+        let (default_rounds, default_depth, default_snaps) = run(FanoutOrder::Default);
+        let (bfs_rounds, bfs_depth, bfs_snaps) = run(FanoutOrder::Bfs);
+        let (dfs_rounds, dfs_depth, dfs_snaps) = run(FanoutOrder::Dfs);
+
+        // Uniform fleet: all three orders saturate the fanout each
+        // round, so convergence rounds are identical.
+        assert_eq!(default_rounds, 3);
+        assert_eq!(bfs_rounds, 3);
+        assert_eq!(dfs_rounds, 3);
+
+        assert_eq!(default_depth, 3, "default keeps the historical tree shape");
+        assert_eq!(
+            bfs_depth, 2,
+            "bfs never pairs a target under a deeper source while a shallower one is free"
+        );
+        assert_eq!(dfs_depth, 3, "dfs chases the deepest branch first");
+
+        // Round 1 pairing, pinned per order: same targets, different
+        // sources — the tree-shape difference, seen edge by edge.
+        assert_eq!(
+            default_snaps[1].plan.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(1), NodeId(4)),
+                (NodeId(2), NodeId(6)),
+                (NodeId(5), NodeId(7)),
+            ]
+        );
+        assert_eq!(
+            bfs_snaps[1].plan.assignments,
+            vec![
+                (NodeId(0), NodeId(3)),
+                (NodeId(5), NodeId(4)),
+                (NodeId(1), NodeId(6)),
+                (NodeId(2), NodeId(7)),
+            ]
+        );
+        assert_eq!(
+            dfs_snaps[1].plan.assignments,
+            vec![
+                (NodeId(1), NodeId(3)),
+                (NodeId(2), NodeId(4)),
+                (NodeId(0), NodeId(6)),
+                (NodeId(5), NodeId(7)),
+            ]
+        );
     }
 }
