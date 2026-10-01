@@ -22,7 +22,7 @@ consortium-ansible.workspace = true
 consortium-slurm.workspace = true
 consortium-ray.workspace = true
 consortium-skypilot.workspace = true
-# cascade-viz needs to run live scenarios for `--live` mode
+# `cast cascade live` runs live scenarios in the cascade module
 consortium-fanout-sim.workspace = true
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
@@ -37,10 +37,6 @@ toml = "0.8"
 
 [build-dependencies]
 toml = "0.8"
-
-[[bin]]
-name = "cascade-viz"
-path = "src/bin/cascade_viz.rs"
 
 [[bin]]
 name = "cascade-copy"

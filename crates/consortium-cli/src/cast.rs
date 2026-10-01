@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use crate::cascade::{self, CascadeCommands};
 use crate::groups;
 use crate::output::{CliOutput, OutputArgs};
 use consortium_integration::exec::{Executor, ProcessExecutor};
@@ -170,6 +171,12 @@ enum Commands {
         #[arg(short = 'g', long = "tag")]
         tag: Vec<String>,
     },
+
+    /// Inspect and verify cascade event streams (the former cascade-viz).
+    Cascade {
+        #[command(subcommand)]
+        command: CascadeCommands,
+    },
 }
 
 pub fn run() {
@@ -177,73 +184,83 @@ pub fn run() {
     let out = CliOutput::from_args(&args.output);
     let exec = Arc::new(ProcessExecutor::new());
 
-    let request = FleetRequest {
-        config: args.config.as_deref(),
-        flake: args.flake.as_deref(),
-        user: args.user.as_deref(),
-        cwd: Path::new("."),
-    };
-    let (config, source) = match load_fleet(&request, &*exec) {
-        Ok(loaded) => loaded,
-        Err(e) => {
-            out.error(format!("{}", e));
-            eprintln!(
-                "hint: pass --config FILE, or run inside a flake (or pass --flake REF) \
-                 that has a `fleet` output or darwinConfigurations / nixosConfigurations"
-            );
-            process::exit(1);
-        }
-    };
-    if args.output.verbose > 0 {
-        eprintln!("fleet: {} ({} node(s))", source, config.nodes.len());
-    }
-
-    let nix_args = nix_args_from_flags(&args.nix_args, &args.darwin_nix_args, &args.nixos_nix_args);
-
     let result = match args.command {
-        Commands::Eval { on, tag } => cmd_eval(&config, on.as_deref(), &tag),
-        Commands::Build {
-            on,
-            tag,
-            builders,
-            fanout,
-        } => cmd_deploy(
-            exec,
-            &config,
-            on.as_deref(),
-            &tag,
-            "build",
-            builders,
-            fanout,
-            false,
-            2,
-            None,
-            nix_args,
-        ),
-        Commands::Deploy {
-            on,
-            tag,
-            action,
-            builders,
-            fanout,
-            cascade,
-            cascade_fanout,
-            activate_timeout,
-        } => cmd_deploy(
-            exec,
-            &config,
-            on.as_deref(),
-            &tag,
-            &action,
-            builders,
-            fanout,
-            cascade,
-            cascade_fanout,
-            activate_timeout.map(Duration::from_secs),
-            nix_args,
-        ),
-        Commands::Health => cmd_health(&config),
-        Commands::Status { on, tag } => cmd_status(&config, on.as_deref(), &tag),
+        // Cascade streams are self-contained: replay / verify / live never
+        // touch the fleet, so this arm runs before fleet discovery.
+        Commands::Cascade { command } => cascade::dispatch(command),
+        command => {
+            let request = FleetRequest {
+                config: args.config.as_deref(),
+                flake: args.flake.as_deref(),
+                user: args.user.as_deref(),
+                cwd: Path::new("."),
+            };
+            let (config, source) = match load_fleet(&request, &*exec) {
+                Ok(loaded) => loaded,
+                Err(e) => {
+                    out.error(format!("{}", e));
+                    eprintln!(
+                        "hint: pass --config FILE, or run inside a flake (or pass --flake REF) \
+                         that has a `fleet` output or darwinConfigurations / nixosConfigurations"
+                    );
+                    process::exit(1);
+                }
+            };
+            if args.output.verbose > 0 {
+                eprintln!("fleet: {} ({} node(s))", source, config.nodes.len());
+            }
+
+            let nix_args =
+                nix_args_from_flags(&args.nix_args, &args.darwin_nix_args, &args.nixos_nix_args);
+
+            match command {
+                Commands::Eval { on, tag } => cmd_eval(&config, on.as_deref(), &tag),
+                Commands::Build {
+                    on,
+                    tag,
+                    builders,
+                    fanout,
+                } => cmd_deploy(
+                    exec,
+                    &config,
+                    on.as_deref(),
+                    &tag,
+                    "build",
+                    builders,
+                    fanout,
+                    false,
+                    2,
+                    None,
+                    nix_args,
+                ),
+                Commands::Deploy {
+                    on,
+                    tag,
+                    action,
+                    builders,
+                    fanout,
+                    cascade,
+                    cascade_fanout,
+                    activate_timeout,
+                } => cmd_deploy(
+                    exec,
+                    &config,
+                    on.as_deref(),
+                    &tag,
+                    &action,
+                    builders,
+                    fanout,
+                    cascade,
+                    cascade_fanout,
+                    activate_timeout.map(Duration::from_secs),
+                    nix_args,
+                ),
+                Commands::Health => cmd_health(&config),
+                Commands::Status { on, tag } => cmd_status(&config, on.as_deref(), &tag),
+                // Handled before fleet discovery; unreachable here.
+                Commands::Cascade { .. } => unreachable!(),
+            }
+        }
     };
 
     if let Err(e) = result {

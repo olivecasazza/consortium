@@ -43,12 +43,13 @@ use clap::{Arg, Command, CommandFactory};
 use serde::{Deserialize, Serialize};
 
 /// Module kinds. `legacy`: upstream ClusterShell parity surface (frozen);
-/// `orchestration`: new surface, free to evolve. The two cascade bins are
-/// registry-checked but not introspected (their `Args` stay private in
-/// `src/bin/`).
+/// `orchestration`: new surface, free to evolve. cascade-copy is
+/// registry-checked but not introspected (its `Args` stay private in
+/// `src/bin/`); the cascade CLI surface lives in `cast` and is
+/// introspected through it.
 pub const KINDS: &[(&str, &[&str])] = &[
     ("legacy", &["claw", "molt", "pinch"]),
-    ("orchestration", &["cast", "cascade_viz", "cascade_copy"]),
+    ("orchestration", &["cast", "cascade_copy"]),
     ("tooling", &["consortium_grammar"]),
 ];
 
@@ -110,6 +111,29 @@ pub const PINNED_SELECTORS: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("cast", "health", &[]),
+    ("cast", "tree", &["max-depth", "no-color"]),
+    ("cast", "verify", &["fanout", "nodes"]),
+    (
+        "cast",
+        "live",
+        &[
+            "nodes",
+            "strategy",
+            "fanout",
+            "seeds",
+            "seed-fraction",
+            "closure-mb",
+            "bandwidth",
+            "uplinks",
+            "seed",
+            "failure-rate",
+            "failure-seed",
+            "no-watch",
+            "per-round-delay",
+            "max-depth",
+            "no-color",
+        ],
+    ),
 ];
 
 /// Frozen upstream short flags (clush/clubak/cluset compat). The shared

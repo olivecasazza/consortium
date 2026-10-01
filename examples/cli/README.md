@@ -17,7 +17,7 @@ directly from `target/release/`.)
 | `molt` | `clubak` / `dshbak` | no — reads stdin |
 | `cast` | (nixos deployment) | yes — nix + SSH fleet |
 | `cascade-copy` | — | yes — nix + SSH fleet |
-| `cascade-viz` | — | no (offline simulation) |
+| `cast cascade` | — | no (offline simulation) |
 
 ## pinch — nodeset algebra (offline)
 
@@ -137,22 +137,30 @@ $ cargo run -p consortium-cli --bin cascade-copy -- /nix/store/…-toplevel \
 The store path must already exist on the seed host. Strategies:
 `level-tree` (default), `log2-fanout`, `max-bottleneck`, `steiner`.
 
-## cascade-viz — replay or simulate a cascade (offline)
+## cast cascade — replay, simulate, verify a cascade (offline)
 
-Render a cascade as a tree — either replaying a recorded JSONL trace or
-running a fresh simulated scenario (deterministic, no infrastructure):
+Render a cascade as a tree — replaying a recorded JSONL trace (`tree`),
+running a fresh simulated scenario (`live`, deterministic, no
+infrastructure), or asserting a trace relayed (`verify`):
 
 ```
 # live simulation: 32 nodes, binary level-tree, rendered round by round
-$ cargo run -p consortium-cli --bin cascade-viz -- live -n 32
+$ cargo run -p consortium-cli --bin cast -- cascade live -n 32
 
 # other strategies and shapes
-$ cargo run -p consortium-cli --bin cascade-viz -- live -n 64 -s max-bottleneck --fanout 3
-$ cargo run -p consortium-cli --bin cascade-viz -- live -n 16 --seeds 4 --closure-mb 200
+$ cargo run -p consortium-cli --bin cast -- cascade live -n 64 -s max-bottleneck --fanout 3
+$ cargo run -p consortium-cli --bin cast -- cascade live -n 16 --seeds 4 --closure-mb 200
 
 # inject random edge failures (deterministic per seed) to watch re-routing
-$ cargo run -p consortium-cli --bin cascade-viz -- live -n 32 --failure-rate 0.2 --failure-seed 7
+$ cargo run -p consortium-cli --bin cast -- cascade live -n 32 --failure-rate 0.2 --failure-seed 7
 
 # machine-readable output
-$ cargo run -p consortium-cli --bin cascade-viz -- -f json live -n 16
+$ cargo run -p consortium-cli --bin cast -- cascade live -n 16 --format json
+
+# replay a recorded JSONL trace
+$ cargo run -p consortium-cli --bin cast -- cascade tree trace.jsonl
+
+# verify a trace relayed peer-to-peer; prints the topology summary as JSON,
+# exits non-zero with a diagnostic when the tree is a host push instead
+$ cargo run -p consortium-cli --bin cast -- cascade verify trace.jsonl --fanout 2 --nodes 64
 ```

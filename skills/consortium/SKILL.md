@@ -29,9 +29,8 @@ transfers unchanged.
 | `claw` | Running one command on many nodes in parallel and collecting the results. Also carries `--copy` and `--rcopy` for single-file transfers. |
 | `molt` | Aggregating output that something else already produced. It reads `key: output` lines on stdin and gathers, orders, or draws them as a message tree. It takes no node selection — the input decides the nodes. |
 | `pinch` | Node-set questions rather than remote work: count, expand, fold, list groups, regroup, and set algebra (`-x`, `-i`, `-X`). Use it to check what a selector resolves to before fanning out. |
-| `cast` | nixOS and nix-darwin fleet deploys. Subcommands: `eval`, `build`, `deploy`, `health`, `status`. |
+| `cast` | nixOS and nix-darwin fleet deploys. Subcommands: `eval`, `build`, `deploy`, `health`, `status`, `cascade`. |
 | `cascade-copy` | Distributing one nix store path from a seed host across a fleet with a cascade tree, so each host that receives the path becomes a source for the next round. |
-| `cascade-viz` | Replaying or simulating cascade event streams as a live tree. Use it to inspect copy behavior, not to copy anything. |
 
 ## claw flag surface
 

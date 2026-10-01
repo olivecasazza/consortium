@@ -19,8 +19,9 @@ fn registry_covers_every_bin() {
 
 /// Shared output vocabulary from `output::OutputArgs` (-v/--verbose,
 /// --color, -F/--format). claw/molt/pinch/cast flatten it and cascade-copy
-/// repeats the trio inline; cascade-viz is format-only (verified against
-/// the live binaries). Fails if any of those bins drops its vocabulary.
+/// repeats the trio inline; `cast cascade tree` is format-only (verified
+/// against the live binaries). Fails if any of those bins drops its
+/// vocabulary.
 #[test]
 fn global_flag_vocabulary() {
     for bin in ["claw", "molt", "pinch", "cast", "cascade-copy"] {
@@ -37,15 +38,15 @@ fn global_flag_vocabulary() {
             );
         }
     }
-    let output = Command::cargo_bin("cascade-viz")
+    let output = Command::cargo_bin("cast")
         .unwrap()
-        .arg("--help")
+        .args(["cascade", "tree", "--help"])
         .output()
         .unwrap();
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(
         help.contains("--format"),
-        "cascade-viz --help missing --format\n---\n{help}"
+        "cast cascade tree --help missing --format\n---\n{help}"
     );
 }
 

@@ -39,7 +39,7 @@ fn dump_includes_cast_subcommand_and_registry_placeholder() {
     );
     assert!(
         rows.iter()
-            .any(|r| r["bin"] == "cascade_viz" && r["kind"] == "registry"),
+            .any(|r| r["bin"] == "cascade_copy" && r["kind"] == "registry"),
         "dump must include registry placeholders"
     );
 }

@@ -30,6 +30,7 @@ pub mod cascade_executor;
 pub mod cascade_integration;
 pub mod cascade_strategies;
 pub mod cascade_trace;
+pub mod cascade_tree;
 pub mod config;
 pub mod copy;
 pub mod endpoint;

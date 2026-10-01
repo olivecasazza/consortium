@@ -72,7 +72,6 @@ fn registry_flags_kinds_bin_missing_from_manifest() {
         "molt",
         "pinch",
         "cast",
-        "cascade_viz",
         "cascade_copy",
         "consortium_grammar",
     ] {
@@ -119,7 +118,6 @@ fn dump_is_total() {
         "molt",
         "pinch",
         "cast",
-        "cascade_viz",
         "cascade_copy",
         "consortium_grammar",
     ]
