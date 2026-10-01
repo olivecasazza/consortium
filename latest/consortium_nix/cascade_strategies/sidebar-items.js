@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["STRATEGIES"],"fn":["find_strategy","parse_strategy","strategy_catalog"],"struct":["LevelTreeFanOut","MaxBottleneckSpanning","SteinerGreedy","StrategySpec","Swarm","UnknownStrategyError"]};
+window.SIDEBAR_ITEMS = {"constant":["STRATEGIES"],"fn":["find_strategy","parse_strategy","strategy_catalog","strategy_takes_traversal_order"],"struct":["LevelTreeFanOut","MaxBottleneckSpanning","SteinerGreedy","StrategySpec","Swarm","UnknownStrategyError"]};
