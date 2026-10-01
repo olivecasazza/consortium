@@ -227,6 +227,12 @@ pub trait CascadeStrategy: Send + Sync {
     /// Pick edges to fire next. Return an empty plan to halt.
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan;
     fn name(&self) -> &'static str;
+    /// Rounds this strategy needs to converge `n_nodes` nodes given `seeded` that
+    /// already hold the closure. Each strategy supplies its own rule: they are NOT
+    /// interchangeable. Verified divergence at fanout 2: for 7 nodes Log2FanOut
+    /// takes 3 rounds while LevelTreeFanOut takes 2; for 15, 4 vs 3; for 31, 5 vs 4.
+    /// They agree at 16, 17 and 64, which is why the disagreement went unnoticed.
+    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32;
 }
 
 // ============================================================================
@@ -941,6 +947,20 @@ impl CascadeStrategy for Log2FanOut {
         "log2-fanout"
     }
 
+    /// ⌈log₂(N - seeded)⌉, the struct's documented uniform-topology rule:
+    /// each source serves at most one target per round, so the informed
+    /// set at most doubles per round. Computed in integer arithmetic
+    /// (bit-width of `pending - 1`, no floats). Assumes `seeded >= 1`
+    /// (the coordinator always pushes from at least one holder); with
+    /// zero sources the cascade halts unconverged and no count applies.
+    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        let pending = n_nodes.saturating_sub(seeded);
+        if pending == 0 {
+            return 0;
+        }
+        usize::BITS - (pending - 1).leading_zeros()
+    }
+
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
         let mut sources: Vec<NodeId> = state
             .nodes
@@ -1246,5 +1266,17 @@ mod tests {
         let merged = CascadeError::merge(NodeId(2), vec![leaf_a, leaf_b]);
         let affected = merged.affected_nodes();
         assert_eq!(affected, vec![NodeId(10), NodeId(11)]);
+    }
+
+    #[test]
+    fn log2_expected_rounds_matches_docstring() {
+        // ⌈log₂(N - seeded)⌉ per the struct's own documentation.
+        assert_eq!(Log2FanOut.expected_rounds(7, 1), 3);
+        assert_eq!(Log2FanOut.expected_rounds(16, 1), 4);
+        assert_eq!(Log2FanOut.expected_rounds(64, 1), 6);
+        // Everything already seeded: no rounds at all.
+        assert_eq!(Log2FanOut.expected_rounds(64, 64), 0);
+        // seeded beyond n_nodes is the same "nothing pending" case.
+        assert_eq!(Log2FanOut.expected_rounds(5, 9), 0);
     }
 }
