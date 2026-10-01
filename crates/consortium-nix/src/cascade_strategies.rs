@@ -62,7 +62,7 @@ impl CascadeStrategy for MaxBottleneckSpanning {
         "max-bottleneck-spanning"
     }
 
-    /// Same structural rule as [`Log2FanOut`]: each source serves at
+    /// Same structural rule as [`Log2FanOut`](crate::cascade::Log2FanOut): each source serves at
     /// most one target per round, and while any unpartitioned target
     /// remains, the greedy matching always saturates the source set,
     /// so the informed set at most doubles per round. Bandwidth skew
