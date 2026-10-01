@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-use crate::cascade::{self, CascadeCommands};
+use crate::cascade::{self, CascadeCommands, LiveArgs, RenderArgs, TreeArgs, VerifyArgs};
 use crate::groups;
 use crate::output::{CliOutput, OutputArgs};
 use consortium_integration::exec::{Executor, ProcessExecutor};
@@ -185,15 +185,53 @@ enum Commands {
 /// variant set is frozen API: cargo-semver-checks treats a new variant
 /// as a major break for downstream `match` arms. Growth happens here
 /// instead — this enum is private to the binary, so adding a variant
-/// changes nothing outside the workspace. `strategies` is pure
-/// discovery: no fleet, no trace file, one registry read.
+/// or a flag changes nothing outside the workspace. `live` is
+/// re-enumerated here (rather than flattened) so `--order` can ride on
+/// the private [`LiveOrderedArgs`]: the public [`LiveArgs`] is
+/// exhaustively constructible downstream, so a new field there is
+/// equally major. `strategies` is pure discovery: no fleet, no trace
+/// file, one registry read.
 #[derive(Subcommand)]
 enum CascadeCommand {
-    #[command(flatten)]
-    BuiltIn(CascadeCommands),
+    /// Replay a JSONL trace file and render
+    Tree(TreeArgs),
+
+    /// Verify a trace relayed peer-to-peer: tree shape, depth, and rounds
+    /// must come from a relay, not a host push. Prints the topology summary
+    /// as JSON on success; exits non-zero with a specific diagnostic on
+    /// failure.
+    Verify(VerifyArgs),
+
+    /// Run a fresh scenario and render
+    Live {
+        #[command(flatten)]
+        live: LiveOrderedArgs,
+    },
 
     /// List every cascade strategy with its aliases.
     Strategies,
+}
+
+/// `cast cascade live` arguments: the public [`LiveArgs`] + [`RenderArgs`]
+/// exactly as [`CascadeCommands::Live`] flattens them, plus the private
+/// `--order` flag. Carrying the flag HERE keeps the public args structs'
+/// field sets frozen — the semver gate rejects a field on either.
+#[derive(clap::Args)]
+struct LiveOrderedArgs {
+    #[command(flatten)]
+    live: LiveArgs,
+
+    /// Fanout traversal order: which source serves which target within
+    /// a round. `default` keeps the historical id-order pairing; `bfs`
+    /// favours sources nearest the root; `dfs` extends the deepest
+    /// branch first. Parameterizes the log2 fanout pairing — other
+    /// strategies reject it. See the table with
+    /// `cast cascade strategies`.
+    #[arg(long = "order", default_value = "default")]
+    order: String,
+
+    #[command(flatten)]
+    render: RenderArgs,
 }
 
 pub fn run() {
@@ -205,7 +243,13 @@ pub fn run() {
         // Cascade streams are self-contained: replay / verify / live never
         // touch the fleet, so this arm runs before fleet discovery.
         Commands::Cascade { command } => match command {
-            CascadeCommand::BuiltIn(command) => cascade::dispatch(command),
+            CascadeCommand::Tree(args) => cascade::dispatch(CascadeCommands::Tree(args)),
+            CascadeCommand::Verify(args) => cascade::dispatch(CascadeCommands::Verify(args)),
+            CascadeCommand::Live { live } => {
+                consortium_nix::cascade::parse_fanout_order(&live.order)
+                    .map_err(anyhow::Error::new)
+                    .and_then(|order| cascade::run_live_with_order(&live.live, &live.render, order))
+            }
             // Generated from the registry — the same table parse_strategy
             // and the unknown-name errors read — so it cannot drift.
             CascadeCommand::Strategies => {
@@ -215,6 +259,19 @@ pub fn run() {
                     } else {
                         println!("{} (aliases: {})", spec.canonical, spec.aliases.join(", "));
                     }
+                }
+                // The fanout's orthogonal dimension: traversal orders,
+                // generated from the same table parse_fanout_order and
+                // the unknown-order errors read.
+                println!();
+                println!("traversal orders (--order; parameterize the log2 fanout pairing):");
+                for spec in consortium_nix::cascade::FANOUT_ORDERS {
+                    let aliases = if spec.aliases.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (aliases: {})", spec.aliases.join(", "))
+                    };
+                    println!("{}{} — {}", spec.canonical, aliases, spec.description);
                 }
                 Ok(())
             }

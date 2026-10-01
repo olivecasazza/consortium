@@ -20,6 +20,7 @@ serde_json = "1"
 [dev-dependencies]
 consortium-fanout-sim.workspace = true
 consortium-integration-testkit.workspace = true
+parking_lot = "0.12"
 tempfile = "3"
 
 [package.metadata.docs.rs]

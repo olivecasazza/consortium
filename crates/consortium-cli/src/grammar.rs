@@ -119,6 +119,7 @@ pub const PINNED_SELECTORS: &[(&str, &str, &[&str])] = &[
         &[
             "nodes",
             "strategy",
+            "order",
             "fanout",
             "seeds",
             "seed-fraction",

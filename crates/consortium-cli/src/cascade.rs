@@ -24,9 +24,13 @@ use crate::tree::OutputFormat;
 use consortium_fanout_sim::fixtures::{
     rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution,
 };
-use consortium_nix::cascade::{Cascade, CascadeNode, NetworkProfile, NodeIdAlloc};
+use consortium_nix::cascade::{
+    Cascade, CascadeNode, FanoutOrder, NetworkProfile, NodeIdAlloc, OrderedFanout,
+};
 use consortium_nix::cascade_events::{CascadeEvent, EventSink};
-use consortium_nix::cascade_strategies::{find_strategy, parse_strategy, strategy_catalog};
+use consortium_nix::cascade_strategies::{
+    find_strategy, parse_strategy, strategy_catalog, strategy_takes_traversal_order,
+};
 use consortium_nix::cascade_tree::{assert_relay_shape, parse_cascade_events};
 
 // ============================================================================
@@ -286,6 +290,19 @@ pub fn verify_trace_file(path: &str, fanout: u32, nodes: Option<u32>) -> Result<
 /// when the format is `tree`, stdout is a TTY, and --no-watch wasn't passed;
 /// everything else batches.
 pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
+    run_live_with_order(args, render, FanoutOrder::Default)
+}
+
+/// [`run_live`] under an explicit fanout traversal order. Crate-internal
+/// routing for the binary's `--order` flag: the flag cannot live on the
+/// public [`LiveArgs`] — that struct is exhaustively constructible
+/// downstream, so a new field is a semver-major break — so the private
+/// CLI enum carries it and hands the parsed value here.
+pub(crate) fn run_live_with_order(
+    args: &LiveArgs,
+    render: &RenderArgs,
+    order: FanoutOrder,
+) -> Result<()> {
     let bandwidth = match args.bandwidth.as_str() {
         "bimodal" => BandwidthDistribution::Bimodal {
             slow: 10 * 1024 * 1024,
@@ -301,7 +318,7 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
     // as they're emitted, no buffering through a Vec.
     if render.format == "jsonl" {
         let sink = JsonlWriter::new(Box::new(io::stdout()));
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink, None)?;
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink, None, order)?;
         return Ok(());
     }
 
@@ -363,7 +380,15 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
         let delay = args
             .per_round_delay_ms
             .map(std::time::Duration::from_millis);
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer, delay)?;
+        run_scenario(
+            args,
+            closure_bytes,
+            bandwidth,
+            uplinks,
+            &renderer,
+            delay,
+            order,
+        )?;
         // The renderer prints the final frame on `Finished`; nothing more
         // for us to flush.
         return Ok(());
@@ -371,7 +396,15 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
 
     // Batch path: accumulate, then delegate to render_events.
     let collector = EventCollector::new();
-    run_scenario(args, closure_bytes, bandwidth, uplinks, &collector, None)?;
+    run_scenario(
+        args,
+        closure_bytes,
+        bandwidth,
+        uplinks,
+        &collector,
+        None,
+        order,
+    )?;
     let events = collector.events();
     let fmt = resolve_format(render)?;
     print!("{}", render_events(&events, &fmt));
@@ -388,6 +421,7 @@ fn run_scenario<S: EventSink>(
     uplinks: Option<UplinkDistribution>,
     sink: &S,
     per_round_delay: Option<std::time::Duration>,
+    order: FanoutOrder,
 ) -> Result<()> {
     let n_nodes = args.nodes;
 
@@ -417,7 +451,7 @@ fn run_scenario<S: EventSink>(
         let mut rng = rng_from_seed(args.seed);
         let mut profile = NetworkProfile::default();
         bandwidth.populate(&mut rng, &mut profile, n_nodes);
-        if let Some(ref up) = uplinks {
+        if let Some(up) = &uplinks {
             up.populate(&mut rng, &mut profile, n_nodes);
         }
         profile
@@ -448,7 +482,26 @@ fn run_scenario<S: EventSink>(
     // One strategy, resolved through the registry — the same table the
     // copy binary and the verifier read. Unknown names are errors that
     // list what IS available; there is no silent fallback.
-    let strategy = parse_strategy(&args.strategy, args.fanout)?;
+    let mut strategy = parse_strategy(&args.strategy, args.fanout)?;
+    // bfs/dfs parameterize the fanout pairing itself: only the log2
+    // fanout consumes them. Any other combination is an error, never a
+    // silent no-op.
+    if order != FanoutOrder::Default {
+        if !strategy_takes_traversal_order(&args.strategy) {
+            let order_name = consortium_nix::cascade::FANOUT_ORDERS
+                .iter()
+                .find(|spec| spec.order == order)
+                .map(|spec| spec.canonical)
+                .unwrap_or("non-default");
+            anyhow::bail!(
+                "traversal order '{}' parameterizes the log2 fanout pairing; \
+                 strategy '{}' does not consume it",
+                order_name,
+                args.strategy
+            );
+        }
+        strategy = Box::new(OrderedFanout::new(order));
+    }
     Cascade::new()
         .nodes(nodes)
         .seeded(seeded)
