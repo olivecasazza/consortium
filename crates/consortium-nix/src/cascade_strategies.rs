@@ -57,11 +57,7 @@ const DEFAULT_BW_BYTES_SEC: u64 = 100 * 1024 * 1024;
 /// implicitly built up round-by-round.
 pub struct MaxBottleneckSpanning;
 
-impl CascadeStrategy for MaxBottleneckSpanning {
-    fn name(&self) -> &'static str {
-        "max-bottleneck-spanning"
-    }
-
+impl MaxBottleneckSpanning {
     /// Same structural rule as [`Log2FanOut`](crate::cascade::Log2FanOut): each source serves at
     /// most one target per round, and while any unpartitioned target
     /// remains, the greedy matching always saturates the source set,
@@ -71,12 +67,18 @@ impl CascadeStrategy for MaxBottleneckSpanning {
     /// failed nodes can only stretch it, and this signature cannot see
     /// them. Assumes `seeded >= 1`; with zero sources the cascade
     /// halts unconverged and no count applies.
-    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
         let pending = n_nodes.saturating_sub(seeded);
         if pending == 0 {
             return 0;
         }
         usize::BITS - (pending - 1).leading_zeros()
+    }
+}
+
+impl CascadeStrategy for MaxBottleneckSpanning {
+    fn name(&self) -> &'static str {
+        "max-bottleneck-spanning"
     }
 
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
@@ -151,11 +153,7 @@ impl CascadeStrategy for MaxBottleneckSpanning {
 /// is heavily skewed and a few sources dominate capacity.
 pub struct SteinerGreedy;
 
-impl CascadeStrategy for SteinerGreedy {
-    fn name(&self) -> &'static str {
-        "steiner-greedy"
-    }
-
+impl SteinerGreedy {
     /// The greedy pick has no per-source cap, so on a partition-free
     /// topology every pending target is matched in the very first
     /// round: the count is 1 for any non-empty pending set, regardless
@@ -166,12 +164,18 @@ impl CascadeStrategy for SteinerGreedy {
     /// that round takes; the trade-off is documented on the struct.
     /// Assumes `seeded >= 1`; with zero sources the cascade halts
     /// unconverged and no count applies.
-    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
         if n_nodes.saturating_sub(seeded) == 0 {
             0
         } else {
             1
         }
+    }
+}
+
+impl CascadeStrategy for SteinerGreedy {
+    fn name(&self) -> &'static str {
+        "steiner-greedy"
     }
 
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
@@ -269,6 +273,38 @@ impl LevelTreeFanOut {
         Self { fanout }
     }
 
+    /// Smallest `k` with `sum_{i=1..k} fanout^i >= (n_nodes - seeded)`:
+    /// level `k` contributes `fanout^k` nodes and each round fills
+    /// exactly one level, so `k` is the depth of the deepest pending
+    /// node. This is deliberately NOT `⌈log₂(N - seeded)⌉` — the tree
+    /// fills whole F-ary levels per round, so the counts diverge (2 vs
+    /// 3 at 7 nodes, fanout 2). Assumes `seeded >= 1` (the root); with
+    /// zero sources the cascade halts unconverged and no count applies.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        let pending = n_nodes.saturating_sub(seeded);
+        if pending == 0 {
+            return 0;
+        }
+        // Only reachable by constructing the struct directly (`new`
+        // asserts fanout >= 1): with fanout 0 no level ever fills, so
+        // the honest answer is "never" rather than an infinite loop.
+        if self.fanout == 0 {
+            return u32::MAX;
+        }
+        let fanout = u128::from(self.fanout);
+        let mut covered: u128 = 0;
+        let mut level = fanout; // level r adds fanout^r nodes, r >= 1
+        let mut rounds: u32 = 0;
+        while covered < u128::from(pending as u64) {
+            covered += level;
+            level = level.saturating_mul(fanout);
+            rounds += 1;
+        }
+        // fanout 1 grows the tree by one node per level, so `rounds`
+        // can reach `pending`, which may exceed u32 on a 64-bit usize.
+        u32::try_from(rounds).unwrap_or(u32::MAX)
+    }
+
     /// Children of `id` in the heap-style F-ary tree.
     ///
     /// Currently unused by `next_round` (which iterates by target and
@@ -335,38 +371,6 @@ impl LevelTreeFanOut {
 impl CascadeStrategy for LevelTreeFanOut {
     fn name(&self) -> &'static str {
         "level-tree"
-    }
-
-    /// Smallest `k` with `sum_{i=1..k} fanout^i >= (n_nodes - seeded)`:
-    /// level `k` contributes `fanout^k` nodes and each round fills
-    /// exactly one level, so `k` is the depth of the deepest pending
-    /// node. This is deliberately NOT `⌈log₂(N - seeded)⌉` — the tree
-    /// fills whole F-ary levels per round, so the counts diverge (2 vs
-    /// 3 at 7 nodes, fanout 2). Assumes `seeded >= 1` (the root); with
-    /// zero sources the cascade halts unconverged and no count applies.
-    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
-        let pending = n_nodes.saturating_sub(seeded);
-        if pending == 0 {
-            return 0;
-        }
-        // Only reachable by constructing the struct directly (`new`
-        // asserts fanout >= 1): with fanout 0 no level ever fills, so
-        // the honest answer is "never" rather than an infinite loop.
-        if self.fanout == 0 {
-            return u32::MAX;
-        }
-        let fanout = u128::from(self.fanout);
-        let mut covered: u128 = 0;
-        let mut level = fanout; // level r adds fanout^r nodes, r >= 1
-        let mut rounds: u32 = 0;
-        while covered < u128::from(pending as u64) {
-            covered += level;
-            level = level.saturating_mul(fanout);
-            rounds += 1;
-        }
-        // fanout 1 grows the tree by one node per level, so `rounds`
-        // can reach `pending`, which may exceed u32 on a 64-bit usize.
-        u32::try_from(rounds).unwrap_or(u32::MAX)
     }
 
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {

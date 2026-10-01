@@ -223,16 +223,15 @@ pub struct CascadeState<'a> {
 }
 
 /// Plug-in cascade decision logic.
+///
+/// Per-strategy convergence estimates (`expected_rounds`) live as
+/// inherent methods on each concrete strategy (e.g.
+/// [`Log2FanOut::expected_rounds`]) — they are strategy-specific
+/// rules, not part of the pluggable decision surface.
 pub trait CascadeStrategy: Send + Sync {
     /// Pick edges to fire next. Return an empty plan to halt.
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan;
     fn name(&self) -> &'static str;
-    /// Rounds this strategy needs to converge `n_nodes` nodes given `seeded` that
-    /// already hold the closure. Each strategy supplies its own rule: they are NOT
-    /// interchangeable. Verified divergence at fanout 2: for 7 nodes Log2FanOut
-    /// takes 3 rounds while LevelTreeFanOut takes 2; for 15, 4 vs 3; for 31, 5 vs 4.
-    /// They agree at 16, 17 and 64, which is why the disagreement went unnoticed.
-    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32;
 }
 
 // ============================================================================
@@ -942,23 +941,25 @@ pub fn run_cascade_with_events(
 /// uniform topology is ⌈log₂(N - seeded)⌉ rounds.
 pub struct Log2FanOut;
 
-impl CascadeStrategy for Log2FanOut {
-    fn name(&self) -> &'static str {
-        "log2-fanout"
-    }
-
+impl Log2FanOut {
     /// ⌈log₂(N - seeded)⌉, the struct's documented uniform-topology rule:
     /// each source serves at most one target per round, so the informed
     /// set at most doubles per round. Computed in integer arithmetic
     /// (bit-width of `pending - 1`, no floats). Assumes `seeded >= 1`
     /// (the coordinator always pushes from at least one holder); with
     /// zero sources the cascade halts unconverged and no count applies.
-    fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
         let pending = n_nodes.saturating_sub(seeded);
         if pending == 0 {
             return 0;
         }
         usize::BITS - (pending - 1).leading_zeros()
+    }
+}
+
+impl CascadeStrategy for Log2FanOut {
+    fn name(&self) -> &'static str {
+        "log2-fanout"
     }
 
     fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
