@@ -128,7 +128,7 @@ tree. Each host that receives the path joins the pool for the next round.
 | --- | --- | --- | --- |
 | `STORE_PATH` | positional | — | The nix store path to distribute; must already exist on the seed host. |
 | `-i, --inventory` | path | — | TOML file holding `seed` and `nodes` SSH addresses. Needs at least one seed and one target. |
-| `-s, --strategy` | `level-tree`\|`log2-fanout`\|`max-bottleneck`\|`steiner` | `level-tree` | Cascade strategy. |
+| `-s, --strategy` | canonical name or alias (see `cast cascade strategies`) | `level-tree` | Cascade strategy. Every strategy has a canonical name plus short aliases; unknown names fail listing what is available. |
 | `--fanout` | N | 2 | Children per node for level-tree. |
 | `--timeout` | seconds | 300 | Per-edge `nix copy` subprocess timeout. |
 | `--max-rounds` | N | 64 | Give up if the cascade has not converged by this round. |
@@ -143,8 +143,10 @@ cascade-copy "$STORE_PATH" -i inventory.toml -s level-tree --fanout 8
 ## cast cascade
 
 `cast cascade tree <TRACE_FILE>` replays a JSONL trace, `cast cascade live`
-runs a live cascade scenario as a tree, and `cast cascade verify
-<TRACE_FILE> --fanout N [--nodes N]` asserts the trace relayed peer-to-peer —
+runs a live cascade scenario as a tree, `cast cascade strategies` lists every
+strategy with its aliases (generated from the registry), and `cast cascade
+verify <TRACE_FILE> --fanout N [--nodes N]` asserts the trace relayed
+peer-to-peer —
 it exits non-zero with a specific diagnostic when the delivery tree is a
 host-push star, and prints the topology summary
 `{"nodes", "rounds", "relay_depth", "relayed_nodes"}` on success.

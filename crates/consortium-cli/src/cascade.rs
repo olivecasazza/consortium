@@ -660,6 +660,41 @@ mod tests {
         );
     }
 
+    /// A swarm trace: legal, converged, tree-shaped — and a star. The
+    /// negative control: verify must reject it by the star rule, not
+    /// with "unknown strategy".
+    #[test]
+    fn verify_rejects_a_swarm_trace_by_the_star_rule() {
+        let stream = concat!(
+            r#"{"kind":"started","n_nodes":8,"seeded":[0],"strategy":"swarm","at":0}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":2,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":3,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":4,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":5,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":6,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":7,"duration":1}"#,
+            "\n",
+            r#"{"kind":"finished","converged":8,"failed":0,"rounds":1}"#,
+            "\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_trace(&dir, "swarm.jsonl", stream);
+        let err = verify_trace_file(&path, 2, None).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("cascade relay check failed: the payload was not relayed:"),
+            "swarm must trip the star rule, got: {err}"
+        );
+    }
+
     /// The live path resolves strategies through the same registry as
     /// copy and verify: an unknown name is an error naming what IS
     /// available, never a silent fallback.

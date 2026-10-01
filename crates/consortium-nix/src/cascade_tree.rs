@@ -768,6 +768,45 @@ mod tests {
 
     // ─── relay shape (registry-driven) ──────────────────────────────────────
 
+    /// 15 nodes, one seed: a swarm delivers every payload straight from
+    /// the seed in a single round. Convergence, tree shape, round count
+    /// — every *status* check is green. This is the negative control:
+    /// the relay assertion must reject it by the same star rule it
+    /// rejects a host push, while still accepting a real relay.
+    const SWARM_15: &str = concat!(
+        r#"{"kind":"started","n_nodes":15,"seeded":[0],"strategy":"swarm","at":0}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":2,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":3,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":4,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":5,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":6,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":7,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":8,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":9,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":10,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":11,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":12,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":13,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"edge_completed","round":0,"src":0,"tgt":14,"duration":100000000}"#,
+        "\n",
+        r#"{"kind":"finished","converged":15,"failed":0,"rounds":1}"#,
+    );
+
     /// A real log2 relay over 7 nodes, seed 0: r0 (0→1); r1 (0→2) (1→3);
     /// r2 (0→4) (1→5) (2→6). Depth 2, 6 relayed nodes, 3 rounds —
     /// ⌈log₂(6)⌉ = 3, the strategy's own rule.
@@ -801,6 +840,19 @@ mod tests {
         })?;
         let expected = (spec.rounds_rule)(t.n_nodes as usize, t.seeded.len(), fanout);
         assert_relay_shape(&t, spec.canonical, expected, fanout)
+    }
+
+    #[test]
+    fn verify_rejects_a_swarm_trace_as_not_relayed() {
+        // The negative control: swarm is a legal, converging strategy,
+        // but no peer ever serves another. The relay assertion MUST
+        // reject its trace by the star rule — the same rule that
+        // rejects a plain host push.
+        let err = check_trace(SWARM_15, 2).expect_err("swarm trace must be rejected");
+        assert!(
+            err.to_string().contains("not relayed"),
+            "swarm must trip the star rule, got: {err}"
+        );
     }
 
     #[test]

@@ -455,6 +455,90 @@ impl CascadeStrategy for LevelTreeFanOut {
 }
 
 // ============================================================================
+// Swarm — every node pulls straight from the seed
+// ============================================================================
+
+/// Every node pulls directly from a seed; no peer ever serves another.
+///
+/// Round after round the only sources are the nodes that were seeded at
+/// start (never served ⇒ `parent == None`): a node that received the
+/// closure through a relay is never asked to forward it. The plan has
+/// no per-source cap, so on a partition-free topology every pending
+/// target is served in the first round and the run converges
+/// immediately after.
+///
+/// This is the relay assertion's negative control: its traces are green
+/// by every status check — converged, tree-shaped, round count matches
+/// its own rule — yet no peer ever served another, which is exactly
+/// what `cascade_tree::assert_relay_shape` rejects. Run it to prove the
+/// verifier still catches a star when the run itself claims success.
+pub struct Swarm;
+
+impl Swarm {
+    /// 0 when nothing is pending; otherwise 1. The first round already
+    /// serves every pending target from a seed, so a partition-free
+    /// fleet cannot converge faster than one round — and swarm achieves
+    /// exactly that. Partitions and permanent edge failures can stretch
+    /// the real count (or prevent convergence); the signature cannot
+    /// see topology, so like `SteinerGreedy::expected_rounds` this is
+    /// the documented partition-free count, not an invented formula.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        if n_nodes.saturating_sub(seeded) == 0 {
+            0
+        } else {
+            1
+        }
+    }
+}
+
+impl CascadeStrategy for Swarm {
+    fn name(&self) -> &'static str {
+        "swarm"
+    }
+
+    fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
+        // Seeds only: never-served nodes that hold the closure. A
+        // relayed node has a parent, and swarm never asks it to serve.
+        let mut sources: Vec<NodeId> = state
+            .nodes
+            .iter()
+            .filter(|n| n.parent.is_none())
+            .filter(|n| state.has_closure.contains(&n.id))
+            .filter(|n| !state.failed_nodes.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        sources.sort();
+
+        let mut targets: Vec<NodeId> = state
+            .nodes
+            .iter()
+            .filter(|n| !state.has_closure.contains(&n.id))
+            .filter(|n| !state.failed_nodes.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        targets.sort();
+
+        // Every pending target pulls from the first seed that can reach
+        // it — no per-source cap: one seed may serve many targets, and
+        // each target tries every seed before giving up this round.
+        let mut assignments = Vec::with_capacity(targets.len());
+        for tgt in targets {
+            for src in &sources {
+                if net.is_partitioned(*src, tgt) || state.attempted.contains(&(*src, tgt)) {
+                    continue;
+                }
+                assignments.push((*src, tgt));
+                break;
+            }
+        }
+        CascadePlan {
+            round: state.round,
+            assignments,
+        }
+    }
+}
+
+// ============================================================================
 // Strategy registry — the single source of strategy names
 // ============================================================================
 
@@ -509,6 +593,12 @@ pub const STRATEGIES: &[StrategySpec] = &[
         aliases: &["steiner"],
         build: |_| Box::new(SteinerGreedy),
         rounds_rule: |n, seeded, _| SteinerGreedy.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "swarm",
+        aliases: &["pull"],
+        build: |_| Box::new(Swarm),
+        rounds_rule: |n, seeded, _| Swarm.expected_rounds(n, seeded),
     },
 ];
 
@@ -1229,5 +1319,148 @@ mod tests {
     fn build_tolerates_a_zero_fanout() {
         let built = (find_strategy("level-tree").unwrap().build)(0);
         assert_eq!(built.name(), "level-tree");
+    }
+
+    // ─── swarm ──────────────────────────────────────────────────────────────
+
+    /// The honest count: every pending target pulls from a seed in the
+    /// same round, so on a partition-free topology the fleet converges
+    /// in exactly 1 round (0 when nothing is pending). The signature
+    /// cannot see partitions, which can stretch the real count — same
+    /// documented-estimate caveat as [`SteinerGreedy`].
+    #[test]
+    fn swarm_expected_rounds_partition_free_single_round() {
+        let swarm = Swarm;
+        assert_eq!(swarm.expected_rounds(7, 1), 1);
+        assert_eq!(swarm.expected_rounds(64, 1), 1);
+        assert_eq!(swarm.expected_rounds(2, 1), 1);
+        assert_eq!(swarm.expected_rounds(64, 64), 0);
+        assert_eq!(swarm.expected_rounds(5, 9), 0);
+    }
+
+    fn swarm_state<'a>(
+        nodes: &'a [CascadeNode],
+        has_closure: &'a HashSet<NodeId>,
+        attempted: &'a HashSet<(NodeId, NodeId)>,
+        failed: &'a HashSet<NodeId>,
+    ) -> CascadeState<'a> {
+        CascadeState {
+            nodes,
+            has_closure,
+            round: 0,
+            attempted,
+            failed_nodes: failed,
+        }
+    }
+
+    /// The defining rule: no peer ever serves another. Even when a
+    /// relayed peer already holds the closure, swarm plans edges only
+    /// from nodes that were never served — the seeds.
+    #[test]
+    fn swarm_plans_seed_sourced_edges_only() {
+        // 0 is the seed; 1 was relay-served by 0 (parent set) and holds
+        // the closure; 2 is pending. A relay strategy may pick 1→2;
+        // swarm must pick 0→2.
+        let nodes = vec![
+            CascadeNode::new(NodeId(0), "seed"),
+            CascadeNode {
+                parent: Some(NodeId(0)),
+                ..CascadeNode::new(NodeId(1), "peer")
+            },
+            CascadeNode::new(NodeId(2), "pending"),
+        ];
+        let has_closure = HashSet::from([NodeId(0), NodeId(1)]);
+        let attempted = HashSet::from([(NodeId(0), NodeId(1))]);
+        let failed = HashSet::new();
+
+        let plan = Swarm.next_round(
+            &swarm_state(&nodes, &has_closure, &attempted, &failed),
+            &NetworkProfile::default(),
+        );
+        assert_eq!(plan.assignments, vec![(NodeId(0), NodeId(2))]);
+    }
+
+    /// A seed never attempts the same target twice across rounds, and
+    /// a target partitioned from one seed can pull from another.
+    #[test]
+    fn swarm_skips_attempted_edges_and_partitions() {
+        let nodes = vec![
+            CascadeNode::new(NodeId(0), "seed-a"),
+            CascadeNode::new(NodeId(1), "seed-b"),
+            CascadeNode::new(NodeId(2), "pending"),
+        ];
+        let has_closure = HashSet::from([NodeId(0), NodeId(1)]);
+        let attempted = HashSet::from([(NodeId(0), NodeId(2))]);
+        let failed = HashSet::new();
+        let net = NetworkBuilder::new()
+            .partitions([(NodeId(1), NodeId(2))])
+            .build();
+
+        let plan = Swarm.next_round(
+            &swarm_state(&nodes, &has_closure, &attempted, &failed),
+            &net,
+        );
+        // 0→2 attempted last round; 1 is partitioned from 2 → no
+        // progress this round, and the coordinator halts unconverged.
+        assert!(plan.assignments.is_empty());
+    }
+
+    /// Test sink: ships snapshots over a channel — no locking, and
+    /// `record` only clones a handle.
+    struct ChannelSink {
+        tx: std::sync::mpsc::Sender<RoundSnapshot>,
+    }
+
+    impl TraceSink for ChannelSink {
+        fn record(&self, snapshot: &RoundSnapshot) {
+            self.tx.send(snapshot.clone()).expect("receiver alive");
+        }
+    }
+
+    /// End to end: a uniform 9-node fleet with one seed converges in
+    /// exactly 1 round, and every planned edge's source is the seed.
+    #[test]
+    fn swarm_converges_in_one_round_with_seed_only_edges() {
+        let nodes = make_nodes(9);
+        let mut seeded = HashSet::new();
+        seeded.insert(NodeId(0));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &Swarm,
+            &BandwidthSimExecutor {
+                closure_bytes: 100 * 1024 * 1024,
+                default_bw: 100 * 1024 * 1024,
+            },
+            64,
+            Some(&ChannelSink { tx }),
+        );
+
+        assert!(result.failed.is_none(), "{:?}", result.failed);
+        assert_eq!(result.rounds, 1);
+        assert_eq!(result.converged.len(), 9);
+        let snapshots: Vec<RoundSnapshot> = rx.try_iter().collect();
+        assert_eq!(snapshots.len(), 1);
+        for (src, _tgt) in &snapshots[0].plan.assignments {
+            assert_eq!(*src, NodeId(0), "swarm must only ever serve from the seed");
+        }
+    }
+
+    /// The registry admits swarm under its canonical name and its
+    /// `pull` alias, and the catalog lists both.
+    #[test]
+    fn registry_admits_swarm_and_its_pull_alias() {
+        for name in ["swarm", "pull"] {
+            let spec = find_strategy(name).unwrap_or_else(|| panic!("'{name}' must be registered"));
+            assert_eq!(spec.canonical, "swarm");
+            let built = parse_strategy(name, 2).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(built.name(), "swarm");
+        }
+        let catalog = strategy_catalog();
+        assert!(catalog.contains("swarm"), "catalog: {catalog}");
+        assert!(catalog.contains("pull"), "catalog: {catalog}");
     }
 }
