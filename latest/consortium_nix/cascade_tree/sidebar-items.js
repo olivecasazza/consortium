@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["NamedStrategy"],"fn":["assert_relay_was_used","parse_cascade_events","strategy_by_name"],"struct":["CascadeTopology","CascadeTreeError"]};
+window.SIDEBAR_ITEMS = {"enum":["NamedStrategy"],"fn":["assert_relay_shape","assert_relay_was_used","parse_cascade_events","strategy_by_name"],"struct":["CascadeTopology","CascadeTreeError"]};
