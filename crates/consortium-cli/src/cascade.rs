@@ -24,10 +24,10 @@ use crate::tree::OutputFormat;
 use consortium_fanout_sim::fixtures::{
     rng_from_seed, BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution,
 };
-use consortium_nix::cascade::{Cascade, CascadeNode, Log2FanOut, NetworkProfile, NodeIdAlloc};
+use consortium_nix::cascade::{Cascade, CascadeNode, NetworkProfile, NodeIdAlloc};
 use consortium_nix::cascade_events::{CascadeEvent, EventSink};
-use consortium_nix::cascade_strategies::{MaxBottleneckSpanning, SteinerGreedy};
-use consortium_nix::cascade_tree::{assert_relay_was_used, parse_cascade_events, strategy_by_name};
+use consortium_nix::cascade_strategies::{find_strategy, parse_strategy, strategy_catalog};
+use consortium_nix::cascade_tree::{assert_relay_shape, parse_cascade_events};
 
 // ============================================================================
 // CLI definition
@@ -79,9 +79,9 @@ pub struct LiveArgs {
     #[arg(short = 'n', long = "nodes", default_value_t = 32)]
     pub nodes: u32,
 
-    /// Strategy: level-tree (default — pre-shaped F-ary tree, each
-    /// round populates one level, matches nh's level-by-level
-    /// reveal), log2-fanout, max-bottleneck, or steiner.
+    /// Strategy (default `level-tree`). Resolved through the registry:
+    /// every strategy has a canonical name plus short aliases — see
+    /// them all with `cast cascade strategies`.
     #[arg(short = 's', long = "strategy", default_value = "level-tree")]
     pub strategy: String,
 
@@ -245,10 +245,18 @@ pub fn verify_trace_file(path: &str, fanout: u32, nodes: Option<u32>) -> Result<
         .with_context(|| format!("failed to open trace file: {path}"))?;
     let topology = parse_cascade_events(&stream)
         .map_err(|e| anyhow::anyhow!("cascade relay check failed: {e}"))?;
-    let strategy = strategy_by_name(&topology.strategy, fanout).ok_or_else(|| {
-        anyhow::anyhow!("unknown strategy '{}' in started event", topology.strategy)
+    let strategy = find_strategy(&topology.strategy).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown strategy '{}' in started event; available: {}",
+            topology.strategy,
+            strategy_catalog()
+        )
     })?;
-    assert_relay_was_used(&topology, &strategy, fanout)
+    // The strategy's own round rule — its inherent expected_rounds via the
+    // registry — is what this trace is measured against.
+    let expected_rounds =
+        (strategy.rounds_rule)(topology.n_nodes as usize, topology.seeded.len(), fanout);
+    assert_relay_shape(&topology, strategy.canonical, expected_rounds, fanout)
         .map_err(|e| anyhow::anyhow!("cascade relay check failed: {e}"))?;
     // The relay assertion passes on any fleet size; the harness additionally
     // pins how many nodes the run covered.
@@ -293,7 +301,7 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
     // as they're emitted, no buffering through a Vec.
     if render.format == "jsonl" {
         let sink = JsonlWriter::new(Box::new(io::stdout()));
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink, None);
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &sink, None)?;
         return Ok(());
     }
 
@@ -355,7 +363,7 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
         let delay = args
             .per_round_delay_ms
             .map(std::time::Duration::from_millis);
-        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer, delay);
+        run_scenario(args, closure_bytes, bandwidth, uplinks, &renderer, delay)?;
         // The renderer prints the final frame on `Finished`; nothing more
         // for us to flush.
         return Ok(());
@@ -363,7 +371,7 @@ pub fn run_live(args: &LiveArgs, render: &RenderArgs) -> Result<()> {
 
     // Batch path: accumulate, then delegate to render_events.
     let collector = EventCollector::new();
-    run_scenario(args, closure_bytes, bandwidth, uplinks, &collector, None);
+    run_scenario(args, closure_bytes, bandwidth, uplinks, &collector, None)?;
     let events = collector.events();
     let fmt = resolve_format(render)?;
     print!("{}", render_events(&events, &fmt));
@@ -380,7 +388,7 @@ fn run_scenario<S: EventSink>(
     uplinks: Option<UplinkDistribution>,
     sink: &S,
     per_round_delay: Option<std::time::Duration>,
-) {
+) -> Result<()> {
     let n_nodes = args.nodes;
 
     let mut alloc = NodeIdAlloc::new();
@@ -437,49 +445,19 @@ fn run_scenario<S: EventSink>(
         .map(|d| d as &dyn consortium_nix::cascade::RoundExecutor)
         .unwrap_or(&base_exec);
 
-    let level_tree = consortium_nix::cascade_strategies::LevelTreeFanOut::new(args.fanout.max(1));
-    match args.strategy.as_str() {
-        "level-tree" | "level" | "tree" => {
-            Cascade::new()
-                .nodes(nodes)
-                .seeded(seeded)
-                .network(net)
-                .strategy(&level_tree)
-                .executor(exec)
-                .events(sink)
-                .run();
-        }
-        "max-bottleneck" | "max-bottleneck-spanning" => {
-            Cascade::new()
-                .nodes(nodes)
-                .seeded(seeded)
-                .network(net)
-                .strategy(&MaxBottleneckSpanning)
-                .executor(exec)
-                .events(sink)
-                .run();
-        }
-        "steiner" | "steiner-greedy" => {
-            Cascade::new()
-                .nodes(nodes)
-                .seeded(seeded)
-                .network(net)
-                .strategy(&SteinerGreedy)
-                .executor(exec)
-                .events(sink)
-                .run();
-        }
-        _ => {
-            Cascade::new()
-                .nodes(nodes)
-                .seeded(seeded)
-                .network(net)
-                .strategy(&Log2FanOut)
-                .executor(exec)
-                .events(sink)
-                .run();
-        }
-    }
+    // One strategy, resolved through the registry — the same table the
+    // copy binary and the verifier read. Unknown names are errors that
+    // list what IS available; there is no silent fallback.
+    let strategy = parse_strategy(&args.strategy, args.fanout)?;
+    Cascade::new()
+        .nodes(nodes)
+        .seeded(seeded)
+        .network(net)
+        .strategy(strategy.as_ref())
+        .executor(exec)
+        .events(sink)
+        .run();
+    Ok(())
 }
 
 // ============================================================================
@@ -679,6 +657,72 @@ mod tests {
             err.to_string()
                 .starts_with("cascade relay check failed: the payload was not relayed:"),
             "got: {err}"
+        );
+    }
+
+    /// A swarm trace: legal, converged, tree-shaped — and a star. The
+    /// negative control: verify must reject it by the star rule, not
+    /// with "unknown strategy".
+    #[test]
+    fn verify_rejects_a_swarm_trace_by_the_star_rule() {
+        let stream = concat!(
+            r#"{"kind":"started","n_nodes":8,"seeded":[0],"strategy":"swarm","at":0}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":1,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":2,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":3,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":4,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":5,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":6,"duration":1}"#,
+            "\n",
+            r#"{"kind":"edge_completed","round":0,"src":0,"tgt":7,"duration":1}"#,
+            "\n",
+            r#"{"kind":"finished","converged":8,"failed":0,"rounds":1}"#,
+            "\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_trace(&dir, "swarm.jsonl", stream);
+        let err = verify_trace_file(&path, 2, None).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("cascade relay check failed: the payload was not relayed:"),
+            "swarm must trip the star rule, got: {err}"
+        );
+    }
+
+    /// The live path resolves strategies through the same registry as
+    /// copy and verify: an unknown name is an error naming what IS
+    /// available, never a silent fallback.
+    #[test]
+    fn live_rejects_an_unknown_strategy() {
+        let args = LiveArgs {
+            nodes: 4,
+            strategy: "warp-drive".into(),
+            fanout: 2,
+            seeds: 1,
+            seed_fraction: 0.0,
+            closure_mb: 1,
+            bandwidth: "uniform".into(),
+            uplinks: None,
+            seed: 0,
+            failure_rate: 0.0,
+            failure_seed: 0,
+            no_watch: true,
+            per_round_delay_ms: None,
+        };
+        let err = run_live(&args, &render_args("json")).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown strategy 'warp-drive'"),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("level-tree"),
+            "the error must list what is available, got: {err}"
         );
     }
 

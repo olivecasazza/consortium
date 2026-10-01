@@ -316,3 +316,131 @@ fn cast_cascade_verify_fanout_is_required() {
         .failure()
         .stderr(predicate::str::contains("--fanout"));
 }
+
+// ─── strategies subcommand (discovery) ──────────────────────────────────────
+
+/// `cast cascade strategies` is generated from the same registry the
+/// parser and the error messages read — this test reads the registry
+/// itself, so the command cannot drift from it.
+#[test]
+fn cast_cascade_strategies_lists_the_registry() {
+    use consortium_nix::cascade_strategies::STRATEGIES;
+
+    let output = cast_cascade()
+        .args(["strategies"])
+        .output()
+        .expect("failed to run cast cascade strategies");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for spec in STRATEGIES {
+        assert!(
+            stdout.contains(spec.canonical),
+            "strategies output must list '{}': {stdout}",
+            spec.canonical
+        );
+        for alias in spec.aliases {
+            assert!(
+                stdout.contains(alias),
+                "strategies output must list alias '{alias}': {stdout}"
+            );
+        }
+    }
+}
+
+// ─── swarm end to end (negative control) ────────────────────────────────────
+
+/// A real swarm run produces a green trace that verify MUST reject by
+/// the star rule — this is the relay assertion's negative control,
+/// exercised through the actual binaries.
+#[test]
+fn cast_cascade_verify_rejects_a_real_swarm_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let trace_path = dir.path().join("swarm.jsonl");
+    let output = cast_cascade()
+        .args([
+            "live",
+            "-n",
+            "15",
+            "-s",
+            "swarm",
+            "--format",
+            "jsonl",
+            "--no-watch",
+        ])
+        .output()
+        .expect("swarm live run must execute");
+    assert!(output.status.success(), "swarm live run must succeed");
+    std::fs::write(&trace_path, &output.stdout).unwrap();
+
+    cast_cascade()
+        .args(["verify", trace_path.to_str().unwrap(), "--fanout", "2"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cascade relay check failed: the payload was not relayed",
+        ));
+}
+
+/// The positive control over the same binaries: a real log2 run is
+/// accepted, and the success JSON is exactly the four documented keys.
+#[test]
+fn cast_cascade_verify_accepts_a_real_log2_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let trace_path = dir.path().join("log2.jsonl");
+    let output = cast_cascade()
+        .args([
+            "live",
+            "-n",
+            "15",
+            "-s",
+            "log2",
+            "--format",
+            "jsonl",
+            "--no-watch",
+        ])
+        .output()
+        .expect("log2 live run must execute");
+    assert!(output.status.success(), "log2 live run must succeed");
+    std::fs::write(&trace_path, &output.stdout).unwrap();
+
+    let verified = cast_cascade()
+        .args(["verify", trace_path.to_str().unwrap(), "--fanout", "2"])
+        .output()
+        .expect("verify must execute");
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&verified.stdout).expect("stdout must be the summary JSON");
+    let mut keys: Vec<String> = parsed
+        .as_object()
+        .expect("summary must be a JSON object")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec!["nodes", "relay_depth", "relayed_nodes", "rounds"],
+        "the success JSON is a frozen consumer contract"
+    );
+    assert_eq!(parsed["nodes"], 15);
+}
+
+/// The live path resolves through the registry: an unknown strategy is
+/// an error naming the available set, never a silent log2 fallback.
+#[test]
+fn cast_cascade_live_unknown_strategy_errors() {
+    cast_cascade()
+        .args(["live", "-n", "4", "-s", "warp-drive", "--no-watch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown strategy 'warp-drive'"))
+        .stderr(predicate::str::contains("level-tree"));
+}

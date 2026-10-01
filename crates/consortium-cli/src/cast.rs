@@ -175,8 +175,25 @@ enum Commands {
     /// Inspect and verify cascade event streams (the former cascade-viz).
     Cascade {
         #[command(subcommand)]
-        command: CascadeCommands,
+        command: CascadeCommand,
     },
+}
+
+/// `cast cascade` subcommand routing.
+///
+/// [`CascadeCommands`] lives in the published library crate, so its
+/// variant set is frozen API: cargo-semver-checks treats a new variant
+/// as a major break for downstream `match` arms. Growth happens here
+/// instead — this enum is private to the binary, so adding a variant
+/// changes nothing outside the workspace. `strategies` is pure
+/// discovery: no fleet, no trace file, one registry read.
+#[derive(Subcommand)]
+enum CascadeCommand {
+    #[command(flatten)]
+    BuiltIn(CascadeCommands),
+
+    /// List every cascade strategy with its aliases.
+    Strategies,
 }
 
 pub fn run() {
@@ -187,7 +204,21 @@ pub fn run() {
     let result = match args.command {
         // Cascade streams are self-contained: replay / verify / live never
         // touch the fleet, so this arm runs before fleet discovery.
-        Commands::Cascade { command } => cascade::dispatch(command),
+        Commands::Cascade { command } => match command {
+            CascadeCommand::BuiltIn(command) => cascade::dispatch(command),
+            // Generated from the registry — the same table parse_strategy
+            // and the unknown-name errors read — so it cannot drift.
+            CascadeCommand::Strategies => {
+                for spec in consortium_nix::cascade_strategies::STRATEGIES {
+                    if spec.aliases.is_empty() {
+                        println!("{}", spec.canonical);
+                    } else {
+                        println!("{} (aliases: {})", spec.canonical, spec.aliases.join(", "));
+                    }
+                }
+                Ok(())
+            }
+        },
         command => {
             let request = FleetRequest {
                 config: args.config.as_deref(),

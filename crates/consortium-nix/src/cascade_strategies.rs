@@ -1,6 +1,6 @@
 //! Cost-aware cascade strategies built on petgraph.
 //!
-//! [`Log2FanOut`](crate::cascade::Log2FanOut) ignores the network — it
+//! [`Log2FanOut`] ignores the network — it
 //! pairs sources to targets in id order. That's correct under uniform
 //! topology but pessimal when bandwidth varies: the round wall-time is
 //! the slowest edge in the round, so a single (fast-source, slow-target)
@@ -22,7 +22,9 @@
 
 use std::collections::HashSet;
 
-use crate::cascade::{CascadePlan, CascadeState, CascadeStrategy, NetworkProfile, NodeId};
+use crate::cascade::{
+    CascadePlan, CascadeState, CascadeStrategy, Log2FanOut, NetworkProfile, NodeId,
+};
 
 // Default bandwidth used when an edge has no entry in NetworkProfile.
 // 100 MB/s is a reasonable LAN baseline — strategies with no bandwidth
@@ -58,7 +60,7 @@ const DEFAULT_BW_BYTES_SEC: u64 = 100 * 1024 * 1024;
 pub struct MaxBottleneckSpanning;
 
 impl MaxBottleneckSpanning {
-    /// Same structural rule as [`Log2FanOut`](crate::cascade::Log2FanOut): each source serves at
+    /// Same structural rule as [`Log2FanOut`]: each source serves at
     /// most one target per round, and while any unpartitioned target
     /// remains, the greedy matching always saturates the source set,
     /// so the informed set at most doubles per round. Bandwidth skew
@@ -452,11 +454,219 @@ impl CascadeStrategy for LevelTreeFanOut {
     }
 }
 
+// ============================================================================
+// Swarm — every node pulls straight from the seed
+// ============================================================================
+
+/// Every node pulls directly from a seed; no peer ever serves another.
+///
+/// Round after round the only sources are the nodes that were seeded at
+/// start (never served ⇒ `parent == None`): a node that received the
+/// closure through a relay is never asked to forward it. The plan has
+/// no per-source cap, so on a partition-free topology every pending
+/// target is served in the first round and the run converges
+/// immediately after.
+///
+/// This is the relay assertion's negative control: its traces are green
+/// by every status check — converged, tree-shaped, round count matches
+/// its own rule — yet no peer ever served another, which is exactly
+/// what `cascade_tree::assert_relay_shape` rejects. Run it to prove the
+/// verifier still catches a star when the run itself claims success.
+pub struct Swarm;
+
+impl Swarm {
+    /// 0 when nothing is pending; otherwise 1. The first round already
+    /// serves every pending target from a seed, so a partition-free
+    /// fleet cannot converge faster than one round — and swarm achieves
+    /// exactly that. Partitions and permanent edge failures can stretch
+    /// the real count (or prevent convergence); the signature cannot
+    /// see topology, so like `SteinerGreedy::expected_rounds` this is
+    /// the documented partition-free count, not an invented formula.
+    pub fn expected_rounds(&self, n_nodes: usize, seeded: usize) -> u32 {
+        if n_nodes.saturating_sub(seeded) == 0 {
+            0
+        } else {
+            1
+        }
+    }
+}
+
+impl CascadeStrategy for Swarm {
+    fn name(&self) -> &'static str {
+        "swarm"
+    }
+
+    fn next_round(&self, state: &CascadeState, net: &NetworkProfile) -> CascadePlan {
+        // Seeds only: never-served nodes that hold the closure. A
+        // relayed node has a parent, and swarm never asks it to serve.
+        let mut sources: Vec<NodeId> = state
+            .nodes
+            .iter()
+            .filter(|n| n.parent.is_none())
+            .filter(|n| state.has_closure.contains(&n.id))
+            .filter(|n| !state.failed_nodes.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        sources.sort();
+
+        let mut targets: Vec<NodeId> = state
+            .nodes
+            .iter()
+            .filter(|n| !state.has_closure.contains(&n.id))
+            .filter(|n| !state.failed_nodes.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        targets.sort();
+
+        // Every pending target pulls from the first seed that can reach
+        // it — no per-source cap: one seed may serve many targets, and
+        // each target tries every seed before giving up this round.
+        let mut assignments = Vec::with_capacity(targets.len());
+        for tgt in targets {
+            for src in &sources {
+                if net.is_partitioned(*src, tgt) || state.attempted.contains(&(*src, tgt)) {
+                    continue;
+                }
+                assignments.push((*src, tgt));
+                break;
+            }
+        }
+        CascadePlan {
+            round: state.round,
+            assignments,
+        }
+    }
+}
+
+// ============================================================================
+// Strategy registry — the single source of strategy names
+// ============================================================================
+
+/// One registered cascade strategy: its canonical name, its friendly
+/// aliases, how to build it, and its own round rule.
+///
+/// Everything that names a strategy reads this table —
+/// [`parse_strategy`], the unknown-name error,
+/// [`strategy_catalog`], `cascade_tree`'s strategy resolution, and the
+/// `cast cascade strategies` discovery command. Adding a strategy is
+/// one `StrategySpec` entry; no other code grows.
+pub struct StrategySpec {
+    /// The name traces carry and diagnostics print.
+    pub canonical: &'static str,
+    /// Short friendly spellings accepted alongside the canonical name.
+    pub aliases: &'static [&'static str],
+    /// Build the runnable strategy. `fanout` only parameterizes
+    /// level-tree; values < 1 are clamped to 1.
+    pub build: fn(fanout: u32) -> Box<dyn CascadeStrategy>,
+    /// The strategy's own round rule — its inherent `expected_rounds`
+    /// as a fn, so the verifier can ask the rule without a concrete
+    /// instance. Args: `(n_nodes, seeded, fanout)`. This is the
+    /// partition-free count each inherent method documents.
+    pub rounds_rule: fn(n_nodes: usize, seeded: usize, fanout: u32) -> u32,
+}
+
+/// Every cascade strategy, in display order. `level-tree` is first
+/// because it is the CLI default.
+pub const STRATEGIES: &[StrategySpec] = &[
+    StrategySpec {
+        canonical: "level-tree",
+        aliases: &["level", "tree"],
+        build: |fanout| Box::new(LevelTreeFanOut::new(fanout.max(1))),
+        rounds_rule: |n, seeded, fanout| {
+            LevelTreeFanOut::new(fanout.max(1)).expected_rounds(n, seeded)
+        },
+    },
+    StrategySpec {
+        canonical: "log2-fanout",
+        aliases: &["log2"],
+        build: |_| Box::new(Log2FanOut),
+        rounds_rule: |n, seeded, _| Log2FanOut.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "max-bottleneck-spanning",
+        aliases: &["max-bottleneck"],
+        build: |_| Box::new(MaxBottleneckSpanning),
+        rounds_rule: |n, seeded, _| MaxBottleneckSpanning.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "steiner-greedy",
+        aliases: &["steiner"],
+        build: |_| Box::new(SteinerGreedy),
+        rounds_rule: |n, seeded, _| SteinerGreedy.expected_rounds(n, seeded),
+    },
+    StrategySpec {
+        canonical: "swarm",
+        aliases: &["pull"],
+        build: |_| Box::new(Swarm),
+        rounds_rule: |n, seeded, _| Swarm.expected_rounds(n, seeded),
+    },
+];
+
+/// Resolve a strategy by canonical name or friendly alias.
+pub fn find_strategy(name: &str) -> Option<&'static StrategySpec> {
+    STRATEGIES
+        .iter()
+        .find(|s| s.canonical == name || s.aliases.contains(&name))
+}
+
+/// Every registered strategy as "`canonical` (aliases: a, b)", in table
+/// order. Generated from [`STRATEGIES`] — this is what the
+/// unknown-name error prints and what `cast cascade strategies` reads,
+/// so the two cannot drift apart.
+pub fn strategy_catalog() -> String {
+    STRATEGIES
+        .iter()
+        .map(|s| {
+            if s.aliases.is_empty() {
+                s.canonical.to_string()
+            } else {
+                format!("{} (aliases: {})", s.canonical, s.aliases.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A strategy name no entry in [`STRATEGIES`] claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownStrategyError {
+    pub name: String,
+}
+
+impl std::fmt::Display for UnknownStrategyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown strategy '{}'; available: {}",
+            self.name,
+            strategy_catalog()
+        )
+    }
+}
+
+impl std::error::Error for UnknownStrategyError {}
+
+/// Resolve `name` through [`STRATEGIES`] and build the strategy.
+/// `fanout` only parameterizes level-tree (values < 1 clamp to 1).
+/// Unknown or empty names fail with an error listing what IS
+/// available — generated from the table, never a hardcoded list.
+pub fn parse_strategy(
+    name: &str,
+    fanout: u32,
+) -> Result<Box<dyn CascadeStrategy>, UnknownStrategyError> {
+    find_strategy(name)
+        .map(|spec| (spec.build)(fanout))
+        .ok_or_else(|| UnknownStrategyError {
+            name: name.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cascade::{
-        run_cascade, CascadeNode, NetworkProfile, NodeId, NodeIdAlloc, RoundExecutor,
+        run_cascade, CascadeNode, CascadeState, Log2FanOut, NetworkBuilder, NetworkProfile, NodeId,
+        NodeIdAlloc, RoundExecutor, RoundSnapshot, TraceSink,
     };
     use std::collections::HashMap;
     use std::time::Duration;
@@ -938,5 +1148,319 @@ mod tests {
         assert_eq!(sg.expected_rounds(7, 1), 1);
         assert_eq!(sg.expected_rounds(64, 1), 1);
         assert_eq!(sg.expected_rounds(64, 64), 0);
+    }
+
+    // ─── strategy registry ──────────────────────────────────────────────────
+
+    /// Every spelling accepted by the pre-registry string matches (the
+    /// `cascade_copy` match arms, `run_scenario`, and
+    /// `cascade_tree::strategy_by_name`) must keep resolving through
+    /// the registry — the table may only grow.
+    #[test]
+    fn legacy_strategy_spellings_still_resolve() {
+        for name in [
+            "level-tree",
+            "level",
+            "tree",
+            "log2-fanout",
+            "log2",
+            "max-bottleneck",
+            "max-bottleneck-spanning",
+            "steiner",
+            "steiner-greedy",
+        ] {
+            let spec = find_strategy(name)
+                .unwrap_or_else(|| panic!("legacy spelling '{name}' must stay registered"));
+            let built = parse_strategy(name, 2)
+                .unwrap_or_else(|e| panic!("parse_strategy('{name}') failed: {e}"));
+            assert_eq!(built.name(), spec.canonical, "parse_strategy('{name}')");
+        }
+    }
+
+    /// One canonical name per strategy, and each strategy carries at
+    /// least one short friendly alias — the whole point of the table.
+    #[test]
+    fn registry_gives_every_strategy_a_canonical_and_an_alias() {
+        let mut canonicals = HashSet::new();
+        let mut claims = HashSet::new();
+        for spec in STRATEGIES {
+            assert!(
+                !spec.canonical.is_empty(),
+                "canonical names must be non-empty"
+            );
+            assert!(
+                !spec.aliases.is_empty(),
+                "{} needs a friendly alias",
+                spec.canonical
+            );
+            assert!(
+                canonicals.insert(spec.canonical),
+                "canonical '{}' is registered twice",
+                spec.canonical
+            );
+            for alias in spec.aliases {
+                assert!(
+                    claims.insert(*alias),
+                    "alias '{alias}' is claimed by more than one strategy"
+                );
+            }
+        }
+        for spec in STRATEGIES {
+            for alias in spec.aliases {
+                assert!(
+                    !canonicals.contains(alias),
+                    "alias '{alias}' collides with a canonical name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_alias_resolves_to_its_own_strategy() {
+        for spec in STRATEGIES {
+            for alias in spec.aliases {
+                let resolved = find_strategy(alias).unwrap_or_else(|| {
+                    panic!("alias '{alias}' of '{}' must resolve", spec.canonical)
+                });
+                assert_eq!(
+                    resolved.canonical, spec.canonical,
+                    "alias '{alias}' is ambiguous"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_names_resolve_to_themselves() {
+        for spec in STRATEGIES {
+            assert_eq!(
+                find_strategy(spec.canonical)
+                    .unwrap_or_else(|| panic!("'{}' must resolve", spec.canonical))
+                    .canonical,
+                spec.canonical
+            );
+        }
+    }
+
+    /// The unknown-name error is generated from the table — it must
+    /// name every registered strategy, whatever the table holds.
+    #[test]
+    fn unknown_name_error_lists_every_registered_strategy() {
+        let msg = parse_strategy("warp-drive", 2)
+            .err()
+            .expect("must fail")
+            .to_string();
+        assert!(msg.contains("unknown strategy"), "got: {msg}");
+        for spec in STRATEGIES {
+            assert!(
+                msg.contains(spec.canonical),
+                "error must list '{}': {msg}",
+                spec.canonical
+            );
+        }
+    }
+
+    #[test]
+    fn empty_name_error_lists_every_registered_strategy() {
+        let msg = parse_strategy("", 2).err().expect("must fail").to_string();
+        assert!(msg.contains("unknown strategy"), "got: {msg}");
+        for spec in STRATEGIES {
+            assert!(
+                msg.contains(spec.canonical),
+                "error must list '{}': {msg}",
+                spec.canonical
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_lists_every_canonical_with_its_aliases() {
+        let catalog = strategy_catalog();
+        for spec in STRATEGIES {
+            assert!(
+                catalog.contains(spec.canonical),
+                "catalog must list '{}': {catalog}",
+                spec.canonical
+            );
+            for alias in spec.aliases {
+                assert!(
+                    catalog.contains(alias),
+                    "catalog must list alias '{alias}': {catalog}"
+                );
+            }
+        }
+    }
+
+    /// The spec's round rule is the strategy's own inherent
+    /// `expected_rounds`, parameterized by the verify `--fanout` for
+    /// level-tree and ignoring it everywhere else.
+    #[test]
+    fn rounds_rule_delegates_to_the_strategys_own_expected_rounds() {
+        let lt = find_strategy("level-tree").unwrap();
+        assert_eq!(
+            (lt.rounds_rule)(7, 1, 2),
+            LevelTreeFanOut::new(2).expected_rounds(7, 1)
+        );
+        assert_eq!((lt.rounds_rule)(7, 1, 1), 6);
+
+        let l2 = find_strategy("log2-fanout").unwrap();
+        assert_eq!((l2.rounds_rule)(7, 1, 9), Log2FanOut.expected_rounds(7, 1));
+
+        let sg = find_strategy("steiner-greedy").unwrap();
+        assert_eq!(
+            (sg.rounds_rule)(64, 1, 2),
+            SteinerGreedy.expected_rounds(64, 1)
+        );
+    }
+
+    /// `LevelTreeFanOut::new` asserts fanout >= 1; the registry's
+    /// builder clamps so a bad `--fanout` can never panic a run.
+    #[test]
+    fn build_tolerates_a_zero_fanout() {
+        let built = (find_strategy("level-tree").unwrap().build)(0);
+        assert_eq!(built.name(), "level-tree");
+    }
+
+    // ─── swarm ──────────────────────────────────────────────────────────────
+
+    /// The honest count: every pending target pulls from a seed in the
+    /// same round, so on a partition-free topology the fleet converges
+    /// in exactly 1 round (0 when nothing is pending). The signature
+    /// cannot see partitions, which can stretch the real count — same
+    /// documented-estimate caveat as [`SteinerGreedy`].
+    #[test]
+    fn swarm_expected_rounds_partition_free_single_round() {
+        let swarm = Swarm;
+        assert_eq!(swarm.expected_rounds(7, 1), 1);
+        assert_eq!(swarm.expected_rounds(64, 1), 1);
+        assert_eq!(swarm.expected_rounds(2, 1), 1);
+        assert_eq!(swarm.expected_rounds(64, 64), 0);
+        assert_eq!(swarm.expected_rounds(5, 9), 0);
+    }
+
+    fn swarm_state<'a>(
+        nodes: &'a [CascadeNode],
+        has_closure: &'a HashSet<NodeId>,
+        attempted: &'a HashSet<(NodeId, NodeId)>,
+        failed: &'a HashSet<NodeId>,
+    ) -> CascadeState<'a> {
+        CascadeState {
+            nodes,
+            has_closure,
+            round: 0,
+            attempted,
+            failed_nodes: failed,
+        }
+    }
+
+    /// The defining rule: no peer ever serves another. Even when a
+    /// relayed peer already holds the closure, swarm plans edges only
+    /// from nodes that were never served — the seeds.
+    #[test]
+    fn swarm_plans_seed_sourced_edges_only() {
+        // 0 is the seed; 1 was relay-served by 0 (parent set) and holds
+        // the closure; 2 is pending. A relay strategy may pick 1→2;
+        // swarm must pick 0→2.
+        let nodes = vec![
+            CascadeNode::new(NodeId(0), "seed"),
+            CascadeNode {
+                parent: Some(NodeId(0)),
+                ..CascadeNode::new(NodeId(1), "peer")
+            },
+            CascadeNode::new(NodeId(2), "pending"),
+        ];
+        let has_closure = HashSet::from([NodeId(0), NodeId(1)]);
+        let attempted = HashSet::from([(NodeId(0), NodeId(1))]);
+        let failed = HashSet::new();
+
+        let plan = Swarm.next_round(
+            &swarm_state(&nodes, &has_closure, &attempted, &failed),
+            &NetworkProfile::default(),
+        );
+        assert_eq!(plan.assignments, vec![(NodeId(0), NodeId(2))]);
+    }
+
+    /// A seed never attempts the same target twice across rounds, and
+    /// a target partitioned from one seed can pull from another.
+    #[test]
+    fn swarm_skips_attempted_edges_and_partitions() {
+        let nodes = vec![
+            CascadeNode::new(NodeId(0), "seed-a"),
+            CascadeNode::new(NodeId(1), "seed-b"),
+            CascadeNode::new(NodeId(2), "pending"),
+        ];
+        let has_closure = HashSet::from([NodeId(0), NodeId(1)]);
+        let attempted = HashSet::from([(NodeId(0), NodeId(2))]);
+        let failed = HashSet::new();
+        let net = NetworkBuilder::new()
+            .partitions([(NodeId(1), NodeId(2))])
+            .build();
+
+        let plan = Swarm.next_round(
+            &swarm_state(&nodes, &has_closure, &attempted, &failed),
+            &net,
+        );
+        // 0→2 attempted last round; 1 is partitioned from 2 → no
+        // progress this round, and the coordinator halts unconverged.
+        assert!(plan.assignments.is_empty());
+    }
+
+    /// Test sink: ships snapshots over a channel — no locking, and
+    /// `record` only clones a handle.
+    struct ChannelSink {
+        tx: std::sync::mpsc::Sender<RoundSnapshot>,
+    }
+
+    impl TraceSink for ChannelSink {
+        fn record(&self, snapshot: &RoundSnapshot) {
+            self.tx.send(snapshot.clone()).expect("receiver alive");
+        }
+    }
+
+    /// End to end: a uniform 9-node fleet with one seed converges in
+    /// exactly 1 round, and every planned edge's source is the seed.
+    #[test]
+    fn swarm_converges_in_one_round_with_seed_only_edges() {
+        let nodes = make_nodes(9);
+        let mut seeded = HashSet::new();
+        seeded.insert(NodeId(0));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = run_cascade(
+            nodes,
+            seeded,
+            NetworkProfile::default(),
+            &Swarm,
+            &BandwidthSimExecutor {
+                closure_bytes: 100 * 1024 * 1024,
+                default_bw: 100 * 1024 * 1024,
+            },
+            64,
+            Some(&ChannelSink { tx }),
+        );
+
+        assert!(result.failed.is_none(), "{:?}", result.failed);
+        assert_eq!(result.rounds, 1);
+        assert_eq!(result.converged.len(), 9);
+        let snapshots: Vec<RoundSnapshot> = rx.try_iter().collect();
+        assert_eq!(snapshots.len(), 1);
+        for (src, _tgt) in &snapshots[0].plan.assignments {
+            assert_eq!(*src, NodeId(0), "swarm must only ever serve from the seed");
+        }
+    }
+
+    /// The registry admits swarm under its canonical name and its
+    /// `pull` alias, and the catalog lists both.
+    #[test]
+    fn registry_admits_swarm_and_its_pull_alias() {
+        for name in ["swarm", "pull"] {
+            let spec = find_strategy(name).unwrap_or_else(|| panic!("'{name}' must be registered"));
+            assert_eq!(spec.canonical, "swarm");
+            let built = parse_strategy(name, 2).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(built.name(), "swarm");
+        }
+        let catalog = strategy_catalog();
+        assert!(catalog.contains("swarm"), "catalog: {catalog}");
+        assert!(catalog.contains("pull"), "catalog: {catalog}");
     }
 }
