@@ -3,13 +3,15 @@
 //! A cascade that pushed the closure from the host to each guest in turn
 //! satisfies every exit-status check: both a host push and a peer-to-peer
 //! relay exit 0. Only the shape of the delivery tree distinguishes them, and
-//! that shape is already in the [`CascadeEvent`] stream — `edge_completed`
-//! records who served whom. This module rebuilds that tree and asserts it is
-//! a relay, not a star.
+//! that shape is already in the
+//! [`CascadeEvent`](crate::cascade_events::CascadeEvent) stream —
+//! `edge_completed` records who served whom. This module rebuilds that tree
+//! and asserts it is a relay, not a star.
 //!
 //! Semantics ported from the harness's `cascade_tree.py`, including its error
 //! messages (consumers match on them). Deliberately free of Nix and QEMU:
-//! this is the generic fan-out/fan-in check over [`NodeId`]s.
+//! this is the generic fan-out/fan-in check over
+//! [`NodeId`](crate::cascade::NodeId)s.
 //!
 //! The expected round count is NOT restated here: the verifier asks the
 //! strategy that ran (`CascadeStrategy::expected_rounds`) what shape its own
