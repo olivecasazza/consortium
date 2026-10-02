@@ -5,6 +5,46 @@
 - qualify Log2FanOut intra-doc link in MaxBottleneckSpanning docs
 - move expected_rounds off the trait to inherent methods
 
+## CI
+
+- let workspace-internal dev-deps be stripped at publish
+
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+- fix broken intra-doc links
+- drop redundant explicit intra-doc link targets
+
+## Features
+
+- add executor abstraction and shared integration contract
+- adopt integration contract suite; fix eval-failure accounting and target validation
+- per-strategy expected_rounds on CascadeStrategy
+- fold cascade-viz into `cast cascade`; relay assertion in core
+- measure verify against the strategy's own round rule
+- declarative strategy registry with aliases
+- swarm strategy as the relay assertion's negative control
+- fanout traversal orders over the log2 pairing
+
+## Refactoring
+
+- route all command execution through the Executor abstraction
+- drop deprecated pre-executor staging shims
+
+## Testing
+
+- add SimExecutor-based deploy pipeline sim tests
+
+## style
+
+- apply cargo fmt --all
+
+
+## Bug Fixes
+
+- qualify Log2FanOut intra-doc link in MaxBottleneckSpanning docs
+- move expected_rounds off the trait to inherent methods
+
 ## Documentation
 
 - fix rustdoc errors under RUSTDOCFLAGS="-D warnings"

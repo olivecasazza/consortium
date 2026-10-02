@@ -31,6 +31,37 @@
 - apply cargo fmt across workspace crates
 
 
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+- add an OKF v0.2 repository structure bundle ([#19](https://github.com/olivecasazza/consortium/pull/19))
+
+## Features
+
+- port upstream index, stepped slices, mapall upcall
+- introspected grammar module with TDD suite
+- gate grammar drift with an embedded baseline
+- native fleet deploys — flake discovery, @groups, live ssh endpoints (replaces cast-on) ([#9](https://github.com/olivecasazza/consortium/pull/9))
+- per-host deploy progress and --activate-timeout ([#18](https://github.com/olivecasazza/consortium/pull/18))
+- fold cascade-viz into `cast cascade`; relay assertion in core
+- measure verify against the strategy's own round rule
+- declarative strategy registry with aliases
+- swarm strategy as the relay assertion's negative control
+- --order flag on cascade live; orders in discovery
+
+## Refactoring
+
+- route all command execution through the Executor abstraction
+
+## cascade-copy
+
+- emit the event stream when asked for jsonl, TTY or not ([#22](https://github.com/olivecasazza/consortium/pull/22))
+
+## style
+
+- apply cargo fmt across workspace crates
+
+
 ## Bug Fixes
 
 - use alt screen buffer to fix multi-n0 stacking

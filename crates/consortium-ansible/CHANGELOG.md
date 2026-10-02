@@ -1,6 +1,24 @@
 # Changelog
 
 
+## CI
+
+- let workspace-internal dev-deps be stripped at publish
+
+## Features
+
+- executor-based base implementation with contract suite enrollment
+- harden SimExecutor determinism comparison, status visibility, and ergonomics
+
+## Testing
+
+- add SimExecutor-based playbook pipeline sim tests
+
+## style
+
+- apply cargo fmt --all
+
+
 ## Features
 
 - executor-based base implementation with contract suite enrollment

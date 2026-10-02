@@ -4,6 +4,29 @@
 
 - seed-aware fuzz oracles + checked-in regression corpus
 
+## CI
+
+- let workspace-internal dev-deps be stripped at publish
+
+## Documentation
+
+- fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
+
+## Features
+
+- add SimExecutor — network/failure-aware Executor for integration sim tests
+- harden SimExecutor determinism comparison, status visibility, and ergonomics
+
+## style
+
+- factor NormalizeFn alias, reword doc to satisfy clippy
+- apply cargo fmt --all
+
+
+## Bug Fixes
+
+- seed-aware fuzz oracles + checked-in regression corpus
+
 ## Documentation
 
 - fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
