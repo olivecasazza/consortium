@@ -246,10 +246,14 @@
                 (lib.filter (lib.strings.hasPrefix "crates/") workspace.members)
             );
 
-          # Git baseline enforces API compatibility even while 0.3.0 is an
-          # unpublished breaking release; crates.io checks the version bump.
-          # Both run outside the Nix sandbox. CI passes the exact PR base
-          # (or pre-push tip), rather than relying on the checkout depth.
+          # Two baselines, both run for every published lib crate on every
+          # change, and either one failing fails the gate: the git baseline at
+          # --release-type minor, so removing or altering a public item is
+          # rejected regardless of what has been published, and crates.io,
+          # which catches a version that was never bumped. Publication state
+          # gates nothing here. Both run outside the Nix sandbox; CI passes
+          # the exact PR base (or pre-push tip) rather than relying on the
+          # checkout depth.
           semverCheck = pkgs.writeShellApplication {
             name = "semver-check";
             runtimeInputs = [
