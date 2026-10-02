@@ -12,8 +12,8 @@ consortium-integration.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-consortium-fanout-sim.workspace = true
-consortium-integration-testkit.workspace = true
+consortium-fanout-sim = { path = "../consortium-fanout-sim" }
+consortium-integration-testkit = { path = "../consortium-integration-testkit" }
 
 [package.metadata.docs.rs]
 all-features = true

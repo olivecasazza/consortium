@@ -15,8 +15,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 [dev-dependencies]
-consortium-fanout-sim.workspace = true
-consortium-integration-testkit.workspace = true
+consortium-fanout-sim = { path = "../consortium-fanout-sim" }
+consortium-integration-testkit = { path = "../consortium-integration-testkit" }
 
 [package.metadata.docs.rs]
 all-features = true
