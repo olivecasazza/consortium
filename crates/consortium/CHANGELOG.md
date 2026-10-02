@@ -1,5 +1,6 @@
 # Changelog
 
+
 ## Bug Fixes
 
 - use [lib] table instead of [package].lib.name ([#3](https://github.com/olivecasazza/consortium/pull/3))
