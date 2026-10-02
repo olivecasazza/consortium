@@ -397,6 +397,17 @@
 
             # Build the library
             inherit consortium;
+
+            # The installed CLI starts, and the grammar gate it carries
+            # compares its own command surface against the baseline embedded
+            # at build time, so this needs no sources and is the one place a
+            # packaged binary is exercised rather than merely built.
+            consortium-cli-smoke = pkgs.runCommand "consortium-cli-smoke" { } ''
+              ${consortium-cli}/bin/cast --help >/dev/null
+              ${consortium-cli}/bin/claw --help >/dev/null
+              ${consortium-cli}/bin/consortium-grammar check
+              touch $out
+            '';
           };
 
           # ── Packages ───────────────────────────────────────────────────
