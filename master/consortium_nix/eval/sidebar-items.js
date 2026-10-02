@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["eval_all","eval_toplevel","evaluate","query_current_system"]};
+window.SIDEBAR_ITEMS = {"fn":["eval_all","eval_system_toplevel","eval_toplevel","evaluate","query_current_system","toplevel_attr"]};

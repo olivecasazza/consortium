@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["StagingError"],"fn":["build_flake_attr","copy_closure"]};
+window.SIDEBAR_ITEMS = {"enum":["StagingError"],"fn":["build_flake_attr","build_flake_attr_with_args","copy_closure"]};

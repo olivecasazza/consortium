@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FleetOrigin"],"fn":["discover_fleet","fleet_from_configurations","fleet_from_flake_output"]};

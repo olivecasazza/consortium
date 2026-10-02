@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["render_events"],"struct":["DelaySink","DelayingExecutor","EventCollector","JsonlWriter","LiveTreeRenderer","OwnedTreeNode","SnapshotAccumulator"]};
+window.SIDEBAR_ITEMS = {"enum":["SinkKind"],"fn":["render_events","sink_for_format"],"struct":["DelaySink","DelayingExecutor","EventCollector","JsonlWriter","LiveTreeRenderer","OwnedTreeNode","SnapshotAccumulator"]};
