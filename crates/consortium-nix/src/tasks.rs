@@ -52,6 +52,11 @@ fn node_from<'c>(config: &'c FleetConfig, host: &str) -> Result<&'c DeploymentNo
         .ok_or_else(|| TaskOutcome::Failed(format!("unknown host: {}", host)))
 }
 
+/// The node's own nix store, reached over ssh as its deploy user.
+fn target_store_uri(node: &DeploymentNode) -> String {
+    format!("ssh-ng://{}@{}", node.target_user, node.target_host)
+}
+
 /// Evaluate a single host — resolve its toplevel store path.
 ///
 /// Writes output: `eval:{host}` → `String` (toplevel store path)
@@ -108,6 +113,10 @@ impl DagTask for NixEvalTask {
 /// Reads: `eval:{host}` → toplevel path (to verify eval completed)
 /// Reads state: `machines_file` → `Option<String>` (path to machines file for distributed builds)
 /// Writes output: `build:{host}` → `String` (built store path)
+///
+/// A `build_on_target` node is built in its own store (`--store
+/// ssh-ng://…`, evaluated locally): the closure never passes through this
+/// machine, and fleet builders are not used for it.
 pub struct NixBuildTask {
     pub host: String,
 }
@@ -135,7 +144,18 @@ impl DagTask for NixBuildTask {
             Err(outcome) => return outcome,
         };
         let options = options_from(ctx);
-        let machines_file: Option<String> = ctx.get_state("machines_file");
+        let mut nix_args = options.nix_args.for_profile(&node.profile_type).to_vec();
+        let machines_file: Option<String> = if node.build_on_target {
+            nix_args.extend([
+                "--eval-store".to_string(),
+                "auto".to_string(),
+                "--store".to_string(),
+                target_store_uri(node),
+            ]);
+            None
+        } else {
+            ctx.get_state("machines_file")
+        };
 
         match build::build_system_toplevel(
             &*exec,
@@ -143,7 +163,7 @@ impl DagTask for NixBuildTask {
             &self.host,
             &node.profile_type,
             machines_file.as_deref(),
-            options.nix_args.for_profile(&node.profile_type),
+            &nix_args,
         ) {
             Ok(path) => {
                 ctx.set_output(TaskId(format!("build:{}", self.host)), path);
@@ -164,7 +184,8 @@ impl DagTask for NixBuildTask {
 /// Writes output: `copy:{host}` → `String` (copied store path)
 ///
 /// Hosts listed in `DeployOptions::local_hosts` already have the closure
-/// (it was built here): the copy is skipped and the output written as-is.
+/// (it was built here), and `build_on_target` nodes built it in their own
+/// store: the copy is skipped and the output written as-is.
 pub struct NixCopyTask {
     pub host: String,
 }
@@ -200,12 +221,12 @@ impl DagTask for NixCopyTask {
             Err(outcome) => return outcome,
         };
 
-        if options_from(ctx).is_local(&self.host) {
+        if options_from(ctx).is_local(&self.host) || node.build_on_target {
             ctx.set_output(TaskId(format!("copy:{}", self.host)), toplevel_path);
             return TaskOutcome::Success;
         }
 
-        let store_uri = format!("ssh-ng://{}@{}", node.target_user, node.target_host);
+        let store_uri = target_store_uri(node);
 
         match stage(&self.host, "copy", || {
             copy::copy_closure_with(&*exec, &toplevel_path, &store_uri)
@@ -498,5 +519,36 @@ mod tests {
         scripted
             .assert_invoked_containing("--no-link --print-out-paths --override-input x path:/s");
         scripted.assert_not_invoked_containing("--impure");
+    }
+
+    #[test]
+    fn test_build_on_target_builds_in_target_store_and_skips_copy() {
+        let scripted = Arc::new(
+            ScriptedExecutor::new().on("nix build", ExecOutput::ok("/nix/store/abc-toplevel\n")),
+        );
+        let exec: Arc<dyn Executor> = scripted.clone();
+        let mut config = test_fleet_config();
+        config.nodes.get_mut("hp01").unwrap().build_on_target = true;
+        let ctx = DagContext::new();
+        ctx.set_state("fleet_config", config);
+        ctx.set_state("executor", exec);
+        ctx.set_state("machines_file", "/tmp/machines".to_string());
+
+        assert!(matches!(
+            NixBuildTask::new("hp01").execute(&ctx),
+            TaskOutcome::Success
+        ));
+        scripted.assert_invoked_containing(
+            "--no-link --print-out-paths --eval-store auto --store ssh-ng://root@192.168.1.121",
+        );
+        scripted.assert_not_invoked_containing("--builders");
+
+        assert!(matches!(
+            NixCopyTask::new("hp01").execute(&ctx),
+            TaskOutcome::Success
+        ));
+        scripted.assert_not_invoked_containing("nix copy");
+        let copied: Option<String> = ctx.get_output(&TaskId("copy:hp01".to_string()));
+        assert_eq!(copied.as_deref(), Some("/nix/store/abc-toplevel"));
     }
 }

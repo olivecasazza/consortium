@@ -43,9 +43,12 @@
       # Build node metadata for each configuration
       mkNode = name: config:
         let
+          # `pkgs` first: hosts that set only `nixpkgs.system` (Snowfall)
+          # leave `nixpkgs.hostPlatform` undefined, and reading it throws.
           system =
-            config.config.nixpkgs.hostPlatform.system or
-              (config.config.nixpkgs.localSystem.system or defaultSystem);
+            config.pkgs.stdenv.hostPlatform.system or (
+              config.config.nixpkgs.hostPlatform.system or (config.config.nixpkgs.localSystem.system or defaultSystem)
+            );
           isDarwin = lib.strings.hasInfix "darwin" system;
           overrides = hostOverrides.${name} or { };
         in
