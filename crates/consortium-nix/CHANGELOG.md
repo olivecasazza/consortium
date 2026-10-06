@@ -2,6 +2,15 @@
 
 ## Bug Fixes
 
+- retry failed closure copies over another endpoint
+
+## Features
+
+- honour buildOnTarget
+
+
+## Bug Fixes
+
 - qualify Log2FanOut intra-doc link in MaxBottleneckSpanning docs
 - move expected_rounds off the trait to inherent methods
 
