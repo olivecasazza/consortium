@@ -1,5 +1,10 @@
 # Changelog
 
+## Bug Fixes
+
+- retry failed closure copies over another endpoint
+
+
 ## Documentation
 
 - fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
