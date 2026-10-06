@@ -32,6 +32,7 @@ use consortium_nix::config::{DeployAction, FleetConfig};
 use consortium_nix::endpoint::{self, EndpointResolver};
 use consortium_nix::fleet_source;
 use consortium_nix::health;
+use consortium_nix::DeployReport;
 use consortium_nix::{DeployOptions, NixArgs};
 
 /// cast — NixOS / nix-darwin deployment orchestration powered by consortium.
@@ -558,6 +559,68 @@ fn resolve_endpoints(
     (local_hosts, unreachable)
 }
 
+/// Give hosts whose closure copy failed one more pass: re-resolve each
+/// endpoint with the one that failed probed last, then deploy them again.
+/// Copies are idempotent; activation failures are not retried.
+#[allow(clippy::too_many_arguments)]
+fn retry_copy_failures(
+    exec: Arc<dyn Executor>,
+    lookup: endpoint::Lookup<'_>,
+    config: &mut FleetConfig,
+    report: &mut DeployReport,
+    action: DeployAction,
+    fanout: usize,
+    use_builders: bool,
+    options: &DeployOptions,
+) -> anyhow::Result<()> {
+    let resolver = EndpointResolver::new(&*exec, lookup);
+    let mut retry = Vec::new();
+    for (name, err) in std::mem::take(&mut report.copy_failures) {
+        let node = &config.nodes[&name];
+        let resolved = if options.is_local(&name) {
+            None
+        } else {
+            resolver.resolve_after_failure(node, &node.target_host).ok()
+        };
+        match resolved {
+            Some(host) => {
+                println!(
+                    "  retrying {} via {}@{} (copy failed: {})",
+                    name, node.target_user, host, err
+                );
+                config
+                    .nodes
+                    .get_mut(&name)
+                    .expect("failed host is a node")
+                    .target_host = host;
+                retry.push(name);
+            }
+            None => report.copy_failures.push((name, err)),
+        }
+    }
+    if retry.is_empty() {
+        return Ok(());
+    }
+    let second = consortium_nix::deploy_with_options(
+        exec,
+        config,
+        &retry,
+        action,
+        fanout,
+        use_builders,
+        options,
+    )?;
+    report.copied.extend(second.copied);
+    report.activated.extend(second.activated);
+    report.eval_failures.extend(second.eval_failures);
+    report.build_failures.extend(second.build_failures);
+    report.copy_failures.extend(second.copy_failures);
+    report
+        .activation_failures
+        .extend(second.activation_failures);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_deploy(
     exec: Arc<ProcessExecutor>,
@@ -622,7 +685,7 @@ fn cmd_deploy(
         eprintln!("  skipping {}: {}", name, err);
     }
 
-    let report = if targets.is_empty() {
+    let mut report = if targets.is_empty() {
         None
     } else if cascade && action != DeployAction::Build {
         // Determine seed addr — the host running cast IS the seed
@@ -633,7 +696,7 @@ fn cmd_deploy(
             .map(|u| format!("{}@localhost", u))
             .unwrap_or_else(|_| "localhost".into());
         Some(consortium_nix::deploy_with_cascade_options(
-            exec,
+            exec.clone(),
             &config,
             &targets,
             action,
@@ -646,7 +709,7 @@ fn cmd_deploy(
         )?)
     } else {
         Some(consortium_nix::deploy_with_options(
-            exec,
+            exec.clone(),
             &config,
             &targets,
             action,
@@ -655,6 +718,20 @@ fn cmd_deploy(
             &options,
         )?)
     };
+    if let Some(report) = report.as_mut() {
+        if action != DeployAction::Build && !report.copy_failures.is_empty() {
+            retry_copy_failures(
+                exec,
+                &endpoint::system_lookup,
+                &mut config,
+                report,
+                action,
+                fanout,
+                use_builders,
+                &options,
+            )?;
+        }
+    }
 
     println!();
     let mut failed = unreachable.len();
@@ -949,5 +1026,81 @@ mod tests {
         );
         // The local host was never probed over ssh.
         exec.assert_not_invoked_containing("Workstation");
+    }
+
+    /// A fleet whose one node was resolved to `filehost.mesh` and whose
+    /// copy over that endpoint then failed.
+    fn copy_failed_over_mesh() -> (FleetConfig, DeployReport) {
+        let mut config = FleetConfig::from_json(FLEET_JSON).unwrap();
+        config.nodes.get_mut("filehost").unwrap().target_host = "filehost.mesh".into();
+        let report = DeployReport {
+            built: vec!["filehost".into()],
+            copied: vec![],
+            activated: vec![],
+            eval_failures: vec![],
+            build_failures: vec![],
+            copy_failures: vec![("filehost".into(), "connect timed out".into())],
+            activation_failures: vec![],
+        };
+        (config, report)
+    }
+
+    #[test]
+    fn copy_failure_is_retried_over_another_endpoint_with_the_failed_one_last() {
+        let (mut config, mut report) = copy_failed_over_mesh();
+        let exec = Arc::new(
+            ScriptedExecutor::new()
+                .on(
+                    "nixosConfigurations.filehost",
+                    ExecOutput::ok("/nix/store/aaa-filehost-toplevel\n"),
+                )
+                .on("filehost.local", ExecOutput::ok("")),
+        );
+        retry_copy_failures(
+            exec.clone(),
+            &|_: &str| vec![],
+            &mut config,
+            &mut report,
+            DeployAction::Switch,
+            1,
+            false,
+            &DeployOptions::new(),
+        )
+        .unwrap();
+
+        assert!(
+            report.copy_failures.is_empty(),
+            "{:?}",
+            report.copy_failures
+        );
+        assert_eq!(report.copied, vec!["filehost"]);
+        assert_eq!(report.activated, vec!["filehost"]);
+        assert_eq!(config.nodes["filehost"].target_host, "filehost.local");
+        exec.assert_not_invoked_containing("filehost.mesh");
+    }
+
+    #[test]
+    fn copy_failure_is_kept_when_no_endpoint_answers() {
+        let (mut config, mut report) = copy_failed_over_mesh();
+        let exec =
+            Arc::new(ScriptedExecutor::new().on("filehost", ExecOutput::new(255, "", "refused")));
+        retry_copy_failures(
+            exec.clone(),
+            &|_: &str| vec![],
+            &mut config,
+            &mut report,
+            DeployAction::Switch,
+            1,
+            false,
+            &DeployOptions::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.copy_failures,
+            vec![("filehost".to_string(), "connect timed out".to_string())]
+        );
+        assert!(report.copied.is_empty());
+        exec.assert_not_invoked_containing("nix");
     }
 }
