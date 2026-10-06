@@ -13,7 +13,10 @@
 //!
 //! deduplicated, and picks the first endpoint that accepts a
 //! non-interactive `ssh … true`. The DNS lookup is injected so the probe
-//! order is testable without touching the network.
+//! order is testable without touching the network. When a connection over
+//! the chosen endpoint fails mid-deploy,
+//! [`EndpointResolver::resolve_after_failure`] re-probes with that endpoint
+//! moved to the end.
 
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -83,9 +86,23 @@ impl<'a> EndpointResolver<'a> {
     /// The first candidate accepting `ssh … true` as the node's user, or
     /// [`NixError::SshFailed`] listing every endpoint tried.
     pub fn resolve(&self, node: &DeploymentNode) -> Result<String> {
-        let candidates = self.candidates(node);
+        self.probe(node, &self.candidates(node))
+    }
+
+    /// [`resolve`](Self::resolve) with `failed`, an endpoint that just
+    /// dropped a connection, probed last instead of in its usual place.
+    pub fn resolve_after_failure(&self, node: &DeploymentNode, failed: &str) -> Result<String> {
+        let mut candidates = self.candidates(node);
+        if let Some(i) = candidates.iter().position(|c| c == failed) {
+            let endpoint = candidates.remove(i);
+            candidates.push(endpoint);
+        }
+        self.probe(node, &candidates)
+    }
+
+    fn probe(&self, node: &DeploymentNode, candidates: &[String]) -> Result<String> {
         let timeout = format!("-oConnectTimeout={}", self.connect_timeout);
-        for candidate in &candidates {
+        for candidate in candidates {
             let mut target = SshTarget::new(&node.target_user, candidate).extra_opt(&timeout);
             if let Some(port) = node.target_port {
                 target = target.port(port);
