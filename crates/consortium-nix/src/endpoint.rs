@@ -5,15 +5,18 @@
 //! fleet config was written is the least reliable thing about it. Before
 //! copying or activating, [`EndpointResolver::resolve`] tries, in order:
 //!
-//! 1. the node's `targetHost` as written,
-//! 2. `<name>.local` (mDNS), where `<name>` is the node name up to the
+//! 1. the node's NetBird peer address and mesh FQDN, read from the local
+//!    `netbird status --json` at deploy time ([`NetbirdMesh`]): a peer's
+//!    NetBird IP stays fixed across networks, so it is preferred,
+//! 2. the node's `targetHost` as written,
+//! 3. `<name>.local` (mDNS), where `<name>` is the node name up to the
 //!    first dot,
-//! 3. the bare `<name>`,
-//! 4. the IPv4 addresses each of the above resolves to, in the same order,
+//! 4. the bare `<name>`,
+//! 5. the IPv4 addresses each of 2–4 resolves to, in the same order,
 //!
 //! deduplicated, and picks the first endpoint that accepts a
-//! non-interactive `ssh … true`. The DNS lookup is injected so the probe
-//! order is testable without touching the network.
+//! non-interactive `ssh … true`. The mesh and DNS lookups are injected so
+//! the probe order is testable without touching the network.
 
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -28,11 +31,15 @@ pub const DEFAULT_CONNECT_TIMEOUT: u32 = 8;
 /// Name-to-address lookup used to extend the candidate list.
 pub type Lookup<'a> = &'a (dyn Fn(&str) -> Vec<IpAddr> + Sync);
 
+/// Bare-node-name to mesh-endpoint lookup, most preferred first.
+pub type MeshLookup<'a> = &'a (dyn Fn(&str) -> Vec<String> + Sync);
+
 /// Resolve a node's live SSH endpoint by probing candidates through an
 /// [`Executor`].
 pub struct EndpointResolver<'a> {
     exec: &'a dyn Executor,
     lookup: Lookup<'a>,
+    mesh: Option<MeshLookup<'a>>,
     connect_timeout: u32,
 }
 
@@ -43,8 +50,16 @@ impl<'a> EndpointResolver<'a> {
         Self {
             exec,
             lookup,
+            mesh: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
+    }
+
+    /// Probe `mesh` endpoints (see [`NetbirdMesh::endpoints`]) before any
+    /// other candidate.
+    pub fn mesh(mut self, mesh: MeshLookup<'a>) -> Self {
+        self.mesh = Some(mesh);
+        self
     }
 
     /// Override the per-probe ssh `ConnectTimeout` (seconds).
@@ -67,6 +82,11 @@ impl<'a> EndpointResolver<'a> {
                 out.push(c);
             }
         };
+        if let Some(mesh) = self.mesh {
+            for endpoint in mesh(bare) {
+                push(endpoint);
+            }
+        }
         for n in &names {
             push(n.clone());
         }
@@ -137,6 +157,72 @@ pub fn system_lookup(name: &str) -> Vec<IpAddr> {
         .to_socket_addrs()
         .map(|addrs| addrs.map(|a| a.ip()).collect())
         .unwrap_or_default()
+}
+
+/// The local NetBird client's view of the mesh: each peer's bare name with
+/// its NetBird IP and FQDN.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NetbirdMesh {
+    peers: Vec<MeshPeer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MeshPeer {
+    name: String,
+    ip: String,
+    fqdn: String,
+}
+
+impl NetbirdMesh {
+    /// Read `netbird status --json` through `exec`. A missing client, a
+    /// failed command or unparseable output yields an empty mesh, so
+    /// resolution falls back to the other candidates.
+    pub fn from_status(exec: &dyn Executor) -> Self {
+        let spec = CommandSpec::new("netbird").args(["status", "--json"]);
+        match exec.exec(&spec) {
+            Ok(out) if out.success() => Self::parse(&out.stdout),
+            _ => Self::default(),
+        }
+    }
+
+    /// Parse `netbird status --json`; peers without an FQDN or IP are
+    /// skipped.
+    pub fn parse(json: &str) -> Self {
+        let Ok(status) = serde_json::from_str::<serde_json::Value>(json) else {
+            return Self::default();
+        };
+        let peers = status["peers"]["details"]
+            .as_array()
+            .map(|details| {
+                details
+                    .iter()
+                    .filter_map(|p| {
+                        let fqdn = p["fqdn"].as_str()?.trim_end_matches('.');
+                        // The local entry carries a prefix length (`/16`).
+                        let ip = p["netbirdIp"].as_str()?.split('/').next()?;
+                        let name = bare_name(fqdn);
+                        (!name.is_empty() && !ip.is_empty()).then(|| MeshPeer {
+                            name: name.to_ascii_lowercase(),
+                            ip: ip.to_string(),
+                            fqdn: fqdn.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { peers }
+    }
+
+    /// The peer named `bare` (case-insensitively; NetBird lowercases peer
+    /// names): its NetBird IP, then its FQDN. Empty when it is not a peer.
+    pub fn endpoints(&self, bare: &str) -> Vec<String> {
+        let bare = bare.to_ascii_lowercase();
+        self.peers
+            .iter()
+            .filter(|p| p.name == bare)
+            .flat_map(|p| [p.ip.clone(), p.fqdn.clone()])
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -241,5 +327,64 @@ mod tests {
         let r = EndpointResolver::new(&exec, &lookup);
         assert_eq!(r.resolve(&n).unwrap(), "mac01");
         exec.assert_invoked_containing("-l admin -p 2222");
+    }
+
+    const STATUS: &str = r#"{
+        "fqdn": "self-mbp.mesh.example.internal",
+        "netbirdIp": "100.85.5.60/16",
+        "peers": {"details": [
+            {"fqdn": "mac01.mesh.example.internal", "netbirdIp": "100.85.38.104", "status": "Idle"},
+            {"fqdn": "mac02.mesh.example.internal.", "netbirdIp": "100.85.9.1/16", "status": "Connected"},
+            {"fqdn": "", "netbirdIp": "100.85.0.9"}
+        ]}
+    }"#;
+
+    #[test]
+    fn netbird_mesh_matches_peers_case_insensitively_ip_first() {
+        let mesh = NetbirdMesh::parse(STATUS);
+        assert_eq!(
+            mesh.endpoints("MAC01"),
+            vec!["100.85.38.104", "mac01.mesh.example.internal"]
+        );
+        // Trailing root dot and prefix length are stripped.
+        assert_eq!(
+            mesh.endpoints("mac02"),
+            vec!["100.85.9.1", "mac02.mesh.example.internal"]
+        );
+        assert!(mesh.endpoints("mac03").is_empty());
+        assert!(NetbirdMesh::parse("not json").endpoints("mac01").is_empty());
+    }
+
+    #[test]
+    fn netbird_mesh_is_empty_when_the_client_fails() {
+        let ok = ScriptedExecutor::new().on("netbird status --json", ExecOutput::ok(STATUS));
+        assert_eq!(NetbirdMesh::from_status(&ok), NetbirdMesh::parse(STATUS));
+        let missing = ScriptedExecutor::new().on_error("netbird", "No such file or directory");
+        assert_eq!(NetbirdMesh::from_status(&missing), NetbirdMesh::default());
+    }
+
+    #[test]
+    fn mesh_endpoints_are_probed_before_target_and_mdns() {
+        let mesh = NetbirdMesh::parse(STATUS);
+        let mesh_lookup = |bare: &str| mesh.endpoints(bare);
+        // The written targetHost is a stale DHCP lease; the mesh IP answers.
+        let exec = ScriptedExecutor::new()
+            .on(" 100.85.38.104 'true'", ExecOutput::ok(""))
+            .on("", ExecOutput::new(255, "", "Connection timed out"));
+        let r = EndpointResolver::new(&exec, &lookup).mesh(&mesh_lookup);
+        let n = node("mac01", "192.0.2.9");
+        assert_eq!(
+            r.candidates(&n),
+            vec![
+                "100.85.38.104",
+                "mac01.mesh.example.internal",
+                "192.0.2.9",
+                "mac01.local",
+                "mac01",
+                "10.0.0.5"
+            ]
+        );
+        assert_eq!(r.resolve(&n).unwrap(), "100.85.38.104");
+        assert_eq!(exec.invocation_count(), 1);
     }
 }

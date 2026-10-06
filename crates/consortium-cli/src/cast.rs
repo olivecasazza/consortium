@@ -507,9 +507,9 @@ fn cmd_eval(config: &FleetConfig, on: Option<&str>, tags: &[String]) -> anyhow::
 
 /// Live endpoint resolution for a deploy: hosts that are this machine are
 /// activated locally; every other host's `target_host` is replaced by the
-/// first endpoint accepting ssh (candidates extended through `lookup`).
-/// Returns the local hosts and the hosts that could not be reached (with
-/// the error to report).
+/// first endpoint accepting ssh, NetBird peer addresses first (candidates
+/// extended through `lookup`). Returns the local hosts and the hosts that
+/// could not be reached (with the error to report).
 fn resolve_endpoints(
     exec: &dyn Executor,
     lookup: endpoint::Lookup<'_>,
@@ -526,7 +526,13 @@ fn resolve_endpoints(
         }
     }
 
-    let resolver = EndpointResolver::new(exec, lookup);
+    let mesh = if remote.is_empty() {
+        endpoint::NetbirdMesh::default()
+    } else {
+        endpoint::NetbirdMesh::from_status(exec)
+    };
+    let mesh_lookup = |bare: &str| mesh.endpoints(bare);
+    let resolver = EndpointResolver::new(exec, lookup).mesh(&mesh_lookup);
     let results: Vec<(String, consortium_nix::Result<String>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = remote
             .iter()
@@ -949,5 +955,24 @@ mod tests {
         );
         // The local host was never probed over ssh.
         exec.assert_not_invoked_containing("Workstation");
+    }
+
+    #[test]
+    fn resolve_endpoints_prefers_the_netbird_address_over_mdns() {
+        let mut config = FleetConfig::from_json(FLEET_JSON).unwrap();
+        let status = r#"{"peers": {"details": [
+            {"fqdn": "filehost.mesh.example.internal", "netbirdIp": "100.85.7.7"}
+        ]}}"#;
+        let exec = ScriptedExecutor::new()
+            .on("hostname", ExecOutput::ok("workstation.lan\n"))
+            .on("netbird status --json", ExecOutput::ok(status))
+            .on(" 100.85.7.7 'true'", ExecOutput::ok(""))
+            .on("filehost.local", ExecOutput::ok(""));
+        let targets = vec!["filehost".to_string()];
+        let (_, unreachable) = resolve_endpoints(&exec, &|_: &str| vec![], &mut config, &targets);
+
+        assert!(unreachable.is_empty(), "{unreachable:?}");
+        assert_eq!(config.nodes["filehost"].target_host, "100.85.7.7");
+        exec.assert_not_invoked_containing("filehost.local");
     }
 }
