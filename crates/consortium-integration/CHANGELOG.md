@@ -1,5 +1,6 @@
 # Changelog
 
+
 ## Features
 
 - native fleet deploys — flake discovery, @groups, live ssh endpoints (replaces cast-on) ([#9](https://github.com/olivecasazza/consortium/pull/9))
