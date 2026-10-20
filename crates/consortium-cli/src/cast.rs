@@ -157,6 +157,10 @@ enum Commands {
         /// default activation may run indefinitely.
         #[arg(long = "activate-timeout", value_name = "SECONDS")]
         activate_timeout: Option<u64>,
+
+        /// Print the deployment plan without building, copying, or activating.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
 
     /// Probe builder health.
@@ -177,6 +181,28 @@ enum Commands {
     Cascade {
         #[command(subcommand)]
         command: CascadeCommand,
+    },
+
+    /// List known hosts (nodes) with their tags.
+    Hosts {
+        /// Target nodes (bracket notation; @group references).
+        #[arg(short = 'w', long = "on")]
+        on: Option<String>,
+
+        /// Target nodes by tag.
+        #[arg(short = 'g', long = "tag")]
+        tag: Vec<String>,
+    },
+
+    /// List all unique tags used across fleet nodes.
+    Tags {
+        /// Target nodes (bracket notation; @group references).
+        #[arg(short = 'w', long = "on")]
+        on: Option<String>,
+
+        /// Target nodes by tag.
+        #[arg(short = 'g', long = "tag")]
+        tag: Vec<String>,
     },
 }
 
@@ -321,6 +347,7 @@ pub fn run() {
                     2,
                     None,
                     nix_args,
+                    false,
                 ),
                 Commands::Deploy {
                     on,
@@ -331,6 +358,7 @@ pub fn run() {
                     cascade,
                     cascade_fanout,
                     activate_timeout,
+                    dry_run,
                 } => cmd_deploy(
                     exec,
                     &config,
@@ -343,9 +371,12 @@ pub fn run() {
                     cascade_fanout,
                     activate_timeout.map(Duration::from_secs),
                     nix_args,
+                    dry_run,
                 ),
                 Commands::Health => cmd_health(&config),
                 Commands::Status { on, tag } => cmd_status(&config, on.as_deref(), &tag),
+                Commands::Hosts { on, tag } => cmd_hosts(&config, on.as_deref(), &tag),
+                Commands::Tags { on, tag } => cmd_tags(&config, on.as_deref(), &tag),
                 // Handled before fleet discovery; unreachable here.
                 Commands::Cascade { .. } => unreachable!(),
             }
@@ -634,6 +665,7 @@ fn cmd_deploy(
     cascade_fanout: u32,
     activate_timeout: Option<Duration>,
     nix_args: NixArgs,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     let mut targets = resolve_targets(config, on, tags)?;
     let action: DeployAction = action_str.parse().map_err(|_| {
@@ -683,6 +715,11 @@ fn cmd_deploy(
     }
     for (name, err) in &unreachable {
         eprintln!("  skipping {}: {}", name, err);
+    }
+
+    if dry_run {
+        println!("Dry run: no build, copy, or activation performed.");
+        return Ok(());
     }
 
     let mut report = if targets.is_empty() {
@@ -829,11 +866,40 @@ fn cmd_status(config: &FleetConfig, on: Option<&str>, tags: &[String]) -> anyhow
             &node.target_user,
         ) {
             Ok(Some(path)) => println!("  {} → {}", name, path),
-            Ok(None) => println!("  {} → (unknown)", name),
-            Err(e) => println!("  {} → error: {}", name, e),
+            Ok(None) => println!("  {} → (not deployed)", name),
+            Err(e) => println!("  {} → offline: {}", name, e),
         }
     }
 
+    Ok(())
+}
+
+fn cmd_hosts(config: &FleetConfig, on: Option<&str>, tags: &[String]) -> anyhow::Result<()> {
+    let targets = resolve_targets(config, on, tags)?;
+    let mut names: Vec<&String> = targets.iter().collect();
+    names.sort();
+    for name in names {
+        let node = &config.nodes[name];
+        if node.tags.is_empty() {
+            println!("  {} (no tags)", name);
+        } else {
+            println!("  {} [{}]", name, node.tags.join(", "));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_tags(config: &FleetConfig, on: Option<&str>, tags: &[String]) -> anyhow::Result<()> {
+    let targets = resolve_targets(config, on, tags)?;
+    let mut all_tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for name in &targets {
+        for t in &config.nodes[name].tags {
+            all_tags.insert(t.clone());
+        }
+    }
+    for tag in &all_tags {
+        println!("{}", tag);
+    }
     Ok(())
 }
 

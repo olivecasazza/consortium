@@ -121,8 +121,9 @@ pub fn eval_system_toplevel(
 
 /// Query the current system generation on a remote host.
 ///
-/// Runs `readlink /run/current-system` over ssh; a failed probe (host
-/// unreachable, no current system) maps to `Ok(None)`.
+/// Runs `readlink /run/current-system` over ssh. A failed probe maps to
+/// `Ok(None)` when the host is reachable but has no current system, and
+/// to `Err(NixError::SshFailed)` when ssh itself fails to connect.
 pub fn query_current_system(exec: &dyn Executor, host: &str, user: &str) -> Result<Option<String>> {
     let spec = CommandSpec::new("readlink")
         .arg("/run/current-system")
@@ -132,7 +133,37 @@ pub fn query_current_system(exec: &dyn Executor, host: &str, user: &str) -> Resu
         message: format!("failed to query current system: {}", e),
     })?;
 
+    // SSH itself reports a transport-level failure with exit status 255,
+    // regardless of locale or message wording.
+    if output.status == 255 {
+        return Err(NixError::SshFailed {
+            host: host.to_string(),
+            message: output.stderr.clone(),
+        });
+    }
+
     if !output.success() {
+        let stderr = &output.stderr;
+        let stderr_lower = stderr.to_lowercase();
+        let needles = [
+            "connection",
+            "timed out",
+            "refused",
+            "permission denied",
+            "no route",
+            "could not resolve",
+            "name or service not known",
+            "network is unreachable",
+            "connection reset",
+            "connection closed",
+            "host key verification",
+        ];
+        if needles.iter().any(|needle| stderr_lower.contains(needle)) {
+            return Err(NixError::SshFailed {
+                host: host.to_string(),
+                message: stderr.clone(),
+            });
+        }
         return Ok(None);
     }
 
@@ -253,6 +284,43 @@ mod tests {
     #[test]
     fn test_query_current_system_failure_is_none() {
         let exec = ScriptedExecutor::new().on("readlink", ExecOutput::new(1, "", "no such file"));
+        let current = query_current_system(&exec, "hp01", "root").unwrap();
+        assert_eq!(current, None);
+    }
+
+    #[test]
+    fn test_query_current_system_ssh_failed_status_255() {
+        let exec = ScriptedExecutor::new().on("readlink", ExecOutput::new(255, "", ""));
+        let err = query_current_system(&exec, "hp01", "root").unwrap_err();
+        match err {
+            NixError::SshFailed { host, .. } => assert_eq!(host, "hp01"),
+            other => panic!("expected SshFailed, got: {}", other),
+        }
+    }
+
+    #[test]
+    fn test_query_current_system_ssh_failed_lowercase_needle() {
+        let exec = ScriptedExecutor::new().on(
+            "readlink",
+            ExecOutput::new(1, "", "ssh: could not resolve hostname hp01"),
+        );
+        let err = query_current_system(&exec, "hp01", "root").unwrap_err();
+        match err {
+            NixError::SshFailed { host, message } => {
+                assert_eq!(host, "hp01");
+                assert!(
+                    message.contains("could not resolve"),
+                    "stderr not propagated: {}",
+                    message
+                );
+            }
+            other => panic!("expected SshFailed, got: {}", other),
+        }
+    }
+
+    #[test]
+    fn test_query_current_system_ok_none_on_empty_stdout() {
+        let exec = ScriptedExecutor::new().on("readlink", ExecOutput::ok(""));
         let current = query_current_system(&exec, "hp01", "root").unwrap();
         assert_eq!(current, None);
     }

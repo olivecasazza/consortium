@@ -96,6 +96,8 @@ pub const PINNED_SELECTORS: &[(&str, &str, &[&str])] = &[
     ("molt", "", &[]),
     ("cast", "eval", &["on", "tag"]),
     ("cast", "status", &["on", "tag"]),
+    ("cast", "hosts", &["on", "tag"]),
+    ("cast", "tags", &["on", "tag"]),
     ("cast", "build", &["on", "tag", "builders", "fanout"]),
     (
         "cast",
@@ -108,6 +110,7 @@ pub const PINNED_SELECTORS: &[(&str, &str, &[&str])] = &[
             "cascade",
             "cascade-fanout",
             "activate-timeout",
+            "dry-run",
         ],
     ),
     ("cast", "health", &[]),
