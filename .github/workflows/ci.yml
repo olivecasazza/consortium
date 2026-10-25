@@ -252,17 +252,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read pinned Rust toolchain
-        id: pin
-        run: |
-          PIN=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -1)
-          test -n "$PIN"
-          echo "channel=$PIN" >> "$GITHUB_OUTPUT"
-
-      - name: Install pinned Rust
+      # cargo-semver-checks 0.47.0 parses rustdoc v56/v57; Buildbot's pinned
+      # Nix toolchain is Rust 1.94.1. The repository's `stable` channel is
+      # intentionally floating for ordinary development, so use the exact
+      # parser-compatible Buildbot toolchain for this external gate.
+      - name: Install SemVer Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ steps.pin.outputs.channel }}
+          toolchain: 1.94.1
 
       # taiki-e publishes the release binary and verifies its SHA-256 checksum
       # by default; pin both the action and tool version rather than compiling
