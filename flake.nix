@@ -53,6 +53,10 @@
         "aarch64-darwin"
         "x86_64-darwin"
       ];
+      # Hydra has only x86_64-linux workers in the current artifact pool.
+      # Package outputs remain multi-arch; only the explicit Hydra projection
+      # is narrowed so unsupported workers are not scheduled.
+      transposition.hydraJobs.adHoc = true;
 
       # Non-per-system outputs
       flake = {
@@ -408,6 +412,11 @@
             // lib.optionalAttrs (system == "x86_64-linux") (
               builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
             );
+          # Publish the existing canonical packages to Hydra; no new build
+          # recipes and no default alias are introduced.
+          hydraJobs = lib.optionalAttrs (system == "x86_64-linux") {
+            inherit consortium consortium-cli consortium-nix;
+          };
 
           # ── Apps ───────────────────────────────────────────────────────
           apps = {
