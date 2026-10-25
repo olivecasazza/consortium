@@ -252,8 +252,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust
+      - name: Read pinned Rust toolchain
+        id: pin
+        run: |
+          PIN=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -1)
+          test -n "$PIN"
+          echo "channel=$PIN" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.pin.outputs.channel }}
 
       # taiki-e publishes the release binary and verifies its SHA-256 checksum
       # by default; pin both the action and tool version rather than compiling
