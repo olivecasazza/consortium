@@ -50,6 +50,12 @@ Nix, using [flake-parts](https://github.com/hercules-ci/flake-parts).
 | `335-375` | `packages` + per-VM qemu runners |
 | `378-389` | `apps.semver-check` |
 | `392-…` | `devShells.default` |
+The root `checks.x86_64-linux` projection is the canonical Buildbot gate for
+the hermetic Rust, Python, fleet, integration, library, CLI-build, and
+CLI-smoke derivations. The SemVer comparison remains an external networked
+gate because its Git and crates.io baselines cannot run inside a Nix sandbox;
+both Nix and GitHub Actions invoke the same `scripts/semver-check.sh` loop,
+with Actions installing the pinned checks binary with checksum verification.
 
 ## nix/lib/ — hand-written fleet-config library
 

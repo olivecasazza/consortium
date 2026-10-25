@@ -235,111 +235,35 @@ jobs:
         run: |
           docker ps -a --filter "name=nix-int\|ansible-int" -q | xargs -r docker rm -f
 
-  # ── Layer 3: Nix Integration Gates (self-hosted ARC runner) ──────
-  # Non-advisory premerge gate: Nix-native integration checks plus Git-base
-  # API compatibility and crates.io release-version checks. Both SemVer
-  # comparisons run via `nix run` outside the Nix build sandbox.
-  nix-gates:
-    name: Nix Integration Gates (self-hosted)
+  # ── Layer 3: SemVer compatibility (GitHub-hosted, non-Nix) ───────
+  # The hermetic Nix-native integration checks and CLI build are projected
+  # through the root `checks` attr and run by Buildbot. SemVer is different:
+  # cargo-semver-checks compares this checkout with Git and crates.io, so it
+  # needs network access and a PR base revision that a Nix sandbox cannot
+  # provide. Keep this one external gate, but install the pinned tool directly
+  # rather than starting a duplicate Nix build job.
+  semver-gate:
+    name: SemVer Compatibility
     needs: unit
-    runs-on: nix-builder
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Ensure Nix is installed
-        uses: DeterminateSystems/nix-installer-action@v23
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # taiki-e publishes the release binary and verifies its SHA-256 checksum
+      # by default; pin both the action and tool version rather than compiling
+      # an unpinned cargo install on every PR.
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
         with:
-          force-no-systemd: true
+          tool: cargo-semver-checks@0.47.0
+          checksum: true
 
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Resolve current Nix system
-        run: |
-          SYSTEM="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
-          test -n "$SYSTEM"
-          echo "SYSTEM=$SYSTEM" >> "$GITHUB_ENV"
-
-      - name: Build Nix-native integration checks
-        run: |
-          nix build -L --no-link \
-            .#checks.${SYSTEM}.fleet-contract \
-            .#checks.${SYSTEM}.integration-enrollment \
-            .#checks.${SYSTEM}.python-api \
-            .#checks.${SYSTEM}.cargo-test
-
-      - name: SemVer check (Git base API + crates.io release)
+      - name: Check published crate APIs
         env:
           BASELINE_REV: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: nix run .#semver-check -- "${BASELINE_REV:-HEAD^}"
-
-      - name: Generate summary
-        if: always()
-        run: |
-          echo "## Nix Integration Gates" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Gate | Attribute |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Fleet contract | \`checks.${SYSTEM}.fleet-contract\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Integration enrollment | \`checks.${SYSTEM}.integration-enrollment\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Python API | \`checks.${SYSTEM}.python-api\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cargo contract tests | \`checks.${SYSTEM}.cargo-test\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| SemVer | \`apps.${SYSTEM}.semver-check\` |" >> $GITHUB_STEP_SUMMARY
-
-  # ── Layer 4: Nix Integration (self-hosted ARC runner) ────────────
-  nix-integration:
-    name: Nix Integration (self-hosted)
-    needs: [docker-integration, tool-integration]
-    runs-on: nix-builder
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Ensure Nix is installed
-        uses: DeterminateSystems/nix-installer-action@v23
-        with:
-          force-no-systemd: true
-
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Build consortium-cli
-        run: nix build .#consortium-cli
-
-      - name: Verify installed CLI binaries and grammar gate
-        run: |
-          ./result/bin/cast --help
-          ./result/bin/claw --help
-          ./result/bin/consortium-grammar check
-
-      - name: Test distributed builds (if builders reachable)
-        continue-on-error: true
-        run: |
-          if [ -f /etc/nix/machines ]; then
-            nix build .#consortium-cli --builders @/etc/nix/machines --max-jobs 0
-          else
-            echo "No machines file, skipping distributed build test"
-          fi
-
-      - name: Generate summary
-        if: always()
-        run: |
-          echo "## Nix Integration (self-hosted)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          if [ -L result ]; then
-            echo "| \`nix build .#consortium-cli\` | ✅ \`$(readlink result)\` |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| \`nix build .#consortium-cli\` | ❌ |" >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ -f /etc/nix/machines ]; then
-            echo "| Distributed builders | ✅ $(wc -l < /etc/nix/machines) builders |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Distributed builders | ⚠️ not configured |" >> $GITHUB_STEP_SUMMARY
-          fi
-          RUNNER_HOST=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "$RUNNER_NAME")
-          NIX_VER=$(nix --version 2>/dev/null || echo "unknown")
-          echo "| Runner | \`${RUNNER_HOST}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Nix | \`${NIX_VER}\` |" >> $GITHUB_STEP_SUMMARY
+        run: ./scripts/semver-check.sh "${BASELINE_REV:-HEAD^}"
