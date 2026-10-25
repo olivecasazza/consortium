@@ -272,4 +272,7 @@ jobs:
       - name: Check published crate APIs
         env:
           BASELINE_REV: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # rust-toolchain.toml selects floating stable for normal CI; force
+          # the parser-compatible toolchain for this semver-only invocation.
+          RUSTUP_TOOLCHAIN: 1.94.1
         run: ./scripts/semver-check.sh "${BASELINE_REV:-HEAD^}"
