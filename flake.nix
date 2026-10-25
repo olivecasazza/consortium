@@ -53,6 +53,10 @@
         "aarch64-darwin"
         "x86_64-darwin"
       ];
+      # Hydra has only x86_64-linux workers in the current artifact pool.
+      # Package outputs remain multi-arch; only the explicit Hydra projection
+      # is narrowed so unsupported workers are not scheduled.
+      transposition.hydraJobs.adHoc = true;
 
       # Non-per-system outputs
       flake = {
@@ -235,16 +239,12 @@
           # Rust public API for cargo-semver-checks to diff. The app checks
           # the premerge Git baseline and the crates.io release baseline at
           # runtime, never in a Nix sandbox.
-          publishedLibs =
-            let
-              workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
-              pkgName = member:
-                (builtins.fromTOML (builtins.readFile (./. + "/${member}/Cargo.toml"))).package.name;
-            in
-            map pkgName (
-              lib.filter (member: pkgName member != "consortium-py")
-                (lib.filter (lib.strings.hasPrefix "crates/") workspace.members)
-            );
+          # The exact loop lives in one checked-in script so the networked
+          # semver gate has identical behavior whether invoked through Nix or
+          # directly by GitHub Actions. Nix supplies its tools; it does not run
+          # this app in a sandbox.
+          # `scripts/semver-check.sh` discovers the same published workspace
+          # members from Cargo metadata and excludes the Python extension.
 
           # Two baselines, both run for every published lib crate on every
           # change, and either one failing fails the gate: the git baseline at
@@ -258,6 +258,7 @@
             name = "semver-check";
             runtimeInputs = [
               pkgs.cargo-semver-checks
+              pkgs.jq
               # cargo-semver-checks runs `cargo rustdoc`, whose proc-macro
               # build scripts need a C linker; without `cc` on PATH every
               # published crate fails with "linker `cc` not found".
@@ -265,29 +266,7 @@
               rustToolchain
             ];
             text = ''
-              if [ "$#" -ne 1 ]; then
-                echo "usage: nix run .#semver-check -- <base-commit>" >&2
-                exit 2
-              fi
-              if [ ! -f Cargo.toml ]; then
-                echo "semver-check: run from the consortium workspace root" >&2
-                exit 1
-              fi
-              baseline_rev="$1"
-              status=0
-              for pkg in ${lib.escapeShellArgs publishedLibs}; do
-                echo "=== cargo semver-checks -p $pkg (git baseline: $baseline_rev; API release type: minor)"
-                if ! cargo semver-checks -p "$pkg" --baseline-rev "$baseline_rev" --release-type minor; then
-                  echo "semver-check: $pkg FAILED API compatibility against $baseline_rev" >&2
-                  status=1
-                fi
-                echo "=== cargo semver-checks -p $pkg (baseline: crates.io)"
-                if ! cargo semver-checks -p "$pkg"; then
-                  echo "semver-check: $pkg FAILED crates.io version check" >&2
-                  status=1
-                fi
-              done
-              exit "$status"
+              exec ${./scripts/semver-check.sh} "$@"
             '';
           };
 
@@ -399,8 +378,10 @@
                   touch $out
                 '';
 
-            # Build the library
-            inherit consortium;
+            # Build the library and CLI packages through the root check
+            # projection so Buildbot owns the same artifacts that the former
+            # Nix integration job built in GitHub Actions.
+            inherit consortium consortium-cli;
 
             # The installed CLI starts, and the grammar gate it carries
             # compares its own command surface against the baseline embedded
@@ -431,6 +412,11 @@
             // lib.optionalAttrs (system == "x86_64-linux") (
               builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
             );
+          # Publish the existing canonical packages to Hydra; no new build
+          # recipes and no default alias are introduced.
+          hydraJobs = lib.optionalAttrs (system == "x86_64-linux") {
+            inherit consortium consortium-cli consortium-nix;
+          };
 
           # ── Apps ───────────────────────────────────────────────────────
           apps = {
