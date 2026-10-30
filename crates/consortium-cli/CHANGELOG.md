@@ -1,5 +1,14 @@
 # Changelog
 
+## Bug Fixes
+
+- retry failed closure copies over another endpoint
+
+## Features
+
+- add hosts/tags subcommands, --dry-run, and improve status reachability detection (rebased)
+
+
 ## Documentation
 
 - fix rustdoc errors under RUSTDOCFLAGS="-D warnings"
