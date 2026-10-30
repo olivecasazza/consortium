@@ -9,7 +9,6 @@ without SSH hosts, a nix store, a scheduler, or a cloud account.
 | path | what it is |
 |---|---|
 | `rust/` | Rust library examples, compile-checked as cargo examples |
-| `python/` | Python binding examples (`ClusterShell` package, drop-in API) |
 | `cli/` | Walkthrough of the six `consortium-cli` binaries |
 | `inventories/` | Sample fleet/inventory files shared by the examples |
 
@@ -57,17 +56,6 @@ The `ScriptedExecutor` / `Rule` API shown here is the same one used by the
 contract test suite (`crates/consortium-integration-testkit`) — see any
 integration's `tests/contract.rs` for the macro-generated semantic tests
 every integration must pass.
-
-## Python examples
-
-The bindings in `crates/consortium-py` are imported as the `ClusterShell`
-package (a drop-in replacement for upstream ClusterShell):
-
-```
-pip install crates/consortium-py        # or: cd crates/consortium-py && maturin develop
-python3 examples/python/nodeset_demo.py
-python3 examples/python/rangeset_demo.py
-```
 
 ## CLI examples
 

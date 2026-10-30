@@ -265,9 +265,9 @@ jobs:
       - name: Build Nix-native integration checks
         run: |
           nix build -L --no-link \
+            .#checks.${SYSTEM}.source-policy \
             .#checks.${SYSTEM}.fleet-contract \
             .#checks.${SYSTEM}.integration-enrollment \
-            .#checks.${SYSTEM}.python-api \
             .#checks.${SYSTEM}.cargo-test
 
       - name: SemVer check (Git base API + crates.io release)
@@ -282,9 +282,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Gate | Attribute |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source policy | \`checks.${SYSTEM}.source-policy\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Fleet contract | \`checks.${SYSTEM}.fleet-contract\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration enrollment | \`checks.${SYSTEM}.integration-enrollment\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Python API | \`checks.${SYSTEM}.python-api\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Cargo contract tests | \`checks.${SYSTEM}.cargo-test\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SemVer | \`apps.${SYSTEM}.semver-check\` |" >> $GITHUB_STEP_SUMMARY
 

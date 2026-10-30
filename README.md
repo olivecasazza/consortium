@@ -1,19 +1,8 @@
-ClusterShell Python Library and Tools
- =====================================
+# Consortium
 
-ClusterShell is an event-driven open source Python library, designed to run
-local or distant commands in parallel on server farms or on large Linux
-clusters. It will take care of common issues encountered on HPC clusters, such
-as operating on groups of nodes, running distributed commands using optimized
-execution algorithms, as well as gathering results and merging identical
-outputs, or retrieving return codes. ClusterShell takes advantage of existing
-remote shell facilities already installed on your systems, like SSH.
-
-ClusterShell's primary goal is to improve the administration of high-
-performance clusters by providing a lightweight but scalable Python API for
-developers. It also provides clush, clubak and cluset/nodeset, convenient
-command-line tools that allow traditional shell scripts to benefit from some
-of the library features.
+Consortium is a Rust cluster administration toolkit with Nix packaging,
+parallel command execution, node-set algebra, and infrastructure integrations.
+It reimplements functionality from [ClusterShell](https://github.com/cea-hpc/clustershell).
 
 ## Development
 
@@ -49,13 +38,11 @@ feat: remove deprecated API
 BREAKING CHANGE: The old API has been removed. Use new API instead.
 ```
 
-For full details, see [CONVENTIONAL_COMMITS.md](./CONVENTIONAL_COMMITS.md).
-
 ### Development Requirements
 
-- **Node.js 20+** (for commitlint and semantic-release)
-- **Rust stable** (for Rust crates)
-- **Python 3.7+** (for Python library)
+- **Rust stable** (see `rust-toolchain.toml`)
+- **Nix** (for reproducible packages and development tools)
+- **OpenSSH** (for remote execution)
 
 ### CLI grammar gate
 
@@ -202,133 +189,26 @@ Fuzz discipline: `crates/consortium-fanout-sim/tests/fuzz.proptest-regressions`
 is checked in. When a fuzz run finds a new failing seed, commit it there and
 minimize the scenario into `crates/consortium-fanout-sim/tests/corpus.rs`.
 
-Requirements
-------------
+## Testing
 
- * GNU/Linux, BSD, Mac OS X
- * OpenSSH (ssh/scp) or rsh
- * Python 2.x (x >= 7) or Python 3.x (x >= 6)
- * PyYAML
+Run `cargo test --workspace` for Rust tests and `nix flake check` for the
+Nix build and contract checks. Build the library documentation with
+`cargo doc --workspace --no-deps`. Rust and CLI examples live in [examples/](examples/README.md).
 
-License
--------
+The companion [consortium-tests](https://github.com/olivecasazza/consortium-tests)
+repository owns the upstream ClusterShell oracle, Python parity suite,
+PyO3 compatibility bridge, comparison tooling, and Docker integration tests.
+Check it out at `../consortium-tests` and follow its README to run both
+the upstream Python and Rust-backed parity tests. Consortium itself has
+no Python package or Python build dependency.
 
-ClusterShell is distributed under the GNU Lesser General Public License version
-2.1 or later (LGPL v2.1+). Read the file `COPYING.LGPLv2.1` for details.
+## License and attribution
 
-Documentation
--------------
+Consortium is distributed under the GNU Lesser General Public License,
+version 2.1 or later. The original ClusterShell license text is preserved
+in [COPYING.LGPLv2.1](COPYING.LGPLv2.1).
 
-Online documentation is available here:
-
-    http://clustershell.readthedocs.org/
-
-The Sphinx documentation source is available under the doc/sphinx directory.
-Type 'make' to see all available formats (you need Sphinx installed and
-sphinx_rtd_theme to build the documentation). For example, to generate html
-docs, just type:
-
-    make html BUILDDIR=/dest/path
-
-For local library API documentation, just type:
-
-    $ pydoc ClusterShell
-
-The following man pages are also provided:
-
-    clush(1), clubak(1), nodeset(1), clush.conf(5), groups.conf(5)
-
-Test Suite
-----------
-
-The test infrastructure — the upstream ClusterShell Python parity suite
-(`tests/`, `lib/` oracle), the comparison harness, and the Docker-based
-integration tests — lives in the companion repo:
-[consortium-tests](https://github.com/olivecasazza/consortium-tests).
-Check it out as a sibling of this repo (`../consortium-tests`) and see its
-README for how to run the parity suite and Docker integration tests.
-
-Rust unit tests run right here:
-
-    $ cargo test --workspace
-
-The Nix integration gates run the workspace tests, deserialize JSON produced
-by the real `mkFleet` library in Rust, require every integration adapter to
-enroll its contract suite, and exercise the built PyO3 extension from Python:
-
-    $ system=$(nix eval --raw --impure --expr builtins.currentSystem)
-    $ nix build --no-link .#checks.${system}.cargo-test \
-        .#checks.${system}.fleet-contract \
-        .#checks.${system}.integration-enrollment \
-        .#checks.${system}.python-api
-
-Check published Rust API compatibility against the branch point and release
-versioning against crates.io before merging:
-
-    $ nix run .#semver-check -- "$(git merge-base HEAD master)"
-
-The Git comparison always runs minor-release API lints, including while
-0.3.0 is unpublished; the crates.io comparison checks that the release
-version permits the accumulated changes. Both run outside the Nix build
-sandbox. CI supplies the exact PR base or pre-push commit and blocks on either
-failure.
-
-Python code (simple example)
-----------------------------
-
-```python
->>> from ClusterShell.Task import task_self
->>> from ClusterShell.NodeSet import NodeSet
->>> task = task_self()
->>> task.run("/bin/uname -r", nodes="linux[4-6,32-39]")
-<ClusterShell.Worker.Ssh.WorkerSsh object at 0x20a5e90>
->>> for buf, key in task.iter_buffers():
-...     print NodeSet.fromlist(key), buf
-... 
-linux[32-39] 2.6.40.6-0.fc15.x86_64
-
-linux[4-6] 2.6.32-71.el6.x86_64
-```
-
-Links
------
-
-Web site:
-
-    http://cea-hpc.github.com/clustershell/
-
-Online documentation:
-
-    http://clustershell.readthedocs.org/
-
-Github source repository:
-
-    https://github.com/cea-hpc/clustershell
-
-Github Wiki:
-
-    https://github.com/cea-hpc/clustershell/wiki
-
-Github Issue tracking system:
-
-    https://github.com/cea-hpc/clustershell/issues
-
-Python Package Index (PyPI) links:
-
-    https://pypi.org/project/ClusterShell/
-
-    http://pypi.python.org/pypi/ClusterShell
-
-ClusterShell was born along with Shine, a scalable Lustre FS admin tool:
-
-    https://github.com/cea-hpc/shine
-
-Core developers/reviewers
--------------------------
-
-* Stephane Thiell
-* Aurelien Degremont
-* Henri Doreau
-* Dominique Martinet
-
-CEA/DAM 2010, 2011, 2012, 2013, 2014, 2015 - http://www-hpc.cea.fr
+ClusterShell is copyright CEA/DAM, Aurelien Degremont, Stephane Thiell,
+and its other contributors. Consortium derives from the ClusterShell
+project; the upstream implementation and compatibility suite are maintained
+in consortium-tests. Existing copyright notices remain with their sources.

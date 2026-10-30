@@ -1,5 +1,5 @@
 {
-  description = "consortium — Rust rewrite of ClusterShell with Python bindings";
+  description = "consortium — Rust cluster administration and infrastructure orchestration";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -59,9 +59,7 @@
         # Nix library for fleet configuration (system-independent)
         lib = import ./nix/lib {
           inherit (nixpkgs) lib;
-          writeText =
-            name: text:
-            builtins.toFile name text;
+          writeText = name: text: builtins.toFile name text;
         };
 
         # ── microVM test fleet (nix/vms/) ──────────────────────────────
@@ -172,7 +170,6 @@
             filter =
               path: type:
               (craneLib.filterCargoSources path type)
-              || (builtins.match ".*\\.py$" path != null)
               # The grammar gate embeds this reviewed JSON baseline at compile time.
               || (lib.hasSuffix "/crates/consortium-cli/src/grammar/baseline.json" path);
           };
@@ -181,10 +178,6 @@
           commonArgs = {
             inherit src;
             strictDeps = true;
-            # PyO3 needs a Python interpreter at build time
-            nativeBuildInputs = [ python ];
-            # Tell pyo3-build-config where Python is
-            PYO3_PYTHON = "${python}/bin/python3";
           };
 
           # ── Build artifacts (deps only, for caching) ───────────────────
@@ -230,21 +223,14 @@
           fleetFixture = consortiumLib.mkFleet (import ./nix/lib/fleet-contract-fixture.nix);
 
           # ── Published library crates (SemVer gate) ─────────────────────
-          # Every crates/ workspace member except consortium-py: it is
-          # published, but as a cdylib Python extension with no meaningful
-          # Rust public API for cargo-semver-checks to diff. The app checks
-          # the premerge Git baseline and the crates.io release baseline at
-          # runtime, never in a Nix sandbox.
+          # All library crates are checked against Git and crates.io baselines.
           publishedLibs =
             let
               workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
-              pkgName = member:
-                (builtins.fromTOML (builtins.readFile (./. + "/${member}/Cargo.toml"))).package.name;
+              pkgName =
+                member: (builtins.fromTOML (builtins.readFile (./. + "/${member}/Cargo.toml"))).package.name;
             in
-            map pkgName (
-              lib.filter (member: pkgName member != "consortium-py")
-                (lib.filter (lib.strings.hasPrefix "crates/") workspace.members)
-            );
+            map pkgName (lib.filter (lib.strings.hasPrefix "crates/") workspace.members);
 
           # Two baselines, both run for every published lib crate on every
           # change, and either one failing fails the gate: the git baseline at
@@ -291,17 +277,6 @@
             '';
           };
 
-          # ── Python environment ─────────────────────────────────────────
-          python = pkgs.python312;
-          pythonEnv = python.withPackages (
-            ps: with ps; [
-              pytest
-              pytest-timeout
-              pytest-xdist
-              pyyaml
-            ]
-          );
-
         in
         {
           # ── Pre-commit hooks ─────────────────────────────────────────
@@ -317,6 +292,19 @@
 
           # ── Checks ─────────────────────────────────────────────────────
           checks = {
+            source-policy = pkgs.runCommand "consortium-source-policy" { } ''
+              violations=$(find ${./.} -type f \( -name '*.py' -o -name '*.pyc' -o -name 'pyproject.toml' -o -name 'setup.cfg' -o -name 'requirements*.txt' \))
+              if [ -n "$violations" ]; then
+                echo "Python sources and packaging belong in consortium-tests:" >&2
+                echo "$violations" >&2
+                exit 1
+              fi
+              if grep -nE 'pyo3|maturin|consortium-py' ${./Cargo.toml} ${./Cargo.lock}; then
+                echo "Python bridge dependencies belong in consortium-tests" >&2
+                exit 1
+              fi
+              touch $out
+            '';
             # Rust unit tests
             cargo-test = craneLib.cargoTest (
               commonArgs
@@ -344,11 +332,14 @@
             # the suite because it needs a store fixture path, so plain
             # `cargo test` skips it — this check runs it explicitly with
             # CONSORTIUM_FLEET_CONFIG pointing at the generated JSON.
-            fleet-contract = craneLib.cargoTest (commonArgs // {
-              inherit cargoArtifacts;
-              cargoTestExtraArgs = "-p consortium-integration --test nix_fleet_contract -- --ignored";
-              CONSORTIUM_FLEET_CONFIG = fleetFixture.configFile;
-            });
+            fleet-contract = craneLib.cargoTest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                cargoTestExtraArgs = "-p consortium-integration --test nix_fleet_contract -- --ignored";
+                CONSORTIUM_FLEET_CONFIG = fleetFixture.configFile;
+              }
+            );
 
             # Integration adapters must be enrolled in the generated
             # contract suite. Pure manifest gate (nix/lib/enrollment.nix);
@@ -366,40 +357,6 @@
                   echo "enrolled contract-suite adapters: $adapters" > $out
                 '';
 
-            # Python bindings gate: builds the real PyO3 extension and runs
-            # crates/consortium-py/tests/nix_smoke.py against it plus the
-            # in-repo ClusterShell shims. Hermetic: no oracle repo, no
-            # network, no maturin/venv. The cdylib is installed as
-            # ClusterShell/_consortium.so (CPython's loader requires the
-            # .so suffix, also on darwin).
-            python-api =
-              let
-                pySrc = ./crates/consortium-py;
-                extension = craneLib.buildPackage (commonArgs // {
-                  inherit cargoArtifacts;
-                  cargoExtraArgs = "-p consortium-py";
-                  # cdylib only; nothing to test inside this derivation.
-                  doCheck = false;
-                });
-              in
-              pkgs.runCommand "consortium-python-api"
-                {
-                  nativeBuildInputs = [ pythonEnv ];
-                }
-                ''
-                  export PYTHONDONTWRITEBYTECODE=1
-
-                  mkdir -p $out
-                  cp -r ${pySrc}/ClusterShell $out/ClusterShell
-                  chmod -R u+w $out/ClusterShell
-
-                  cp ${extension}/lib/lib_consortium.* $out/ClusterShell/_consortium.so
-
-                  PYTHONPATH="$out" python ${pySrc}/tests/nix_smoke.py
-                  touch $out
-                '';
-
-            # Build the library
             inherit consortium;
 
             # The installed CLI starts, and the grammar gate it carries
@@ -415,22 +372,21 @@
           };
 
           # ── Packages ───────────────────────────────────────────────────
-          packages =
-            {
-              inherit consortium consortium-cli consortium-nix;
-              default = consortium-cli;
+          packages = {
+            inherit consortium consortium-cli consortium-nix;
+            default = consortium-cli;
 
-              # Skill catalog for downstream consumers; see the
-              # `skillsPkg` definition above.
-              skills = skillsPkg;
-            }
-            # microVM test-fleet qemu runners (x86_64-linux only; they can
-            # only RUN on a linux KVM host, but build from anywhere):
-            #   nix build .#packages.x86_64-linux.vm-base
-            #   nix run   .#packages.x86_64-linux.vm-base   # on the KVM host
-            // lib.optionalAttrs (system == "x86_64-linux") (
-              builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
-            );
+            # Skill catalog for downstream consumers; see the
+            # `skillsPkg` definition above.
+            skills = skillsPkg;
+          }
+          # microVM test-fleet qemu runners (x86_64-linux only; they can
+          # only RUN on a linux KVM host, but build from anywhere):
+          #   nix build .#packages.x86_64-linux.vm-base
+          #   nix run   .#packages.x86_64-linux.vm-base   # on the KVM host
+          // lib.optionalAttrs (system == "x86_64-linux") (
+            builtins.mapAttrs (_: cfg: cfg.config.microvm.runner.qemu) vms.configs
+          );
 
           # ── Apps ───────────────────────────────────────────────────────
           apps = {
@@ -452,12 +408,10 @@
 
             nativeBuildInputs = [
               rustToolchain
-              pythonEnv
 
               # Dev tools
               pkgs.cargo-watch
               pkgs.cargo-nextest
-              pkgs.maturin
 
               # Nix tools
               pkgs.statix
@@ -471,18 +425,6 @@
 
             shellHook = ''
               export RUST_BACKTRACE=1
-
-              # Create a venv if one doesn't exist (maturin develop needs it)
-              if [ ! -d .venv ]; then
-                echo "  Creating .venv for maturin..."
-                python3 -m venv .venv --system-site-packages
-              fi
-              source .venv/bin/activate
-
-              # Python oracle/parity suite lives in the sibling consortium-tests repo
-              if [ -d ../consortium-tests/lib ]; then
-                export PYTHONPATH="$PWD/../consortium-tests/lib:$PYTHONPATH"
-              fi
 
               # Make the built skill catalog discoverable to an agent working
               # in this checkout: one symlink per skill under
@@ -511,11 +453,7 @@
               echo "  ─────────────────────────────────────────"
               echo "  cargo test                    — Rust tests"
               echo "  cargo watch -x test           — Rust TDD"
-              echo "  maturin develop               — build Rust→Python bindings"
-              echo "  (cd ../consortium-tests && CONSORTIUM_BACKEND=python pytest tests/ -v)"
-              echo "                                — Python parity tests (original ClusterShell)"
-              echo "  (cd ../consortium-tests && CONSORTIUM_BACKEND=rust pytest tests/ -v)"
-              echo "                                — Python parity tests (Rust-backed)"
+              echo "  Parity suite and bindings: ../consortium-tests"
               echo "  .agents/skills                — $(ls -1 "$CONSORTIUM_SKILLS_DIR" | wc -l | tr -d ' ') agent skills (own + context-engineering-kit)"
               echo ""
             '';

@@ -44,8 +44,7 @@
         commonArgs
         // {
           inherit cargoArtifacts;
-          # Skip the cdylib crate in the main build — it needs Python
-          cargoExtraArgs = "--workspace --exclude consortium-py";
+          cargoExtraArgs = "--workspace";
         }
       );
 
@@ -54,7 +53,7 @@
         commonArgs
         // {
           inherit cargoArtifacts;
-          cargoClippyExtraArgs = "--workspace --exclude consortium-py -- --deny warnings";
+          cargoClippyExtraArgs = "--workspace -- --deny warnings";
         }
       );
 
@@ -63,7 +62,7 @@
         commonArgs
         // {
           inherit cargoArtifacts;
-          cargoTestExtraArgs = "--workspace --exclude consortium-py";
+          cargoTestExtraArgs = "--workspace";
         }
       );
 
@@ -85,7 +84,12 @@
       };
 
       checks = {
-        inherit consortium consortiumClippy consortiumTests consortiumFmt;
+        inherit
+          consortium
+          consortiumClippy
+          consortiumTests
+          consortiumFmt
+          ;
       };
     };
 }
