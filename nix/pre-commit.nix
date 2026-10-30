@@ -1,6 +1,5 @@
 # Pre-commit hooks via git-hooks.nix
-_:
-{
+_: {
   perSystem =
     {
       pkgs,
@@ -16,7 +15,7 @@ _:
         };
         clippy = {
           enable = true;
-          entry = "${rustToolchain}/bin/cargo clippy --workspace --exclude consortium-py -- -D warnings";
+          entry = "${rustToolchain}/bin/cargo clippy --workspace -- -D warnings";
         };
         nixfmt-rfc-style.enable = true;
       };
@@ -25,13 +24,11 @@ _:
         nativeBuildInputs = [
           rustToolchain
           pkgs.pkg-config
-          pkgs.python3
-          pkgs.python3Packages.maturin
-          pkgs.python3Packages.pytest
           pkgs.cargo-watch
           pkgs.rust-analyzer
           pkgs.nixfmt-rfc-style
-        ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
           pkgs.libiconv
         ];

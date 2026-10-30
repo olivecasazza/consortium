@@ -77,9 +77,10 @@ jobs:
       # ── Build ──────────────────────────────────────────────────
       - name: Build PyO3 bindings
         run: |
-          cd crates/consortium-py
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
+          cd consortium-tests/crates/consortium-py
           maturin develop --release
+          python tests/nix_smoke.py
 
       # ── Rust unit tests ────────────────────────────────────────
       - name: Run Rust unit tests
