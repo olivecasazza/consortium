@@ -173,7 +173,7 @@
 <a href=#173 id=173 data-nosnippet>173</a>        thread::scope(|scope| {
 <a href=#174 id=174 data-nosnippet>174</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>(src, tgt) <span class="kw">in </span>edges {
 <a href=#175 id=175 data-nosnippet>175</a>                <span class="kw">let </span>tx = tx.clone();
-<a href=#176 id=176 data-nosnippet>176</a>                <span class="kw">let </span>me = <span class="kw-2">&amp;*</span><span class="self">self</span>;
+<a href=#176 id=176 data-nosnippet>176</a>                <span class="kw">let </span>me = <span class="self">self</span>;
 <a href=#177 id=177 data-nosnippet>177</a>                scope.spawn(<span class="kw">move </span>|| {
 <a href=#178 id=178 data-nosnippet>178</a>                    <span class="kw">let </span>outcome = me.run_edge(src, tgt);
 <a href=#179 id=179 data-nosnippet>179</a>                    <span class="kw">let _ </span>= tx.send(((src, tgt), outcome));

@@ -112,7 +112,7 @@
 <a href=#112 id=112 data-nosnippet>112</a>                <span class="kw">match </span>(self_rs, other_rs) {
 <a href=#113 id=113 data-nosnippet>113</a>                    (<span class="prelude-val">Some</span>(s), <span class="prelude-val">Some</span>(o)) =&gt; {
 <a href=#114 id=114 data-nosnippet>114</a>                        <span class="kw">let </span>intersection = s.intersection(o);
-<a href=#115 id=115 data-nosnippet>115</a>                        <span class="kw">if </span>intersection.len() &gt; <span class="number">0 </span>{
+<a href=#115 id=115 data-nosnippet>115</a>                        <span class="kw">if </span>!intersection.is_empty() {
 <a href=#116 id=116 data-nosnippet>116</a>                            result.insert(pat.clone(), <span class="prelude-val">Some</span>(intersection));
 <a href=#117 id=117 data-nosnippet>117</a>                        }
 <a href=#118 id=118 data-nosnippet>118</a>                    }
@@ -135,7 +135,7 @@
 <a href=#135 id=135 data-nosnippet>135</a>                <span class="kw">match </span>(self_rs, other_rs) {
 <a href=#136 id=136 data-nosnippet>136</a>                    (<span class="prelude-val">Some</span>(s), <span class="prelude-val">Some</span>(o)) =&gt; {
 <a href=#137 id=137 data-nosnippet>137</a>                        s.difference_update(o);
-<a href=#138 id=138 data-nosnippet>138</a>                        <span class="kw">if </span>s.len() == <span class="number">0 </span>{
+<a href=#138 id=138 data-nosnippet>138</a>                        <span class="kw">if </span>s.is_empty() {
 <a href=#139 id=139 data-nosnippet>139</a>                            purge.push(pat.clone());
 <a href=#140 id=140 data-nosnippet>140</a>                        }
 <a href=#141 id=141 data-nosnippet>141</a>                    }
@@ -161,7 +161,7 @@
 <a href=#161 id=161 data-nosnippet>161</a>                <span class="kw">match </span>(self_rs.as_mut(), other_rs) {
 <a href=#162 id=162 data-nosnippet>162</a>                    (<span class="prelude-val">Some</span>(s), <span class="prelude-val">Some</span>(o)) =&gt; {
 <a href=#163 id=163 data-nosnippet>163</a>                        s.symmetric_difference_update(o);
-<a href=#164 id=164 data-nosnippet>164</a>                        <span class="kw">if </span>s.len() == <span class="number">0 </span>{
+<a href=#164 id=164 data-nosnippet>164</a>                        <span class="kw">if </span>s.is_empty() {
 <a href=#165 id=165 data-nosnippet>165</a>                            purge.push(pat.clone());
 <a href=#166 id=166 data-nosnippet>166</a>                        }
 <a href=#167 id=167 data-nosnippet>167</a>                    }
@@ -216,8 +216,8 @@
 <a href=#216 id=216 data-nosnippet>216</a>            <span class="comment">// Try substituting first N-1 indices into the pattern to match stored keys
 <a href=#217 id=217 data-nosnippet>217</a>            </span><span class="kw">for </span>n_sub <span class="kw">in </span><span class="number">1</span>..indices.len() {
 <a href=#218 id=218 data-nosnippet>218</a>                <span class="kw">let </span><span class="kw-2">mut </span>candidate_pat = pat.clone();
-<a href=#219 id=219 data-nosnippet>219</a>                <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..n_sub {
-<a href=#220 id=220 data-nosnippet>220</a>                    candidate_pat = candidate_pat.replacen(<span class="string">"%s"</span>, <span class="kw-2">&amp;</span>digit_strs[i], <span class="number">1</span>);
+<a href=#219 id=219 data-nosnippet>219</a>                <span class="kw">for </span>digits <span class="kw">in </span><span class="kw-2">&amp;</span>digit_strs[..n_sub] {
+<a href=#220 id=220 data-nosnippet>220</a>                    candidate_pat = candidate_pat.replacen(<span class="string">"%s"</span>, digits, <span class="number">1</span>);
 <a href=#221 id=221 data-nosnippet>221</a>                }
 <a href=#222 id=222 data-nosnippet>222</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="prelude-val">Some</span>(rs)) = <span class="self">self</span>.patterns.get(<span class="kw-2">&amp;</span>candidate_pat) {
 <a href=#223 id=223 data-nosnippet>223</a>                    <span class="comment">// Check last digit against the rangeset
