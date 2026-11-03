@@ -900,7 +900,7 @@
 <a href=#900 id=900 data-nosnippet>900</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>graph = TopologyGraph::new();
 <a href=#901 id=901 data-nosnippet>901</a>        <span class="kw">let </span>admin = NodeSet::parse(<span class="string">"admin"</span>).unwrap();
 <a href=#902 id=902 data-nosnippet>902</a>        <span class="kw">let </span>gws = NodeSet::parse(<span class="string">"gw[1-2]"</span>).unwrap();
-<a href=#903 id=903 data-nosnippet>903</a>        <span class="kw">let </span>nodes = NodeSet::parse(<span class="string">"node[1-8]"</span>).unwrap();
+<a href=#903 id=903 data-nosnippet>903</a>        <span class="kw">let </span>_nodes = NodeSet::parse(<span class="string">"node[1-8]"</span>).unwrap();
 <a href=#904 id=904 data-nosnippet>904</a>        graph.add_route(admin, gws).unwrap();
 <a href=#905 id=905 data-nosnippet>905</a>
 <a href=#906 id=906 data-nosnippet>906</a>        <span class="comment">// Each gw gets half the nodes
@@ -977,7 +977,7 @@
 <a href=#977 id=977 data-nosnippet>977</a>        </span>ch.shell(<span class="string">"node[1-4]"</span>, <span class="string">b"uname -a"</span>, <span class="number">42</span>);
 <a href=#978 id=978 data-nosnippet>978</a>
 <a href=#979 id=979 data-nosnippet>979</a>        <span class="comment">// Should have outgoing message
-<a href=#980 id=980 data-nosnippet>980</a>        </span><span class="kw">let </span>outgoing = ch.channel.take_outgoing().unwrap();
+<a href=#980 id=980 data-nosnippet>980</a>        </span><span class="kw">let </span>_outgoing = ch.channel.take_outgoing().unwrap();
 <a href=#981 id=981 data-nosnippet>981</a>        <span class="comment">// skip the cfg message
 <a href=#982 id=982 data-nosnippet>982</a>        </span><span class="kw">let </span>outgoing2 = ch.channel.take_outgoing().unwrap();
 <a href=#983 id=983 data-nosnippet>983</a>        <span class="kw">let </span>xml = String::from_utf8(outgoing2).unwrap();

@@ -161,35 +161,27 @@
 <a href=#161 id=161 data-nosnippet>161</a>        </span><span class="kw">for </span>handler <span class="kw">in </span><span class="kw-2">&amp;mut </span>handlers {
 <a href=#162 id=162 data-nosnippet>162</a>            handler.ev_read(<span class="kw-2">&amp;</span>dyn_any_placeholder(), <span class="string">"node1"</span>, <span class="string">"stdout"</span>, <span class="string">"test"</span>);
 <a href=#163 id=163 data-nosnippet>163</a>        }
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a>        <span class="comment">// The fact that we can compile and run this code proves that
-<a href=#166 id=166 data-nosnippet>166</a>        // EventHandler is object-safe. The trait object can be used
-<a href=#167 id=167 data-nosnippet>167</a>        // polymorphically.
-<a href=#168 id=168 data-nosnippet>168</a>        </span><span class="macro">assert!</span>(
-<a href=#169 id=169 data-nosnippet>169</a>            <span class="bool-val">true</span>,
-<a href=#170 id=170 data-nosnippet>170</a>            <span class="string">"Object safety test passed - Box&lt;dyn EventHandler&gt; works"
-<a href=#171 id=171 data-nosnippet>171</a>        </span>);
-<a href=#172 id=172 data-nosnippet>172</a>    }
-<a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="doccomment">/// Helper to create a placeholder for dyn Any
-<a href=#175 id=175 data-nosnippet>175</a>    </span><span class="kw">fn </span>dyn_any_placeholder() -&gt; Box&lt;<span class="kw">dyn </span>Any&gt; {
-<a href=#176 id=176 data-nosnippet>176</a>        Box::new(())
-<a href=#177 id=177 data-nosnippet>177</a>    }
-<a href=#178 id=178 data-nosnippet>178</a>
-<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Test that EventHandler is Send and Sync (required for Box&lt;dyn EventHandler&gt;)
-<a href=#180 id=180 data-nosnippet>180</a>    </span><span class="attr">#[test]
-<a href=#181 id=181 data-nosnippet>181</a>    </span><span class="kw">fn </span>test_send_sync() {
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">struct </span>SendSyncHandler;
-<a href=#183 id=183 data-nosnippet>183</a>
-<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">impl </span>EventHandler <span class="kw">for </span>SendSyncHandler {}
-<a href=#185 id=185 data-nosnippet>185</a>
-<a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">fn </span>assert_send&lt;T: Send&gt;() {}
-<a href=#187 id=187 data-nosnippet>187</a>        <span class="kw">fn </span>assert_sync&lt;T: Sync&gt;() {}
-<a href=#188 id=188 data-nosnippet>188</a>
-<a href=#189 id=189 data-nosnippet>189</a>        assert_send::&lt;Box&lt;<span class="kw">dyn </span>EventHandler&gt;&gt;();
-<a href=#190 id=190 data-nosnippet>190</a>        assert_sync::&lt;Box&lt;<span class="kw">dyn </span>EventHandler&gt;&gt;();
-<a href=#191 id=191 data-nosnippet>191</a>        assert_send::&lt;SendSyncHandler&gt;();
-<a href=#192 id=192 data-nosnippet>192</a>        assert_sync::&lt;SendSyncHandler&gt;();
-<a href=#193 id=193 data-nosnippet>193</a>    }
-<a href=#194 id=194 data-nosnippet>194</a>}
+<a href=#164 id=164 data-nosnippet>164</a>    }
+<a href=#165 id=165 data-nosnippet>165</a>
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// Helper to create a placeholder for dyn Any
+<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">fn </span>dyn_any_placeholder() -&gt; Box&lt;<span class="kw">dyn </span>Any&gt; {
+<a href=#168 id=168 data-nosnippet>168</a>        Box::new(())
+<a href=#169 id=169 data-nosnippet>169</a>    }
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="doccomment">/// Test that EventHandler is Send and Sync (required for Box&lt;dyn EventHandler&gt;)
+<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="attr">#[test]
+<a href=#173 id=173 data-nosnippet>173</a>    </span><span class="kw">fn </span>test_send_sync() {
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">struct </span>SendSyncHandler;
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">impl </span>EventHandler <span class="kw">for </span>SendSyncHandler {}
+<a href=#177 id=177 data-nosnippet>177</a>
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">fn </span>assert_send&lt;T: Send&gt;() {}
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">fn </span>assert_sync&lt;T: Sync&gt;() {}
+<a href=#180 id=180 data-nosnippet>180</a>
+<a href=#181 id=181 data-nosnippet>181</a>        assert_send::&lt;Box&lt;<span class="kw">dyn </span>EventHandler&gt;&gt;();
+<a href=#182 id=182 data-nosnippet>182</a>        assert_sync::&lt;Box&lt;<span class="kw">dyn </span>EventHandler&gt;&gt;();
+<a href=#183 id=183 data-nosnippet>183</a>        assert_send::&lt;SendSyncHandler&gt;();
+<a href=#184 id=184 data-nosnippet>184</a>        assert_sync::&lt;SendSyncHandler&gt;();
+<a href=#185 id=185 data-nosnippet>185</a>    }
+<a href=#186 id=186 data-nosnippet>186</a>}
 </code></pre></div></section></main></body></html>

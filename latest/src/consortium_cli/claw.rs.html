@@ -299,7 +299,7 @@
 <a href=#299 id=299 data-nosnippet>299</a>
 <a href=#300 id=300 data-nosnippet>300</a>    <span class="kw">if </span>args.maxrc {
 <a href=#301 id=301 data-nosnippet>301</a>        <span class="prelude-val">Ok</span>(max_rc.unwrap_or(<span class="number">0</span>))
-<a href=#302 id=302 data-nosnippet>302</a>    } <span class="kw">else if </span>max_rc.map_or(<span class="bool-val">false</span>, |rc| rc != <span class="number">0</span>) {
+<a href=#302 id=302 data-nosnippet>302</a>    } <span class="kw">else if </span>max_rc.is_some_and(|rc| rc != <span class="number">0</span>) {
 <a href=#303 id=303 data-nosnippet>303</a>        <span class="prelude-val">Ok</span>(<span class="number">1</span>)
 <a href=#304 id=304 data-nosnippet>304</a>    } <span class="kw">else </span>{
 <a href=#305 id=305 data-nosnippet>305</a>        <span class="prelude-val">Ok</span>(<span class="number">0</span>)

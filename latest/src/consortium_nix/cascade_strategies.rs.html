@@ -296,7 +296,7 @@
 <a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">let </span>fanout = u128::from(<span class="self">self</span>.fanout);
 <a href=#297 id=297 data-nosnippet>297</a>        <span class="kw">let </span><span class="kw-2">mut </span>covered: u128 = <span class="number">0</span>;
 <a href=#298 id=298 data-nosnippet>298</a>        <span class="kw">let </span><span class="kw-2">mut </span>level = fanout; <span class="comment">// level r adds fanout^r nodes, r &gt;= 1
-<a href=#299 id=299 data-nosnippet>299</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>rounds: u32 = <span class="number">0</span>;
+<a href=#299 id=299 data-nosnippet>299</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>rounds: u64 = <span class="number">0</span>;
 <a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">while </span>covered &lt; u128::from(pending <span class="kw">as </span>u64) {
 <a href=#301 id=301 data-nosnippet>301</a>            covered += level;
 <a href=#302 id=302 data-nosnippet>302</a>            level = level.saturating_mul(fanout);

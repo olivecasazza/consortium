@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["StreamWriteOutcome","WorkerError","WorkerState"],"mod":["exec","ssh","tree"],"struct":["StreamWriters"],"trait":["EventHandler","Worker"],"type":["Result"]};
+window.SIDEBAR_ITEMS = {"enum":["StreamWriteOutcome","WorkerError","WorkerState"],"mod":["exec","ssh","tree"],"struct":["StreamWriters"],"trait":["EventHandler","Worker"],"type":["Result","TakenBuffers"]};
