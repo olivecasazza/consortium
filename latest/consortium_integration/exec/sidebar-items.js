@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_SSH_OPTS"],"enum":["ExecError"],"fn":["shell_quote","ssh_argv"],"struct":["CommandSpec","ExecOutput","ProcessExecutor","Rule","ScriptedExecutor","SshTarget"],"trait":["Executor"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_SSH_OPTS"],"enum":["Effect","ExecError"],"fn":["shell_quote","ssh_argv"],"struct":["CommandSpec","ExecOutput","ProcessExecutor","Rule","ScriptedExecutor","SshTarget","TemporaryFile"],"trait":["Executor"]};

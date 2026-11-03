@@ -3,7 +3,7 @@
     pub(crate) inventory: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>,
     pub(crate) strategy: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>,
     pub(crate) fanout: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u32.html">u32</a>,
-    pub(crate) timeout_secs: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u64.html">u64</a>,
+    pub(crate) timeout_secs: <a class="enum" href="https://doc.rust-lang.org/1.99.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u64.html">u64</a>&gt;,
     pub(crate) max_rounds: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u32.html">u32</a>,
     pub(crate) no_watch: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.bool.html">bool</a>,
     pub(crate) max_depth: <a class="enum" href="https://doc.rust-lang.org/1.99.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.usize.html">usize</a>&gt;,
@@ -15,7 +15,7 @@ Must already exist on the seed host.</p>
 registry: every strategy has a canonical name plus short
 aliases — see them all with <code>cast cascade strategies</code>.</p>
 </div><span id="structfield.fanout" class="structfield section-header"><a href="#structfield.fanout" class="anchor field">§</a><code>fanout: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u32.html">u32</a></code></span><div class="docblock"><p>Fanout for level-tree (children per node, default 2).</p>
-</div><span id="structfield.timeout_secs" class="structfield section-header"><a href="#structfield.timeout_secs" class="anchor field">§</a><code>timeout_secs: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u64.html">u64</a></code></span><div class="docblock"><p>Per-edge <code>nix copy</code> subprocess timeout in seconds (default 300).</p>
+</div><span id="structfield.timeout_secs" class="structfield section-header"><a href="#structfield.timeout_secs" class="anchor field">§</a><code>timeout_secs: <a class="enum" href="https://doc.rust-lang.org/1.99.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u64.html">u64</a>&gt;</code></span><div class="docblock"><p>Per-edge <code>nix copy</code> subprocess timeout in seconds (default: none).</p>
 </div><span id="structfield.max_rounds" class="structfield section-header"><a href="#structfield.max_rounds" class="anchor field">§</a><code>max_rounds: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u32.html">u32</a></code></span><div class="docblock"><p>Cascade hard-cap rounds — if not converged by this round count,
 give up. Default = 64.</p>
 </div><span id="structfield.no_watch" class="structfield section-header"><a href="#structfield.no_watch" class="anchor field">§</a><code>no_watch: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.bool.html">bool</a></code></span><div class="docblock"><p>Disable live re-rendering (useful when piping or for CI).</p>
