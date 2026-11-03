@@ -171,7 +171,9 @@
               path: type:
               (craneLib.filterCargoSources path type)
               # The grammar gate embeds this reviewed JSON baseline at compile time.
-              || (lib.hasSuffix "/crates/consortium-cli/src/grammar/baseline.json" path);
+              || (lib.hasSuffix "/crates/consortium-cli/src/grammar/baseline.json" path)
+              # CLI integration tests embed this fixture at compile time.
+              || (lib.hasSuffix "/examples/inventories/fleet.json" path);
           };
 
           # ── Common Cargo args ──────────────────────────────────────────
