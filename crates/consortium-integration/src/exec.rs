@@ -180,6 +180,9 @@ impl CommandSpec {
     /// Every token is single-quoted with `'\''` escaping, so the remote shell
     /// sees exactly the argv given here.
     pub fn remote_command(&self) -> String {
+        if self.validate_environment().is_err() {
+            return "false".to_owned();
+        }
         let mut parts: Vec<String> = self
             .env
             .iter()
@@ -192,6 +195,23 @@ impl CommandSpec {
             Some(dir) => format!("cd {} && {}", shell_quote(dir), cmd),
             None => cmd,
         }
+    }
+
+    /// Validate environment names for consistent local and POSIX shell execution.
+    pub fn validate_environment(&self) -> std::io::Result<()> {
+        for (key, _) in &self.env {
+            let mut bytes = key.bytes();
+            let first_valid = bytes
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
+            if !first_valid || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "environment variable name must be a POSIX identifier",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The effective argv: [`ssh_argv`] output when ssh is set, otherwise
@@ -241,6 +261,7 @@ pub fn ssh_argv(target: &SshTarget, remote_command: &str) -> Vec<String> {
         argv.push(port.to_string());
     }
     argv.extend(target.extra_opts.iter().cloned());
+    argv.push("--".to_string());
     argv.push(target.host.clone());
     argv.push(remote_command.to_string());
     argv
@@ -307,11 +328,124 @@ pub enum ExecError {
     Scripted(String),
 }
 
-/// The contract every integration uses to run external commands.
+type FileCleanup = dyn Fn(&std::path::Path) -> std::io::Result<()> + Send + Sync;
+
+/// A scoped temporary file. Explicit close reports cleanup failures; drop retries cleanup.
+pub struct TemporaryFile {
+    path: std::path::PathBuf,
+    cleanup: Option<Box<FileCleanup>>,
+}
+
+impl TemporaryFile {
+    /// Construct a file lease owned by an executor implementation.
+    pub fn new(
+        path: std::path::PathBuf,
+        cleanup: impl Fn(&std::path::Path) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            path,
+            cleanup: Some(Box::new(cleanup)),
+        }
+    }
+
+    /// Path available for commands during this lease.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Remove the file, returning cleanup errors to the caller.
+    pub fn close(mut self) -> std::io::Result<()> {
+        if let Some(cleanup) = &self.cleanup {
+            cleanup(&self.path)?;
+        }
+        self.cleanup = None;
+        Ok(())
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        if let Some(cleanup) = &self.cleanup {
+            let _ = cleanup(&self.path);
+        }
+    }
+}
+
+/// An observable integration effect, recorded without performing host I/O by scripted executors.
+#[derive(Debug, Clone)]
+pub enum Effect {
+    Command {
+        spec: CommandSpec,
+        timeout: Option<Duration>,
+    },
+    TemporaryFileCreated {
+        path: std::path::PathBuf,
+        contents: Vec<u8>,
+    },
+    TemporaryFileRemoved {
+        path: std::path::PathBuf,
+    },
+    Sleep {
+        duration: Duration,
+    },
+    Diagnostic {
+        message: String,
+    },
+    Event {
+        topic: String,
+        payload: serde_json::Value,
+    },
+}
+
+fn unsupported_effect() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "executor does not implement this effect",
+    )
+}
+
+/// The boundary for integration commands, scoped files, clocks, delays, and diagnostics.
 ///
 /// Object-safe and `Send + Sync` so a single `&dyn Executor` (or
 /// `Arc<dyn Executor>`) can be threaded through DAG tasks.
 pub trait Executor: Send + Sync {
+    /// Allocate a scoped file. The default performs no filesystem I/O.
+    fn temporary_file(&self, _prefix: &str, _contents: &[u8]) -> std::io::Result<TemporaryFile> {
+        Err(unsupported_effect())
+    }
+
+    /// Elapsed monotonic time in this executor's clock domain.
+    fn monotonic_now(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    /// Wall-clock timestamp for observable events; the default is deterministic.
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+    }
+
+    /// Advance or wait on this executor's clock. The default never blocks.
+    fn sleep(&self, _duration: Duration) -> std::io::Result<()> {
+        Err(unsupported_effect())
+    }
+
+    /// Emit a diagnostic through the executor's configured output sink.
+    fn diagnostic(&self, _message: &str) {}
+
+    /// Emit a structured integration event to the executor's configured sink.
+    fn event(&self, _topic: &str, _payload: &serde_json::Value) {}
+
+    /// Emit one event with its replay payload and an optional in-process typed view.
+    /// The default preserves existing JSON event sinks without retaining the borrowed value.
+    fn event_with_native(
+        &self,
+        topic: &str,
+        payload: &serde_json::Value,
+        _native: &(dyn std::any::Any + Send + Sync),
+    ) {
+        self.event(topic, payload);
+    }
+
     /// Run `spec` to completion and capture its output.
     fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError>;
 
@@ -319,11 +453,12 @@ pub trait Executor: Send + Sync {
     /// fails with [`ExecError::Io`] whose source has kind
     /// [`std::io::ErrorKind::TimedOut`].
     ///
-    /// The default cannot enforce a limit and runs `spec` unbounded;
-    /// executors that can kill a command override it.
-    fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
-        let _ = limit;
-        self.exec(spec)
+    /// Executors without bounded execution fail before running the command.
+    fn exec_timeout(&self, spec: &CommandSpec, _limit: Duration) -> Result<ExecOutput, ExecError> {
+        Err(ExecError::Io {
+            program: spec.program.clone(),
+            source: unsupported_effect(),
+        })
     }
 }
 
@@ -355,11 +490,23 @@ impl ProcessExecutor {
 impl ProcessExecutor {
     /// Spawn `spec` with stdin closed and stdout/stderr piped, as
     /// `Command::output()` does; `spawn()` alone inherits the parent's streams.
-    fn spawn(spec: &CommandSpec) -> Result<(String, Child), ExecError> {
+    fn spawn(spec: &CommandSpec, bounded: bool) -> Result<(String, Child), ExecError> {
+        spec.validate_environment()
+            .map_err(|source| ExecError::Io {
+                program: spec.program.clone(),
+                source,
+            })?;
         let argv = spec.argv();
         let program = argv[0].clone();
         let mut cmd = Command::new(&program);
         cmd.args(&argv[1..]);
+        #[cfg(unix)]
+        if bounded {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg(not(unix))]
+        let _ = bounded;
         // For ssh specs the env/cwd are already folded into the remote
         // command string; applying them locally too would be wrong.
         if spec.ssh.is_none() {
@@ -383,21 +530,94 @@ impl ProcessExecutor {
     }
 }
 
-/// Read a child's pipe to the end on its own thread, so a child that writes
-/// more than the pipe buffer never blocks while its parent polls for exit.
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut buf);
+#[cfg(unix)]
+fn nonblocking<R: std::os::fd::AsRawFd>(pipe: &Option<R>) -> std::io::Result<()> {
+    if let Some(pipe) = pipe {
+        let fd = pipe.as_raw_fd();
+        // The descriptor belongs to this executor and remains open for both fcntl calls.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(std::io::Error::last_os_error());
         }
-        buf
-    })
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_available<R: Read>(pipe: &mut Option<R>, output: &mut Vec<u8>) -> std::io::Result<bool> {
+    let Some(pipe) = pipe else { return Ok(true) };
+    let mut bytes = [0; 8192];
+    // Bound each pass so continuous output cannot starve the deadline check.
+    for _ in 0..16 {
+        match pipe.read(&mut bytes) {
+            Ok(0) => return Ok(true),
+            Ok(count) => output.extend_from_slice(&bytes[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
 }
 
 impl Executor for ProcessExecutor {
+    fn temporary_file(&self, prefix: &str, contents: &[u8]) -> std::io::Result<TemporaryFile> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        if prefix.is_empty()
+            || !prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid temporary file prefix",
+            ));
+        }
+        loop {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            let lease = TemporaryFile::new(path, |path| std::fs::remove_file(path));
+            file.write_all(contents)?;
+            file.flush()?;
+            return Ok(lease);
+        }
+    }
+
+    fn monotonic_now(&self) -> Duration {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed()
+    }
+
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+
+    fn sleep(&self, duration: Duration) -> std::io::Result<()> {
+        std::thread::sleep(duration);
+        Ok(())
+    }
+
+    fn diagnostic(&self, message: &str) {
+        eprintln!("{message}");
+    }
+
     fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
-        let (program, child) = Self::spawn(spec)?;
+        let (program, child) = Self::spawn(spec, false)?;
         let output = child
             .wait_with_output()
             .map_err(|e| ExecError::Io { program, source: e })?;
@@ -409,37 +629,86 @@ impl Executor for ProcessExecutor {
     }
 
     fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
-        let (program, mut child) = Self::spawn(spec)?;
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-
-        // Poll often enough to land the kill near the deadline, rarely
-        // enough not to spin a core.
-        const POLL: Duration = Duration::from_millis(50);
-        let started = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => {}
-                Err(e) => return Err(ExecError::Io { program, source: e }),
+        #[cfg(not(unix))]
+        {
+            let _ = limit;
+            return Err(ExecError::Io {
+                program: spec.program.clone(),
+                source: unsupported_effect(),
+            });
+        }
+        #[cfg(unix)]
+        {
+            let started = Instant::now();
+            let (program, mut child) = Self::spawn(spec, true)?;
+            let group = child.id() as libc::pid_t;
+            let mut stdout = child.stdout.take();
+            let mut stderr = child.stderr.take();
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            const POLL: Duration = Duration::from_millis(10);
+            let result = (|| {
+                nonblocking(&stdout)
+                    .and_then(|_| nonblocking(&stderr))
+                    .map_err(|source| ExecError::Io {
+                        program: program.clone(),
+                        source,
+                    })?;
+                let mut status = None;
+                let mut out_eof = false;
+                let mut err_eof = false;
+                loop {
+                    if !out_eof {
+                        out_eof = read_available(&mut stdout, &mut out).map_err(|source| {
+                            ExecError::Io {
+                                program: program.clone(),
+                                source,
+                            }
+                        })?;
+                    }
+                    if !err_eof {
+                        err_eof = read_available(&mut stderr, &mut err).map_err(|source| {
+                            ExecError::Io {
+                                program: program.clone(),
+                                source,
+                            }
+                        })?;
+                    }
+                    if status.is_none() {
+                        status = child.try_wait().map_err(|source| ExecError::Io {
+                            program: program.clone(),
+                            source,
+                        })?;
+                    }
+                    if let Some(exit) = status.filter(|_| out_eof && err_eof) {
+                        return Ok(exit);
+                    }
+                    let elapsed = started.elapsed();
+                    if elapsed >= limit {
+                        return Err(timed_out(program.clone(), limit));
+                    }
+                    thread::sleep(POLL.min(limit - elapsed));
+                }
+            })();
+            // The local process group owns subprocesses; remote job lifetimes require adapter cleanup.
+            // The child starts in its own process group; a negative ID selects that group.
+            let killed = unsafe { libc::kill(-group, libc::SIGKILL) };
+            if killed != 0 {
+                let source = std::io::Error::last_os_error();
+                if source.raw_os_error() != Some(libc::ESRCH) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ExecError::Io { program, source });
+                }
             }
-            let elapsed = started.elapsed();
-            if elapsed >= limit {
-                // Killing ssh closes the session, which ends the remote side.
-                // A child that exits between the poll and the kill is already
-                // gone; that error is expected and ignored.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(timed_out(program, limit));
-            }
-            thread::sleep(POLL.min(limit - elapsed));
-        };
-
-        Ok(ExecOutput {
-            status: status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned(),
-        })
+            let _ = child.wait();
+            let status = result?;
+            Ok(ExecOutput {
+                status: status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&out).into_owned(),
+                stderr: String::from_utf8_lossy(&err).into_owned(),
+            })
+        }
     }
 }
 
@@ -568,6 +837,10 @@ impl Rule {
 pub struct ScriptedExecutor {
     rules: Vec<Rule>,
     invocations: Mutex<Vec<String>>,
+    effects: std::sync::Arc<Mutex<Vec<Effect>>>,
+    files: std::sync::Arc<Mutex<std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>>>,
+    clock: Mutex<Duration>,
+    next_file: std::sync::atomic::AtomicU64,
 }
 
 impl Default for ScriptedExecutor {
@@ -583,6 +856,10 @@ impl ScriptedExecutor {
         Self {
             rules: Vec::new(),
             invocations: Mutex::new(Vec::new()),
+            effects: Default::default(),
+            files: Default::default(),
+            clock: Mutex::new(Duration::ZERO),
+            next_file: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -591,6 +868,10 @@ impl ScriptedExecutor {
         Self {
             rules,
             invocations: Mutex::new(Vec::new()),
+            effects: Default::default(),
+            files: Default::default(),
+            clock: Mutex::new(Duration::ZERO),
+            next_file: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -616,6 +897,16 @@ impl ScriptedExecutor {
         F: Fn(&str) -> bool + Send + Sync + 'static,
     {
         self.rule(Rule::matching(predicate, output))
+    }
+
+    /// Typed effects in observation order, including temporary file cleanup.
+    pub fn effects(&self) -> Vec<Effect> {
+        self.effects.lock().unwrap().clone()
+    }
+
+    /// Contents of an active virtual temporary file.
+    pub fn temporary_contents(&self, path: &std::path::Path) -> Option<Vec<u8>> {
+        self.files.lock().unwrap().get(path).cloned()
     }
 
     /// All rendered command lines, in invocation order.
@@ -675,6 +966,15 @@ impl ScriptedExecutor {
 
 impl ScriptedExecutor {
     fn run(&self, spec: &CommandSpec, limit: Option<Duration>) -> Result<ExecOutput, ExecError> {
+        spec.validate_environment()
+            .map_err(|source| ExecError::Io {
+                program: spec.program.clone(),
+                source,
+            })?;
+        self.effects.lock().unwrap().push(Effect::Command {
+            spec: spec.clone(),
+            timeout: limit,
+        });
         let rendered = spec.render();
         self.invocations.lock().unwrap().push(rendered.clone());
         for rule in &self.rules {
@@ -682,10 +982,15 @@ impl ScriptedExecutor {
                 return match &rule.outcome {
                     Outcome::Output(output) => Ok(output.clone()),
                     Outcome::Fail(message) => Err(ExecError::Scripted(message.clone())),
-                    Outcome::Slow { duration, output } => match limit {
-                        Some(limit) if *duration > limit => Err(timed_out(rendered, limit)),
-                        _ => Ok(output.clone()),
-                    },
+                    Outcome::Slow { duration, output } => {
+                        let elapsed = limit.map_or(*duration, |limit| limit.min(*duration));
+                        let mut clock = self.clock.lock().unwrap();
+                        *clock = clock.saturating_add(elapsed);
+                        match limit {
+                            Some(limit) if *duration > limit => Err(timed_out(rendered, limit)),
+                            _ => Ok(output.clone()),
+                        }
+                    }
                 };
             }
         }
@@ -694,6 +999,76 @@ impl ScriptedExecutor {
 }
 
 impl Executor for ScriptedExecutor {
+    fn temporary_file(&self, prefix: &str, contents: &[u8]) -> std::io::Result<TemporaryFile> {
+        if prefix.is_empty()
+            || !prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid temporary file prefix",
+            ));
+        }
+        let id = self
+            .next_file
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::path::PathBuf::from(format!("/virtual/{prefix}-{id}"));
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.clone(), contents.to_vec());
+        self.effects
+            .lock()
+            .unwrap()
+            .push(Effect::TemporaryFileCreated {
+                path: path.clone(),
+                contents: contents.to_vec(),
+            });
+        let files = self.files.clone();
+        let effects = self.effects.clone();
+        Ok(TemporaryFile::new(path, move |path| {
+            files.lock().unwrap().remove(path);
+            effects.lock().unwrap().push(Effect::TemporaryFileRemoved {
+                path: path.to_owned(),
+            });
+            Ok(())
+        }))
+    }
+
+    fn monotonic_now(&self) -> Duration {
+        *self.clock.lock().unwrap()
+    }
+
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+            .checked_add(self.monotonic_now())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    }
+
+    fn sleep(&self, duration: Duration) -> std::io::Result<()> {
+        let mut clock = self.clock.lock().unwrap();
+        *clock = clock.saturating_add(duration);
+        self.effects
+            .lock()
+            .unwrap()
+            .push(Effect::Sleep { duration });
+        Ok(())
+    }
+
+    fn diagnostic(&self, message: &str) {
+        self.effects.lock().unwrap().push(Effect::Diagnostic {
+            message: message.to_owned(),
+        });
+    }
+
+    fn event(&self, topic: &str, payload: &serde_json::Value) {
+        self.effects.lock().unwrap().push(Effect::Event {
+            topic: topic.to_owned(),
+            payload: payload.clone(),
+        });
+    }
+
     fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
         self.run(spec, None)
     }
@@ -743,6 +1118,7 @@ mod tests {
                 "-oBatchMode=yes",
                 "-l",
                 "root",
+                "--",
                 "node01",
                 "'uptime'",
             ]
@@ -771,6 +1147,7 @@ mod tests {
                 "-i",
                 "/keys/id_ed25519",
                 "-oProxyJump=bastion",
+                "--",
                 "10.0.0.5",
                 "'systemctl' 'status'",
             ]
@@ -1096,5 +1473,425 @@ mod tests {
             .exec_timeout(&spec, Duration::from_secs(10))
             .unwrap_err();
         assert!(is_timeout(&err), "expected a timeout, got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct CommandsOnly;
+    impl Executor for CommandsOnly {
+        fn exec(&self, _: &CommandSpec) -> Result<ExecOutput, ExecError> {
+            panic!("default effect methods must never execute a command")
+        }
+    }
+
+    #[test]
+    fn unsupported_effect_defaults_never_touch_the_host() {
+        let exec = CommandsOnly;
+        assert_eq!(exec.monotonic_now(), Duration::ZERO);
+        assert_eq!(
+            exec.sleep(Duration::from_secs(100)).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            exec.temporary_file("fixture", b"private")
+                .err()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        exec.diagnostic("ignored");
+        let error = exec
+            .exec_timeout(&CommandSpec::new("must-not-run"), Duration::from_secs(1))
+            .unwrap_err();
+        assert!(
+            matches!(error, ExecError::Io { source, .. } if source.kind() == std::io::ErrorKind::Unsupported)
+        );
+    }
+
+    #[test]
+    fn scripted_files_are_virtual_and_scoped() {
+        let exec = ScriptedExecutor::new();
+        let file = exec.temporary_file("fixture", b"private\0bytes").unwrap();
+        let path = file.path().to_owned();
+        assert_eq!(exec.temporary_contents(&path).unwrap(), b"private\0bytes");
+        assert!(!path.exists());
+        drop(file);
+        assert!(exec.temporary_contents(&path).is_none());
+        assert!(
+            matches!(&exec.effects()[..], [Effect::TemporaryFileCreated {contents, ..}, Effect::TemporaryFileRemoved {path: removed}] if contents == b"private\0bytes" && removed == &path)
+        );
+    }
+
+    #[test]
+    fn explicit_close_removes_once_and_does_not_double_clean_on_drop() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let cloned = count.clone();
+        TemporaryFile::new("/virtual/close".into(), move |_| {
+            cloned.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .close()
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cleanup_error_is_reported_and_drop_retries() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let cloned = count.clone();
+        let file = TemporaryFile::new("/virtual/retry".into(), move |_| {
+            if cloned.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected cleanup failure",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            file.close().unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unwinding_cleans_temporary_resources() {
+        let exec = ScriptedExecutor::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _file = exec.temporary_file("fixture", b"data").unwrap();
+            panic!("injected command panic");
+        }));
+        assert!(result.is_err());
+        assert!(matches!(
+            exec.effects().last(),
+            Some(Effect::TemporaryFileRemoved { .. })
+        ));
+    }
+
+    #[test]
+    fn scripted_effect_order_and_virtual_clock_are_deterministic() {
+        let exec = ScriptedExecutor::new().on("echo", ExecOutput::ok("ok"));
+        exec.diagnostic("start");
+        exec.sleep(Duration::from_secs(7)).unwrap();
+        exec.exec_timeout(&CommandSpec::new("echo").arg("ok"), Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(exec.monotonic_now(), Duration::from_secs(7));
+        assert!(
+            matches!(&exec.effects()[..], [Effect::Diagnostic{message}, Effect::Sleep{duration}, Effect::Command{spec,timeout}] if message == "start" && *duration == Duration::from_secs(7) && spec.program == "echo" && *timeout == Some(Duration::from_secs(3)))
+        );
+    }
+
+    #[test]
+    fn temporary_paths_are_unique_and_contents_are_independent() {
+        for exec in [&ProcessExecutor as &dyn Executor, &ScriptedExecutor::new()] {
+            let first = exec
+                .temporary_file("consortium-effect-test", b"first")
+                .unwrap();
+            let second = exec
+                .temporary_file("consortium-effect-test", b"second")
+                .unwrap();
+            assert_ne!(first.path(), second.path());
+            first.close().unwrap();
+            second.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn process_temporary_file_is_private_and_removed_after_use() {
+        let file = ProcessExecutor
+            .temporary_file("consortium-effect-test", b"payload")
+            .unwrap();
+        let path = file.path().to_owned();
+        assert_eq!(std::fs::read(&path).unwrap(), b"payload");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        file.close().unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temporary_prefix_rejects_path_traversal_for_both_backends() {
+        for exec in [&ProcessExecutor as &dyn Executor, &ScriptedExecutor::new()] {
+            for prefix in ["", "../escape", "a/b", "a\\b", "has space", "é"] {
+                assert_eq!(
+                    exec.temporary_file(prefix, b"secret").err().unwrap().kind(),
+                    std::io::ErrorKind::InvalidInput
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_group_tests {
+    use super::*;
+
+    fn verify_descendant_is_killed(shell_exits: bool, redirected: bool) {
+        let file = ProcessExecutor
+            .temporary_file("consortium-descendant-test", b"")
+            .unwrap();
+        let path = file.path().to_owned();
+        let command = format!(
+            "(sleep 1; printf escaped > {}) {} & {}",
+            shell_quote(path.to_str().unwrap()),
+            if redirected { ">/dev/null 2>&1" } else { "" },
+            if shell_exits { "exit 0" } else { "wait" }
+        );
+        let started = Instant::now();
+        let result = ProcessExecutor.exec_timeout(
+            &CommandSpec::new("sh").args(["-c", command.as_str()]),
+            Duration::from_millis(400),
+        );
+        if !shell_exits || !redirected {
+            assert!(
+                matches!(result, Err(ExecError::Io { source, .. }) if source.kind() == std::io::ErrorKind::TimedOut)
+            );
+        } else {
+            assert!(result.unwrap().success());
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "descendant pipe escaped the deadline"
+        );
+        std::thread::sleep(Duration::from_millis(900));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"",
+            "descendant survived its process group"
+        );
+        file.close().unwrap();
+    }
+
+    #[test]
+    fn timed_out_shell_cannot_leave_running_descendant() {
+        verify_descendant_is_killed(false, false);
+    }
+
+    #[test]
+    fn exited_shell_with_inherited_pipes_cannot_bypass_deadline() {
+        verify_descendant_is_killed(true, false);
+    }
+
+    #[test]
+    fn successful_foreground_also_cleans_background_processes() {
+        verify_descendant_is_killed(true, true);
+    }
+}
+
+#[cfg(test)]
+mod environment_clock_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_environment_keys_are_rejected_before_any_local_or_remote_process() {
+        let marker = ProcessExecutor
+            .temporary_file("consortium-env-test", b"")
+            .unwrap();
+        let malicious = format!(
+            "X=1; printf injected > {}; #",
+            shell_quote(marker.path().to_str().unwrap())
+        );
+        for key in [
+            "",
+            "1NAME",
+            "BAD-NAME",
+            "A=B",
+            "A B",
+            "A\nB",
+            "é",
+            "A\0B",
+            malicious.as_str(),
+        ] {
+            for remote in [false, true] {
+                let mut spec = CommandSpec::new("sh")
+                    .args(["-c", "exit 0"])
+                    .env(key, "value");
+                if remote {
+                    spec = spec.ssh(SshTarget::new("root", "must-not-contact.invalid"));
+                }
+                assert!(
+                    matches!(ProcessExecutor.exec(&spec), Err(ExecError::Io {source, ..}) if source.kind() == std::io::ErrorKind::InvalidInput)
+                );
+                assert!(
+                    matches!(ProcessExecutor.exec_timeout(&spec, Duration::from_secs(1)), Err(ExecError::Io {source, ..}) if source.kind() == std::io::ErrorKind::InvalidInput)
+                );
+                let scripted = ScriptedExecutor::new().on("", ExecOutput::ok(""));
+                assert!(scripted.exec(&spec).is_err());
+                assert!(scripted.effects().is_empty());
+                assert!(scripted.invocations().is_empty());
+                assert_eq!(spec.remote_command(), "false");
+            }
+        }
+        assert_eq!(std::fs::read(marker.path()).unwrap(), b"");
+        marker.close().unwrap();
+    }
+
+    #[test]
+    fn valid_identifiers_and_quoted_values_keep_their_contents() {
+        for key in ["A", "_", "_lower_1", "aBC123"] {
+            let value = "space ' quote ; $(touch never)";
+            let spec = CommandSpec::new("true").env(key, value);
+            assert!(spec.validate_environment().is_ok());
+            assert_eq!(
+                spec.remote_command(),
+                format!("{key}={} 'true'", shell_quote(value))
+            );
+        }
+        let spec = CommandSpec::new("sh")
+            .args(["-c", "printf '%s' \"$TEST_value1\""])
+            .env("TEST_value1", "literal ; ' $(no-command)");
+        assert_eq!(
+            ProcessExecutor.exec(&spec).unwrap().stdout,
+            "literal ; ' $(no-command)"
+        );
+    }
+
+    #[test]
+    fn wall_clock_defaults_are_deterministic_and_scripted_time_advances_them() {
+        struct NoEffects;
+        impl Executor for NoEffects {
+            fn exec(&self, _: &CommandSpec) -> Result<ExecOutput, ExecError> {
+                panic!("no command expected")
+            }
+        }
+        assert_eq!(NoEffects.wall_now(), std::time::SystemTime::UNIX_EPOCH);
+        let exec = ScriptedExecutor::new();
+        assert_eq!(exec.wall_now(), std::time::SystemTime::UNIX_EPOCH);
+        exec.sleep(Duration::from_secs(7)).unwrap();
+        assert_eq!(
+            exec.wall_now(),
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(7)
+        );
+        let before = std::time::SystemTime::now();
+        let observed = ProcessExecutor.wall_now();
+        assert!(observed >= before && observed <= std::time::SystemTime::now());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod escaped_pipe_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "subprocess fixture for escaped_session_cannot_extend_pipe_deadline"]
+    fn escaped_pipe_holder_helper() {
+        let path = std::env::var("CONSORTIUM_ESCAPE_PID_PATH").unwrap();
+        let mut ready = [0; 2];
+        // The fixture child calls only async-signal-safe libc functions after fork.
+        unsafe {
+            assert_eq!(libc::pipe(ready.as_mut_ptr()), 0);
+            let pid = libc::fork();
+            assert!(pid >= 0);
+            if pid == 0 {
+                libc::close(ready[0]);
+                if libc::setsid() == -1 {
+                    libc::_exit(2);
+                }
+                let byte = [1u8];
+                libc::write(ready[1], byte.as_ptr().cast(), 1);
+                libc::close(ready[1]);
+                libc::sleep(3);
+                libc::_exit(0);
+            }
+            libc::close(ready[1]);
+            let mut byte = [0u8];
+            assert_eq!(libc::read(ready[0], byte.as_mut_ptr().cast(), 1), 1);
+            libc::close(ready[0]);
+            assert_eq!(byte[0], 1);
+            std::fs::write(path, pid.to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn escaped_session_cannot_extend_pipe_deadline() {
+        struct KillEscaped(std::path::PathBuf);
+        impl Drop for KillEscaped {
+            fn drop(&mut self) {
+                if let Ok(contents) = std::fs::read_to_string(&self.0) {
+                    if let Ok(pid) = contents.parse::<libc::pid_t>() {
+                        // This PID was explicitly recorded by the owned fixture process.
+                        unsafe {
+                            libc::kill(pid, libc::SIGKILL);
+                        }
+                    }
+                }
+            }
+        }
+        let file = ProcessExecutor
+            .temporary_file("consortium-escape-test", b"")
+            .unwrap();
+        let guard = KillEscaped(file.path().to_owned());
+        let spec = CommandSpec::new(std::env::current_exe().unwrap().to_string_lossy())
+            .args([
+                "--exact",
+                "exec::escaped_pipe_tests::escaped_pipe_holder_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CONSORTIUM_ESCAPE_PID_PATH", file.path().to_str().unwrap());
+        let started = Instant::now();
+        let result = ProcessExecutor.exec_timeout(&spec, Duration::from_millis(300));
+        let elapsed = started.elapsed();
+        let pid = std::fs::read_to_string(file.path())
+            .unwrap()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert!(pid > 1);
+        drop(guard);
+        let cleanup_started = Instant::now();
+        loop {
+            // This PID was recorded by the owned fixture before it escaped the local group.
+            if unsafe { libc::kill(pid, 0) } == -1 {
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+                break;
+            }
+            assert!(
+                cleanup_started.elapsed() < Duration::from_secs(2),
+                "escaped fixture PID was not reaped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            matches!(result, Err(ExecError::Io {source, ..}) if source.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "escaped pipe holder bypassed the deadline: {elapsed:?}"
+        );
+        file.close().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    #[test]
+    fn scripted_events_capture_topic_and_payload_at_emission() {
+        let exec = ScriptedExecutor::new();
+        let mut payload = serde_json::json!({"node": "a", "values": [1, 2]});
+        exec.event("cascade", &payload);
+        payload["node"] = serde_json::json!("b");
+        assert!(
+            matches!(&exec.effects()[..], [Effect::Event {topic, payload}] if topic == "cascade" && payload["node"] == "a" && payload["values"] == serde_json::json!([1, 2]))
+        );
     }
 }

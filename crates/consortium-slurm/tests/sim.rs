@@ -65,17 +65,16 @@ fn full_opts() -> SubmitOptions {
     SubmitOptions {
         wait: true,
         collect: Some(format!("slurm-{JOB_ID}.out")),
-        poll_interval: Duration::ZERO,
+        poll_interval: Duration::from_millis(1),
     }
 }
 
-/// Wait without collecting; zero poll interval (the first sacct poll happens
-/// before any sleep, so scripted terminal states never wait anyway).
+/// Wait without collecting; terminal scripted states require no sleep.
 fn wait_opts() -> SubmitOptions {
     SubmitOptions {
         wait: true,
         collect: None,
-        poll_interval: Duration::ZERO,
+        poll_interval: Duration::from_millis(1),
     }
 }
 

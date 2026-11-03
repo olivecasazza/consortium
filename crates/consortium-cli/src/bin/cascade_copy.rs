@@ -53,9 +53,9 @@ struct Args {
     #[arg(long = "fanout", default_value_t = 2)]
     fanout: u32,
 
-    /// Per-edge `nix copy` subprocess timeout in seconds (default 300).
-    #[arg(long = "timeout", default_value_t = 300)]
-    timeout_secs: u64,
+    /// Per-edge `nix copy` subprocess timeout in seconds (default: none).
+    #[arg(long = "timeout")]
+    timeout_secs: Option<u64>,
 
     /// Cascade hard-cap rounds — if not converged by this round count,
     /// give up. Default = 64.
@@ -119,8 +119,10 @@ fn run(args: Args) -> Result<i32> {
     let net = NetworkProfile::default();
 
     // The real-world executor.
-    let executor = NixCopyExecutor::process(addrs, args.store_path.clone(), seed)
-        .with_timeout(Duration::from_secs(args.timeout_secs));
+    let mut executor = NixCopyExecutor::process(addrs, args.store_path.clone(), seed);
+    if let Some(secs) = args.timeout_secs {
+        executor = executor.with_timeout(Duration::from_secs(secs));
+    }
 
     // Compose nh-style header lines for the live renderer.
     let mut header_lines: Vec<String> = Vec::new();

@@ -14,6 +14,8 @@ pub struct DagGraph {
     pub(crate) dependents: HashMap<TaskId, HashSet<TaskId>>,
     /// Reverse edges: task -> set of tasks it depends on (dependencies).
     pub(crate) dependencies: HashMap<TaskId, HashSet<TaskId>>,
+    /// Edges satisfied by any terminal outcome instead of success.
+    pub(crate) completion_dependencies: HashSet<(TaskId, TaskId)>,
     /// Concurrency groups with their limits.
     pub(crate) concurrency_groups: HashMap<String, ConcurrencyLimit>,
     /// Which concurrency group each task belongs to.
@@ -29,6 +31,7 @@ impl DagGraph {
             tasks: HashMap::new(),
             dependents: HashMap::new(),
             dependencies: HashMap::new(),
+            completion_dependencies: HashSet::new(),
             concurrency_groups: HashMap::new(),
             task_groups: HashMap::new(),
             task_cache: HashMap::new(),
@@ -54,6 +57,8 @@ impl DagGraph {
         if !self.tasks.contains_key(dependency) {
             return Err(DagError::UnknownTask(dependency.clone()));
         }
+        self.completion_dependencies
+            .remove(&(dependent.clone(), dependency.clone()));
         self.dependents
             .entry(dependency.clone())
             .or_default()
@@ -62,6 +67,14 @@ impl DagGraph {
             .entry(dependent.clone())
             .or_default()
             .insert(dependency.clone());
+        Ok(())
+    }
+
+    /// Wait for a dependency to succeed, fail, or be cancelled.
+    pub fn add_completion_dep(&mut self, dependent: &TaskId, dependency: &TaskId) -> Result<()> {
+        self.add_dep(dependent, dependency)?;
+        self.completion_dependencies
+            .insert((dependent.clone(), dependency.clone()));
         Ok(())
     }
 

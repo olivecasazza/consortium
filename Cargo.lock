@@ -323,6 +323,7 @@ name = "consortium-integration"
 version = "0.3.1"
 dependencies = [
  "consortium-crate",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

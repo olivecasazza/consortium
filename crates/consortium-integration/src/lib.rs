@@ -40,12 +40,13 @@
 
 pub mod exec;
 pub mod fleet;
+pub mod grammar;
 pub mod report;
 pub mod staging;
 
 pub use exec::{
-    shell_quote, ssh_argv, CommandSpec, ExecError, ExecOutput, Executor, ProcessExecutor, Rule,
-    ScriptedExecutor, SshTarget, DEFAULT_SSH_OPTS,
+    shell_quote, ssh_argv, CommandSpec, Effect, ExecError, ExecOutput, Executor, ProcessExecutor,
+    Rule, ScriptedExecutor, SshTarget, TemporaryFile, DEFAULT_SSH_OPTS,
 };
 pub use report::IntegrationReport;
 pub use staging::StagingError;

@@ -65,8 +65,8 @@ pub struct CascadeCopyConfig<'a> {
     /// Children-per-node in the F-ary tree. 2 = binary; bigger trades
     /// per-source bandwidth contention for fewer rounds. Default 2.
     pub fanout: u32,
-    /// Per-edge `nix copy` timeout. Default 5min.
-    pub timeout: Duration,
+    /// Per-edge `nix copy` timeout. `None` (the default) is unbounded.
+    pub timeout: Option<Duration>,
     /// Optional event sink for live UI. Use [`NullSink`] for headless.
     /// Reused across all groups (the renderer can handle multiple
     /// cascade runs back-to-back, though it'll show them sequentially).
@@ -79,7 +79,7 @@ impl<'a> CascadeCopyConfig<'a> {
             seed_addr: seed_addr.into(),
             targets,
             fanout: 2,
-            timeout: Duration::from_secs(300),
+            timeout: None,
             events: None,
         }
     }
@@ -90,7 +90,7 @@ impl<'a> CascadeCopyConfig<'a> {
     }
 
     pub fn timeout(mut self, t: Duration) -> Self {
-        self.timeout = t;
+        self.timeout = Some(t);
         self
     }
 
@@ -161,7 +161,7 @@ fn run_one_group(
     group: Vec<CascadeCopyTarget>,
     strategy: &LevelTreeFanOut,
     events: &dyn EventSink,
-    timeout: Duration,
+    timeout: Option<Duration>,
     result: &mut CascadeCopyResult,
 ) {
     // Build NodeIds: seed at NodeId(0), targets at NodeId(1)..
@@ -185,8 +185,8 @@ fn run_one_group(
     let mut seeded = HashSet::new();
     seeded.insert(seed_id);
 
-    let executor = NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id)
-        .with_timeout(timeout);
+    let mut executor = NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id);
+    executor.timeout = timeout;
 
     let cascade_result = Cascade::new()
         .nodes(cascade_nodes)
@@ -255,6 +255,39 @@ mod tests {
         assert!(r.failed.is_empty());
         scripted.assert_invoked_containing(
             "nix copy --no-check-sigs --to ssh-ng://root@hp01 /nix/store/abc-top",
+        );
+    }
+
+    #[test]
+    fn grouped_copy_is_unbounded_unless_a_timeout_is_configured() {
+        use consortium_integration::Effect;
+        let target = || CascadeCopyTarget {
+            host_name: "hp01".into(),
+            ssh_addr: "root@hp01".into(),
+            toplevel_path: "/nix/store/abc-top".into(),
+        };
+        let timeouts = |cfg: CascadeCopyConfig<'_>| {
+            let scripted = Arc::new(ScriptedExecutor::new().on("nix copy", ExecOutput::ok("")));
+            let exec: Arc<dyn Executor> = scripted.clone();
+            cascade_copy_grouped(&exec, cfg);
+            scripted
+                .effects()
+                .iter()
+                .map(|effect| match effect {
+                    Effect::Command { timeout, .. } => *timeout,
+                    other => panic!("unexpected effect {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            timeouts(CascadeCopyConfig::new("root@seed", vec![target()])),
+            [None]
+        );
+        assert_eq!(
+            timeouts(
+                CascadeCopyConfig::new("root@seed", vec![target()]).timeout(Duration::from_secs(7))
+            ),
+            [Some(Duration::from_secs(7))]
         );
     }
 

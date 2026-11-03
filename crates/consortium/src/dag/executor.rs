@@ -121,6 +121,9 @@ impl DagExecutor {
             let mut retry_ready: VecDeque<TaskId> = VecDeque::new();
 
             while let Some(task_id) = ready.pop_front() {
+                if report.cancelled.contains(&task_id) {
+                    continue;
+                }
                 // Check cache (per-task or global)
                 if let Some(cached) = self.check_cache(&task_id) {
                     self.context.set_output(task_id.clone(), cached);
@@ -237,7 +240,12 @@ impl DagExecutor {
                     }
                     ErrorPolicy::ContinueIndependent => {
                         report.failed.insert(task_id.clone(), msg);
-                        self.cancel_dependents(&task_id, &mut pending_deps, &mut report.cancelled);
+                        self.cancel_dependents(
+                            &task_id,
+                            &mut pending_deps,
+                            &mut report.cancelled,
+                            &mut ready,
+                        );
                         let deferred_tasks: Vec<_> = deferred.drain(..).collect();
                         for dt in deferred_tasks {
                             if !report.cancelled.contains(&dt) {
@@ -247,7 +255,12 @@ impl DagExecutor {
                     }
                     ErrorPolicy::Retry { .. } => {
                         report.failed.insert(task_id.clone(), msg);
-                        self.cancel_dependents(&task_id, &mut pending_deps, &mut report.cancelled);
+                        self.cancel_dependents(
+                            &task_id,
+                            &mut pending_deps,
+                            &mut report.cancelled,
+                            &mut ready,
+                        );
                     }
                 }
             }
@@ -310,30 +323,37 @@ impl DagExecutor {
         task_id: &TaskId,
         pending_deps: &mut HashMap<TaskId, usize>,
         cancelled: &mut HashSet<TaskId>,
+        ready: &mut VecDeque<TaskId>,
     ) {
-        let mut to_cancel = VecDeque::new();
-        if let Some(dependents) = self.graph.dependents.get(task_id) {
-            for dep_id in dependents {
-                to_cancel.push_back(dep_id.clone());
+        let mut to_cancel = VecDeque::from([task_id.clone()]);
+        let mut settled = Vec::new();
+        while let Some(parent) = to_cancel.pop_front() {
+            settled.push(parent.clone());
+            let dependents: Vec<_> = self
+                .graph
+                .dependents
+                .get(&parent)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            for dependent in dependents {
+                if self
+                    .graph
+                    .completion_dependencies
+                    .contains(&(dependent.clone(), parent.clone()))
+                    || cancelled.contains(&dependent)
+                {
+                    continue;
+                }
+                cancelled.insert(dependent.clone());
+                self.notify(DagEvent::TaskCancelled(dependent.clone()));
+                pending_deps.remove(&dependent);
+                to_cancel.push_back(dependent);
             }
         }
-
-        while let Some(id) = to_cancel.pop_front() {
-            if cancelled.contains(&id) {
-                continue;
-            }
-            cancelled.insert(id.clone());
-            self.notify(DagEvent::TaskCancelled(id.clone()));
-
-            // Remove from pending so it's never dispatched
-            pending_deps.remove(&id);
-
-            // Cancel its dependents too
-            if let Some(dependents) = self.graph.dependents.get(&id) {
-                for dep_id in dependents {
-                    to_cancel.push_back(dep_id.clone());
-                }
-            }
+        for terminal in settled {
+            self.mark_completed(&terminal, pending_deps, ready);
         }
     }
 
@@ -1065,5 +1085,83 @@ mod tests {
             .get(&TaskId::from("fail"))
             .unwrap()
             .contains("42"));
+    }
+    #[test]
+    fn completion_barrier_waits_for_success_failed_and_cancelled_parents() {
+        for _ in 0..24 {
+            let healthy_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut dag = DagBuilder::new();
+            dag.add_task(
+                "failed",
+                FnTask::new("fail", |_| TaskOutcome::Failed("injected".into())),
+            );
+            let finished = healthy_finished.clone();
+            dag.add_task(
+                "healthy",
+                FnTask::new("healthy", move |_| {
+                    finished.store(true, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }),
+            );
+            for id in ["cancelled", "cancelled-child"] {
+                dag.add_task(
+                    id,
+                    FnTask::new("must not run", |_| {
+                        TaskOutcome::Failed("cancelled task dispatched".into())
+                    }),
+                );
+            }
+            dag.add_dep("cancelled", "failed");
+            dag.add_dep("cancelled-child", "cancelled");
+            let finished = healthy_finished.clone();
+            dag.add_task(
+                "settled",
+                FnTask::new("barrier", move |_| {
+                    if finished.load(Ordering::SeqCst) {
+                        TaskOutcome::Success
+                    } else {
+                        TaskOutcome::Failed("barrier ran before healthy predecessor".into())
+                    }
+                }),
+            );
+            for id in ["failed", "healthy", "cancelled", "cancelled-child"] {
+                dag.add_completion_dep("settled", id);
+            }
+            dag.add_task(
+                "after",
+                FnTask::new("after barrier", |_| TaskOutcome::Success),
+            );
+            dag.add_dep("after", "settled");
+            dag.error_policy(ErrorPolicy::ContinueIndependent);
+            let report = dag.build().unwrap().run().unwrap();
+            assert_eq!(report.completed.len(), 3);
+            assert!(report.completed.contains(&"settled".into()));
+            assert!(report.completed.contains(&"after".into()));
+            assert_eq!(report.failed.len(), 1);
+            assert_eq!(report.cancelled.len(), 2);
+        }
+    }
+
+    #[test]
+    fn completion_dependency_does_not_override_another_required_success() {
+        let mut dag = DagBuilder::new();
+        for id in ["failure-one", "failure-two"] {
+            dag.add_task(
+                id,
+                FnTask::new("fail", |_| TaskOutcome::Failed("injected".into())),
+            );
+        }
+        dag.add_task(
+            "mixed",
+            FnTask::new("must not run", |_| {
+                TaskOutcome::Failed("success dependency failed".into())
+            }),
+        );
+        dag.add_completion_dep("mixed", "failure-one");
+        dag.add_dep("mixed", "failure-two");
+        dag.error_policy(ErrorPolicy::ContinueIndependent);
+        let report = dag.build().unwrap().run().unwrap();
+        assert!(report.cancelled.contains(&"mixed".into()));
+        assert_eq!(report.failed.len(), 2);
     }
 }

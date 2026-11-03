@@ -117,6 +117,12 @@
 //! `.default_transfer_bytes(..)` (0 by default) and unmatched ssh control
 //! commands always use 0 bytes (just latency).
 //!
+//! `Executor::monotonic_now` advances by aggregate network work, scripted
+//! command durations, and virtual sleeps. Bounded commands consume at most
+//! their deadline; completion exactly at the deadline succeeds. Temporary
+//! files and diagnostics use the embedded scripted executor's in-memory
+//! effects. These operations never access the host filesystem or sleep.
+//!
 //! ## Determinism contract
 //!
 //! Same builder config + same pipeline inputs ⇒
@@ -566,6 +572,8 @@ struct SimState {
     log: Vec<SimEvent>,
     /// Sum of successful data-copy durations (virtual clock).
     transfer_time: Duration,
+    /// Aggregate command latency and transfer work; sleep is owned by outputs.
+    elapsed: Duration,
 }
 
 impl SimState {
@@ -772,13 +780,24 @@ impl SimExecutor {
     /// normalized line is looked up instead, so rules match the
     /// normalized form (`CommandSpec::render` joins argv with single
     /// spaces, so splitting the line on spaces round-trips it exactly).
-    fn scripted_output(&self, spec: &CommandSpec, rendered: &str) -> Result<ExecOutput, ExecError> {
+    fn scripted_output(
+        &self,
+        spec: &CommandSpec,
+        rendered: &str,
+        limit: Option<Duration>,
+    ) -> Result<ExecOutput, ExecError> {
         if self.normalize.is_none() {
-            return self.outputs.exec(spec);
+            return match limit {
+                Some(limit) => self.outputs.exec_timeout(spec, limit),
+                None => self.outputs.exec(spec),
+            };
         }
         let mut parts = rendered.split(' ');
         let reparsed = CommandSpec::new(parts.next().unwrap_or_default()).args(parts);
-        self.outputs.exec(&reparsed)
+        match limit {
+            Some(limit) => self.outputs.exec_timeout(&reparsed, limit),
+            None => self.outputs.exec(&reparsed),
+        }
     }
 
     fn record(&self, event: SimEvent) {
@@ -786,12 +805,12 @@ impl SimExecutor {
     }
 }
 
-impl Executor for SimExecutor {
-    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+impl SimExecutor {
+    fn run(&self, spec: &CommandSpec, limit: Option<Duration>) -> Result<ExecOutput, ExecError> {
         let rendered = self.render_line(spec);
         match self.classify(spec) {
             Target::Local => {
-                let result = self.scripted_output(spec, &rendered);
+                let result = self.scripted_output(spec, &rendered, limit);
                 let outcome = match &result {
                     Ok(out) => SimOutcome::Ok {
                         duration: Duration::ZERO,
@@ -860,7 +879,30 @@ impl Executor for SimExecutor {
                 }
 
                 let duration = self.edge_duration(kind, src, tgt, &rendered);
-                let result = self.scripted_output(spec, &rendered);
+                if let Some(limit) = limit.filter(|limit| duration > *limit) {
+                    let error = ExecError::Io {
+                        program: spec.program.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("simulated command exceeded {}s", limit.as_secs_f64()),
+                        ),
+                    };
+                    let mut state = self.state.lock().unwrap();
+                    state.elapsed = state.elapsed.saturating_add(limit);
+                    state.log.push(SimEvent {
+                        command_line: rendered,
+                        kind,
+                        edge: Some((src, tgt)),
+                        attempt,
+                        outcome: SimOutcome::ExecError(error.to_string()),
+                    });
+                    return Err(error);
+                }
+                let result = self.scripted_output(
+                    spec,
+                    &rendered,
+                    limit.map(|limit| limit.saturating_sub(duration)),
+                );
                 let outcome = match &result {
                     Ok(out) => SimOutcome::Ok {
                         duration,
@@ -870,6 +912,7 @@ impl Executor for SimExecutor {
                 };
                 {
                     let mut st = self.state.lock().unwrap();
+                    st.elapsed = st.elapsed.saturating_add(duration);
                     // Only status-0 data copies transferred anything.
                     if kind == SimCommandKind::DataCopy
                         && matches!(outcome, SimOutcome::Ok { status: 0, .. })
@@ -887,6 +930,51 @@ impl Executor for SimExecutor {
                 result
             }
         }
+    }
+}
+
+impl Executor for SimExecutor {
+    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+        self.run(spec, None)
+    }
+    fn exec_timeout(&self, spec: &CommandSpec, limit: Duration) -> Result<ExecOutput, ExecError> {
+        self.run(spec, Some(limit))
+    }
+    fn monotonic_now(&self) -> Duration {
+        self.state
+            .lock()
+            .unwrap()
+            .elapsed
+            .saturating_add(self.outputs.monotonic_now())
+    }
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+            .checked_add(self.monotonic_now())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    }
+    fn sleep(&self, duration: Duration) -> std::io::Result<()> {
+        self.outputs.sleep(duration)
+    }
+    fn temporary_file(
+        &self,
+        prefix: &str,
+        contents: &[u8],
+    ) -> std::io::Result<consortium_integration::TemporaryFile> {
+        self.outputs.temporary_file(prefix, contents)
+    }
+    fn diagnostic(&self, message: &str) {
+        self.outputs.diagnostic(message);
+    }
+    fn event(&self, topic: &str, payload: &serde_json::Value) {
+        self.outputs.event(topic, payload);
+    }
+    fn event_with_native(
+        &self,
+        topic: &str,
+        payload: &serde_json::Value,
+        native: &(dyn std::any::Any + Send + Sync),
+    ) {
+        self.outputs.event_with_native(topic, payload, native);
     }
 }
 
@@ -1531,5 +1619,89 @@ mod tests {
         // order-sensitive consumers (per_edge_outcomes).
         assert_eq!(a[0].attempt, 0);
         assert_eq!(a[1].attempt, 1);
+    }
+    #[test]
+    fn virtual_sleep_clock_and_temporary_files_use_existing_scripted_effects() {
+        use consortium_integration::Effect;
+        let sim = SimExecutor::builder().build();
+        assert_eq!(sim.monotonic_now(), Duration::ZERO);
+        sim.sleep(Duration::from_secs(9)).unwrap();
+        assert_eq!(sim.monotonic_now(), Duration::from_secs(9));
+        assert_eq!(
+            sim.wall_now(),
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(9)
+        );
+        let file = sim.temporary_file("consortium-sim", b"task").unwrap();
+        assert!(file.path().starts_with("/virtual"));
+        sim.diagnostic("test diagnostic");
+        sim.event("cascade", &serde_json::json!({"phase": "copy"}));
+        file.close().unwrap();
+        let effects = sim.outputs.effects();
+        assert!(
+            matches!(effects[0], Effect::Sleep { duration } if duration == Duration::from_secs(9))
+        );
+        assert!(
+            matches!(&effects[1], Effect::TemporaryFileCreated { contents, .. } if contents == b"task")
+        );
+        assert!(
+            matches!(&effects[2], Effect::Diagnostic { message } if message == "test diagnostic")
+        );
+        assert!(
+            matches!(&effects[3], Effect::Event {topic, payload} if topic == "cascade" && payload["phase"] == "copy")
+        );
+        assert!(matches!(effects[4], Effect::TemporaryFileRemoved { .. }));
+    }
+
+    #[test]
+    fn bounded_network_commands_honor_deadlines_without_wall_clock_waits() {
+        for (budget, successful) in [(999, false), (1000, true), (1001, true)] {
+            let sim = SimExecutor::builder()
+                .hosts(["node01"])
+                .latency(Duration::from_secs(1))
+                .on("uptime", ExecOutput::ok("up"))
+                .build();
+            let result = sim.exec_timeout(&ssh_uptime("node01"), Duration::from_millis(budget));
+            assert_eq!(result.is_ok(), successful, "budget={budget}");
+            if let Err(ExecError::Io { source, .. }) = result {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+            }
+            assert_eq!(sim.monotonic_now(), Duration::from_millis(budget.min(1000)));
+            assert_eq!(sim.invocation_log().len(), 1);
+            assert_eq!(sim.outputs.invocation_count(), usize::from(successful));
+        }
+    }
+
+    #[test]
+    fn bounded_local_commands_delegate_slow_rules_and_remaining_network_budget() {
+        let sim = SimExecutor::builder()
+            .rule(Rule::slow_containing_all(
+                ["ray job status"],
+                Duration::from_secs(8),
+                ExecOutput::ok("RUNNING"),
+            ))
+            .build();
+        let error = sim
+            .exec_timeout(
+                &CommandSpec::new("ray").args(["job", "status"]),
+                Duration::from_secs(3),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, ExecError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert_eq!(sim.monotonic_now(), Duration::from_secs(3));
+        let sim = SimExecutor::builder()
+            .hosts(["node01"])
+            .latency(Duration::from_secs(2))
+            .rule(Rule::slow_containing_all(
+                ["uptime"],
+                Duration::from_secs(8),
+                ExecOutput::ok("up"),
+            ))
+            .build();
+        assert!(sim
+            .exec_timeout(&ssh_uptime("node01"), Duration::from_secs(5))
+            .is_err());
+        assert_eq!(sim.monotonic_now(), Duration::from_secs(5));
     }
 }

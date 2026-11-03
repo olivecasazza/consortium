@@ -60,6 +60,18 @@ impl DagBuilder {
         self
     }
 
+    /// Wait for any terminal dependency outcome under ContinueIndependent.
+    pub fn add_completion_dep(
+        &mut self,
+        dependent: impl Into<TaskId>,
+        dependency: impl Into<TaskId>,
+    ) -> &mut Self {
+        let _ = self
+            .graph
+            .add_completion_dep(&dependent.into(), &dependency.into());
+        self
+    }
+
     /// Set a concurrency group limit.
     pub fn concurrency_group(&mut self, name: &str, max_concurrent: usize) -> &mut Self {
         self.graph.set_concurrency_group(name, max_concurrent);

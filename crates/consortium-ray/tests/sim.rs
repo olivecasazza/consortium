@@ -46,7 +46,7 @@ const ENTRYPOINT: &str = "python train.py";
 /// status check, so no timeout is needed on the happy path.
 const TEST_OPTS: RayOptions = RayOptions {
     wait: true,
-    poll_interval: Duration::ZERO,
+    poll_interval: Duration::from_millis(1),
     timeout: None,
 };
 
@@ -279,7 +279,7 @@ fn status_endpoint_flapping_then_timeout() {
     );
     let opts = RayOptions {
         wait: true,
-        poll_interval: Duration::ZERO,
+        poll_interval: Duration::from_millis(1),
         timeout: Some(Duration::from_millis(50)),
     };
     let start = Instant::now();

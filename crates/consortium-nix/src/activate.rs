@@ -35,6 +35,9 @@ pub struct ActivationResults {
 
 /// Activate profiles on all targets in the deployment plan.
 pub fn activate_all(exec: &dyn Executor, plan: &DeploymentPlan) -> Result<ActivationResults> {
+    for target in &plan.targets {
+        crate::endpoint::validate_port(&target.node)?;
+    }
     let mut results = ActivationResults {
         succeeded: Vec::new(),
         errors: HashMap::new(),
@@ -49,13 +52,15 @@ pub fn activate_all(exec: &dyn Executor, plan: &DeploymentPlan) -> Result<Activa
     // TODO: parallelize with consortium's SshWorker + fanout
     // TODO: support rolling activation (sequential with health checks)
     for target in &plan.targets {
-        match activate_host(
+        match activate_host_bounded_with_port(
             exec,
             &target.node.target_host,
             &target.node.target_user,
+            target.node.target_port,
             &target.toplevel_path,
             &target.node.profile_type,
             plan.action,
+            None,
         ) {
             Ok(()) => {
                 results.succeeded.push(target.node.name.clone());
@@ -92,8 +97,39 @@ pub fn activate_host_bounded(
     action: DeployAction,
     limit: Option<Duration>,
 ) -> Result<()> {
+    activate_host_bounded_with_port(
+        exec,
+        host,
+        user,
+        None,
+        toplevel_path,
+        profile_type,
+        action,
+        limit,
+    )
+}
+
+/// Remote activation preserving the fleet's explicit SSH port.
+#[allow(clippy::too_many_arguments)]
+pub fn activate_host_bounded_with_port(
+    exec: &dyn Executor,
+    host: &str,
+    user: &str,
+    port: Option<u16>,
+    toplevel_path: &str,
+    profile_type: &ProfileType,
+    action: DeployAction,
+    limit: Option<Duration>,
+) -> Result<()> {
+    if port == Some(0) {
+        return Err(NixError::General("SSH port must be positive".into()));
+    }
+    let mut target = SshTarget::new(user, host).extra_opt("-oConnectTimeout=30");
+    if let Some(port) = port {
+        target = target.port(port);
+    }
     let site = Site::Remote {
-        target: SshTarget::new(user, host).extra_opt("-oConnectTimeout=30"),
+        target,
         sudo: user != "root",
     };
     let runner = Runner {

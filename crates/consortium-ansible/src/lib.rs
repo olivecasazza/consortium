@@ -9,6 +9,9 @@
 //! abstraction, so the pipeline is fully testable with
 //! [`ScriptedExecutor`](consortium_integration::ScriptedExecutor).
 
+pub mod integration;
+pub use integration::AnsibleIntegration;
+
 pub mod error;
 pub mod inventory;
 pub mod tasks;
@@ -17,8 +20,9 @@ pub use error::{AnsibleError, Result};
 
 use std::sync::Arc;
 
-use consortium::dag::{DagContext, DagReport, ErrorPolicy, StageBuilder};
+use consortium::dag::DagReport;
 use consortium_integration::fleet::FleetConfig;
+use consortium_integration::grammar::{Integration, Request};
 use consortium_integration::Executor;
 
 /// Options for a playbook run.
@@ -51,52 +55,60 @@ pub fn run_playbook(
     env_name: &str,
     opts: &AnsibleOptions,
 ) -> Result<DagReport> {
-    let ansible_config = config
+    config
         .ansible_config
         .as_ref()
         .ok_or(AnsibleError::NoConfig)?;
+    if targets.is_empty() {
+        return Err(AnsibleError::General(
+            "ansible: explicit targets must not be empty".into(),
+        ));
+    }
+    let mut request = Request::default()
+        .with("playbook", playbook)
+        .with("environment", env_name)
+        .with("check", opts.check_mode.to_string())
+        .with("fanout", opts.max_parallel.to_string());
+    request.targets = targets.to_vec();
+    AnsibleIntegration
+        .run_detailed(exec, config, &request)
+        .map(|result| result.dag)
+        .map_err(|error| AnsibleError::Dag(error.to_string()))
+}
 
-    let ctx = DagContext::new();
-    ctx.set_state("executor", exec);
+#[cfg(test)]
+mod typed_contract_tests {
+    use super::*;
+    use consortium_integration::fleet::AnsibleFleetConfig;
+    use consortium_integration::ScriptedExecutor;
 
-    // Build and copy the ansible env (shared across all hosts)
-    // Then run playbook per host
-    let report = StageBuilder::new()
-        .resources(targets.to_vec())
-        .stage("build-env", Some(1), {
-            let flake_uri = config.flake_uri.clone();
-            let env = env_name.to_string();
-            move |_host| Box::new(tasks::NixBuildAnsibleEnvTask::new(&env, &flake_uri))
-        })
-        .stage("copy-env", Some(1), {
-            let control = ansible_config.control_node.clone();
-            let env = env_name.to_string();
-            move |_host| {
-                Box::new(tasks::NixCopyAnsibleEnvTask {
-                    env_name: env.clone(),
-                    target_host: control.clone(),
-                    target_user: "root".to_string(),
-                })
-            }
-        })
-        .stage("run-playbook", Some(opts.max_parallel), {
-            let pb = playbook.to_string();
-            let env = env_name.to_string();
-            let control = ansible_config.control_node.clone();
-            let check = opts.check_mode;
-            move |host| {
-                Box::new(
-                    tasks::AnsiblePlaybookTask::new(host, &pb, &env, &control, "root")
-                        .with_check(check),
-                )
-            }
-        })
-        .error_policy(ErrorPolicy::ContinueIndependent)
-        .context(ctx)
-        .build()
-        .map_err(|e| AnsibleError::Dag(e.to_string()))?
-        .run()
-        .map_err(|e| AnsibleError::Dag(e.to_string()))?;
-
-    Ok(report)
+    #[test]
+    fn empty_explicit_targets_fail_before_effects() {
+        let config = FleetConfig {
+            nodes: Default::default(),
+            builders: Default::default(),
+            flake_uri: ".".into(),
+            ansible_config: Some(AnsibleFleetConfig {
+                control_node: "ctrl".into(),
+                ansible_version: None,
+                collections: vec![],
+                playbook_dir: None,
+                host_groups: Default::default(),
+            }),
+            slurm_config: None,
+            ray_config: None,
+            skypilot_config: None,
+        };
+        let exec = Arc::new(ScriptedExecutor::new());
+        assert!(run_playbook(
+            exec.clone(),
+            &config,
+            &[],
+            "site.yml",
+            "env",
+            &AnsibleOptions::default()
+        )
+        .is_err());
+        assert!(exec.effects().is_empty());
+    }
 }

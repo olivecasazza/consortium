@@ -25,6 +25,24 @@ use consortium_integration::exec::{CommandSpec, Executor, SshTarget};
 use crate::config::DeploymentNode;
 use crate::error::{NixError, Result};
 
+/// SSH address preserving configured ports and bracketed IPv6 literals.
+pub fn ssh_address(node: &DeploymentNode) -> String {
+    let host = if node.target_host.contains(':') && !node.target_host.starts_with('[') {
+        format!("[{}]", node.target_host)
+    } else {
+        node.target_host.clone()
+    };
+    match node.target_port {
+        Some(port) => format!("{}@{host}:{port}", node.target_user),
+        None => format!("{}@{host}", node.target_user),
+    }
+}
+
+/// Nix SSH store endpoint for the configured deployment node.
+pub fn store_uri(node: &DeploymentNode) -> String {
+    format!("ssh-ng://{}", ssh_address(node))
+}
+
 /// Default `ConnectTimeout` for endpoint probes, in seconds.
 pub const DEFAULT_CONNECT_TIMEOUT: u32 = 8;
 
@@ -86,12 +104,14 @@ impl<'a> EndpointResolver<'a> {
     /// The first candidate accepting `ssh … true` as the node's user, or
     /// [`NixError::SshFailed`] listing every endpoint tried.
     pub fn resolve(&self, node: &DeploymentNode) -> Result<String> {
+        validate_port(node)?;
         self.probe(node, &self.candidates(node))
     }
 
     /// [`resolve`](Self::resolve) with `failed`, an endpoint that just
     /// dropped a connection, probed last instead of in its usual place.
     pub fn resolve_after_failure(&self, node: &DeploymentNode, failed: &str) -> Result<String> {
+        validate_port(node)?;
         let mut candidates = self.candidates(node);
         if let Some(i) = candidates.iter().position(|c| c == failed) {
             let endpoint = candidates.remove(i);
@@ -121,6 +141,16 @@ impl<'a> EndpointResolver<'a> {
             ),
         })
     }
+}
+
+pub(crate) fn validate_port(node: &DeploymentNode) -> Result<()> {
+    if node.target_port == Some(0) {
+        return Err(NixError::General(format!(
+            "{}: SSH port must be positive",
+            node.name
+        )));
+    }
+    Ok(())
 }
 
 /// A node name up to its first dot — the flake attribute name for entries
@@ -225,9 +255,9 @@ mod tests {
 
         let calls = exec.invocations();
         assert_eq!(calls.len(), 3, "{calls:?}");
-        assert!(calls[0].contains("-oConnectTimeout=3 192.0.2.9 'true'"));
+        assert!(calls[0].contains("-oConnectTimeout=3 -- 192.0.2.9 'true'"));
         assert!(calls[1].contains("mac01.local 'true'"));
-        assert!(calls[2].contains("-l admin -oConnectTimeout=3 mac01 'true'"));
+        assert!(calls[2].contains("-l admin -oConnectTimeout=3 -- mac01 'true'"));
         exec.assert_invoked_containing("-oBatchMode=yes");
     }
 
@@ -258,5 +288,31 @@ mod tests {
         let r = EndpointResolver::new(&exec, &lookup);
         assert_eq!(r.resolve(&n).unwrap(), "mac01");
         exec.assert_invoked_containing("-l admin -p 2222");
+    }
+    #[test]
+    fn configured_ports_and_ipv6_are_preserved_in_store_and_cascade_addresses() {
+        for (host, formatted) in [("node", "node"), ("::1", "[::1]"), ("[::1]", "[::1]")] {
+            let mut target = node("node", host);
+            target.target_port = Some(2222);
+            assert_eq!(ssh_address(&target), format!("admin@{formatted}:2222"));
+            assert_eq!(
+                store_uri(&target),
+                format!("ssh-ng://admin@{formatted}:2222")
+            );
+            target.target_port = None;
+            assert_eq!(store_uri(&target), format!("ssh-ng://admin@{formatted}"));
+        }
+    }
+
+    #[test]
+    fn zero_port_is_rejected_before_lookup_or_probe() {
+        let exec = ScriptedExecutor::new();
+        let mut target = node("node", "node");
+        target.target_port = Some(0);
+        let lookup = |_: &str| -> Vec<IpAddr> { panic!("invalid port must not trigger DNS") };
+        assert!(EndpointResolver::new(&exec, &lookup)
+            .resolve(&target)
+            .is_err());
+        assert!(exec.effects().is_empty());
     }
 }

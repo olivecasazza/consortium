@@ -44,6 +44,9 @@
 //! # Ok::<(), consortium_skypilot::SkypilotError>(())
 //! ```
 
+pub mod integration;
+pub use integration::SkypilotIntegration;
+
 pub mod error;
 pub mod tasks;
 
@@ -51,9 +54,10 @@ pub use error::{Result, SkypilotError};
 
 use std::sync::Arc;
 
-use consortium::dag::{DagBuilder, DagContext, DagReport, ErrorPolicy};
+use consortium::dag::DagReport;
 use consortium_integration::exec::Executor;
 use consortium_integration::fleet::FleetConfig;
+use consortium_integration::grammar::{Integration, Request};
 
 /// Options for [`launch_task`].
 ///
@@ -84,59 +88,18 @@ pub fn launch_task(
     task_yaml: &str,
     opts: &SkyOptions,
 ) -> Result<DagReport> {
-    let sky_config = config
+    config
         .skypilot_config
         .as_ref()
         .ok_or(SkypilotError::NoConfig)?;
-
-    let ctx = DagContext::new();
-    ctx.set_state("fleet_config", config.clone());
-    ctx.set_state("executor", exec);
-
-    let mut dag = DagBuilder::new();
-
-    // Build environment
-    let build_id = format!("build-sky-env:{}", cluster_name);
-    dag.add_task(
-        &build_id,
-        tasks::NixBuildSkyEnvTask::new(cluster_name, &config.flake_uri),
-    );
-
-    // Launch cluster
-    let launch_id = format!("sky-launch:{}", cluster_name);
-    dag.add_task(
-        &launch_id,
-        tasks::SkyLaunchTask {
-            cluster_name: cluster_name.to_string(),
-            task_yaml: task_yaml.to_string(),
-            cloud: Some(sky_config.cloud.clone()),
-            region: sky_config.region.clone(),
-        },
-    );
-    dag.add_dep(&launch_id, &build_id);
-
-    // Teardown (optional)
-    if opts.teardown {
-        let down_id = format!("sky-down:{}", cluster_name);
-        dag.add_task(
-            &down_id,
-            tasks::SkyDownTask {
-                cluster_name: cluster_name.to_string(),
-            },
-        );
-        dag.add_dep(&down_id, &launch_id);
-    }
-
-    dag.error_policy(ErrorPolicy::FailFast);
-    dag.context(ctx);
-
-    let report = dag
-        .build()
-        .map_err(|e| SkypilotError::Dag(e.to_string()))?
-        .run()
-        .map_err(|e| SkypilotError::Dag(e.to_string()))?;
-
-    Ok(report)
+    let request = Request::default()
+        .with("name", cluster_name)
+        .with("task", task_yaml)
+        .with("teardown", opts.teardown.to_string());
+    SkypilotIntegration
+        .run_detailed(exec, config, &request)
+        .map(|result| result.dag)
+        .map_err(|error| SkypilotError::Dag(error.to_string()))
 }
 
 #[cfg(test)]

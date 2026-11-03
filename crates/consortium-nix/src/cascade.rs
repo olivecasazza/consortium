@@ -457,6 +457,11 @@ impl CascadeError {
 /// Implementations must run all edges concurrently (no serial fallback)
 /// — the cascade's whole point is in-round parallelism.
 pub trait RoundExecutor: Send + Sync {
+    /// Timestamp source for cascade events; simulations default to the Unix epoch.
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+    }
+
     fn dispatch(
         &self,
         nodes: &[CascadeNode],
@@ -786,7 +791,6 @@ pub fn run_cascade_with_events(
     events: Option<&dyn crate::cascade_events::EventSink>,
 ) -> CascadeResult {
     use crate::cascade_events::{CascadeEvent, Edge};
-    use std::time::SystemTime;
 
     let strategy_name = strategy.name().to_string();
 
@@ -797,7 +801,7 @@ pub fn run_cascade_with_events(
             n_nodes: nodes.len() as u32,
             seeded: seeded_vec,
             strategy: strategy_name.clone(),
-            at: SystemTime::now(),
+            at: executor.wall_now(),
         });
     }
 
@@ -850,7 +854,7 @@ pub fn run_cascade_with_events(
                     round,
                     src: *src,
                     tgt: *tgt,
-                    at: SystemTime::now(),
+                    at: executor.wall_now(),
                 });
             }
         }
@@ -1894,5 +1898,53 @@ mod tests {
                 (NodeId(5), NodeId(7)),
             ]
         );
+    }
+    #[test]
+    fn event_timestamps_use_the_round_executors_clock() {
+        use crate::cascade_events::{CascadeEvent, EventSink};
+        use std::sync::Mutex;
+        use std::time::SystemTime;
+        struct FixedClock;
+        impl RoundExecutor for FixedClock {
+            fn wall_now(&self) -> SystemTime {
+                SystemTime::UNIX_EPOCH + Duration::from_secs(42)
+            }
+            fn dispatch(
+                &self,
+                _: &[CascadeNode],
+                edges: &[(NodeId, NodeId)],
+                _: &NetworkProfile,
+            ) -> HashMap<(NodeId, NodeId), Result<Duration, CascadeError>> {
+                edges
+                    .iter()
+                    .map(|edge| (*edge, Ok(Duration::ZERO)))
+                    .collect()
+            }
+        }
+        #[derive(Default)]
+        struct Times(Mutex<Vec<SystemTime>>);
+        impl EventSink for Times {
+            fn emit(&self, event: &CascadeEvent) {
+                if let CascadeEvent::Started { at, .. } | CascadeEvent::EdgeStarted { at, .. } =
+                    event
+                {
+                    self.0.lock().unwrap().push(*at);
+                }
+            }
+        }
+        let (nodes, _) = make_nodes(2);
+        let times = Times::default();
+        let result = run_cascade_with_events(
+            nodes,
+            HashSet::from([NodeId(0)]),
+            NetworkProfile::default(),
+            &Log2FanOut,
+            &FixedClock,
+            3,
+            None,
+            Some(&times),
+        );
+        assert!(result.is_success());
+        assert_eq!(*times.0.lock().unwrap(), vec![FixedClock.wall_now(); 2]);
     }
 }

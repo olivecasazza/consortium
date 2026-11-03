@@ -87,6 +87,11 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run or plan an adapter using its shared integration grammar.
+    Integration {
+        #[command(subcommand)]
+        command: crate::integration::IntegrationCommand,
+    },
     /// Evaluate which hosts need deployment.
     Eval {
         /// Target nodes (bracket notation, e.g. hp[01-03]; @group references).
@@ -329,6 +334,31 @@ pub fn run() {
                 nix_args_from_flags(&args.nix_args, &args.darwin_nix_args, &args.nixos_nix_args);
 
             match command {
+                Commands::Integration { mut command } => {
+                    if !nix_args.nixos.is_empty() || !nix_args.darwin.is_empty() {
+                        if command.name != "nix" {
+                            out.error("root Nix arguments apply only to integration nix");
+                            process::exit(1);
+                        }
+                        for (key, words) in [
+                            ("nixos-nix-args", nix_args.nixos),
+                            ("darwin-nix-args", nix_args.darwin),
+                        ] {
+                            if !words.is_empty() {
+                                let value = words.join(" ");
+                                command
+                                    .request
+                                    .parameters
+                                    .entry(key.into())
+                                    .and_modify(|existing| {
+                                        *existing = format!("{value} {existing}")
+                                    })
+                                    .or_insert(value);
+                            }
+                        }
+                    }
+                    crate::integration::dispatch(command, &config, exec, &args.output.format)
+                }
                 Commands::Eval { on, tag } => cmd_eval(&config, on.as_deref(), &tag),
                 Commands::Build {
                     on,
@@ -463,7 +493,7 @@ fn nix_args_from_flags(all: &[String], darwin: &[String], nixos: &[String]) -> N
 ///
 /// `--on` tokens may be `@group` references; expanded names not found in
 /// the fleet fall back to their bare form (`host.local` → `host`).
-fn resolve_targets(
+pub(crate) fn resolve_targets(
     config: &FleetConfig,
     on: Option<&str>,
     tags: &[String],
