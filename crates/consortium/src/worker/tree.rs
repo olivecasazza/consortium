@@ -1291,7 +1291,7 @@ pub fn extract_tar(
             .ok_or_else(|| TarExtractError::corrupt("bad checksum field"))?;
         let computed: u64 = block[..148]
             .iter()
-            .chain(std::iter::repeat(&b' ').take(8))
+            .chain(std::iter::repeat_n(&b' ', 8))
             .chain(block[156..].iter())
             .map(|b| u64::from(*b))
             .sum();
@@ -1788,10 +1788,10 @@ mod tests {
             out.extend(tar_header_block(name, *mode, data.len(), b'0'));
             out.extend_from_slice(data);
             let pad = (TAR_BLOCK - data.len() % TAR_BLOCK) % TAR_BLOCK;
-            out.extend(std::iter::repeat(0u8).take(pad));
+            out.extend(std::iter::repeat_n(0u8, pad));
         }
         // two terminating zero blocks
-        out.extend(std::iter::repeat(0u8).take(2 * TAR_BLOCK));
+        out.extend(std::iter::repeat_n(0u8, 2 * TAR_BLOCK));
         out
     }
 
@@ -2146,16 +2146,20 @@ mod tests {
     fn test_tree_copy_forces_separate_stderr() {
         // copy/rcopy: internal tar/scp errors are kept on a separate
         // stderr stream instead of merging into stdout (upstream #622).
-        let mut cfg = TreeWorkerConfig::default();
-        cfg.source = Some("/tmp/src".to_string());
-        cfg.dest = Some("/tmp/dst".to_string());
+        let cfg = TreeWorkerConfig {
+            source: Some("/tmp/src".to_string()),
+            dest: Some("/tmp/dst".to_string()),
+            ..Default::default()
+        };
         let worker = TreeWorker::new_copy(make_nodeset("node1"), cfg).unwrap();
         assert!(worker.stderr(), "forward copy must separate stderr");
 
-        let mut cfg = TreeWorkerConfig::default();
-        cfg.source = Some("/tmp/src".to_string());
-        cfg.dest = Some("/tmp/dst".to_string());
-        cfg.reverse = true;
+        let cfg = TreeWorkerConfig {
+            source: Some("/tmp/src".to_string()),
+            dest: Some("/tmp/dst".to_string()),
+            reverse: true,
+            ..Default::default()
+        };
         let worker = TreeWorker::new_copy(make_nodeset("node1"), cfg).unwrap();
         assert!(worker.stderr(), "rcopy must separate stderr");
 
@@ -2207,9 +2211,11 @@ mod tests {
         assert_eq!(worker.remote_shell_command().as_deref(), Some("uname -a"));
 
         // forward copy sends the untar pipeline
-        let mut cfg = TreeWorkerConfig::default();
-        cfg.source = Some("/tmp/src".to_string());
-        cfg.dest = Some("/tmp/dst".to_string());
+        let cfg = TreeWorkerConfig {
+            source: Some("/tmp/src".to_string()),
+            dest: Some("/tmp/dst".to_string()),
+            ..Default::default()
+        };
         let worker = TreeWorker::new_copy(make_nodeset("node1"), cfg).unwrap();
         assert_eq!(
             worker.remote_shell_command().as_deref(),
@@ -2217,10 +2223,12 @@ mod tests {
         );
 
         // rcopy sends the tar|base64 pipeline built from dirname/basename
-        let mut cfg = TreeWorkerConfig::default();
-        cfg.source = Some("/data/dir".to_string());
-        cfg.dest = Some("/tmp/dst".to_string());
-        cfg.reverse = true;
+        let cfg = TreeWorkerConfig {
+            source: Some("/data/dir".to_string()),
+            dest: Some("/tmp/dst".to_string()),
+            reverse: true,
+            ..Default::default()
+        };
         let worker = TreeWorker::new_copy(make_nodeset("node1"), cfg).unwrap();
         assert_eq!(
             worker.remote_shell_command().as_deref(),

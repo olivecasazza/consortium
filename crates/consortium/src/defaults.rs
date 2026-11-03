@@ -444,12 +444,13 @@ mod tests {
         assert_eq!(paths[0], PathBuf::from("/etc/clustershell/defaults.conf"));
     }
 
-    // These tests mutate environment variables which is inherently racy
-    // in a multi-threaded test runner. They pass reliably with nextest
-    // (one process per test) but can flake with cargo test.
+    /// Serializes tests that mutate process environment variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_config_paths_with_cfgdir() {
-        // SAFETY: env mutation — nextest isolates this in its own process
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serializes env mutation across these tests.
         unsafe { std::env::set_var("CLUSTERSHELL_CFGDIR", "/tmp/test_cfg") };
         let paths = config_paths("defaults.conf");
         let last = paths.last().unwrap();
@@ -459,7 +460,8 @@ mod tests {
 
     #[test]
     fn test_config_paths_with_xdg() {
-        // SAFETY: env mutation — nextest isolates this in its own process
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serializes env mutation across these tests.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg_test") };
         unsafe { std::env::remove_var("CLUSTERSHELL_CFGDIR") };
         let paths = config_paths("defaults.conf");
@@ -485,20 +487,20 @@ mod tests {
         writeln!(f, "fanout = 128").unwrap();
         writeln!(f, "connect_timeout = 30.0").unwrap();
         writeln!(f, "debug = true").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "[task.default]").unwrap();
         writeln!(f, "stderr = true").unwrap();
         writeln!(f, "engine = select").unwrap();
         writeln!(f, "distant_workername = rsh").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "[nodeset]").unwrap();
         writeln!(f, "fold_axis = 1,2,3").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "[engine]").unwrap();
         writeln!(f, "port_qlimit = 200").unwrap();
         drop(f);
 
-        let d = Defaults::from_config(&[conf_path.clone()]);
+        let d = Defaults::from_config(std::slice::from_ref(&conf_path));
         assert_eq!(d.fanout(), 128);
         assert_eq!(d.connect_timeout(), 30.0);
         assert!(d.debug());
@@ -535,9 +537,9 @@ mod tests {
 
     #[test]
     fn test_config_value_accessors() {
-        assert_eq!(ConfigValue::Bool(true).as_bool(), true);
+        assert!(ConfigValue::Bool(true).as_bool());
         assert_eq!(ConfigValue::Int(42).as_int(), 42);
-        assert_eq!(ConfigValue::Float(3.14).as_float(), 3.14);
+        assert_eq!(ConfigValue::Float(2.5).as_float(), 2.5);
         assert_eq!(ConfigValue::Int(42).as_float(), 42.0);
         assert_eq!(ConfigValue::Str("hello".into()).as_str(), "hello");
         assert_eq!(

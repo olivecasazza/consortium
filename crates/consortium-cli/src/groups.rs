@@ -98,11 +98,7 @@ pub fn lookup_flat_group(dirs: &[PathBuf], source: Option<&str>, group: &str) ->
         let mut files: Vec<PathBuf> = entries
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.is_file() && !is_yaml(p))
-            .filter(|p| {
-                source.map_or(true, |s| {
-                    p.file_stem().and_then(|st| st.to_str()) == Some(s)
-                })
-            })
+            .filter(|p| source.is_none_or(|s| p.file_stem().and_then(|st| st.to_str()) == Some(s)))
             .collect();
         files.sort();
         for file in files {

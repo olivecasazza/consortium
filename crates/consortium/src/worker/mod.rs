@@ -253,6 +253,14 @@ pub enum WorkerState {
     Aborted,
 }
 
+/// Buffered output taken from an [`EventHandler`]: (stdout, stderr, timeouts),
+/// with stdout/stderr keyed by node.
+pub type TakenBuffers = (
+    HashMap<String, Vec<Vec<u8>>>,
+    HashMap<String, Vec<Vec<u8>>>,
+    HashSet<String>,
+);
+
 /// Event handler trait for worker events.
 ///
 /// Implement this trait to receive notifications about worker events.
@@ -285,13 +293,7 @@ pub trait EventHandler: Send {
     /// Extract buffered stdout/stderr data from this handler.
     /// Returns (stdout, stderr, timeouts) where stdout/stderr are node -> `Vec<chunks>`.
     /// Default returns empty maps. Used by Task to collect results after execution.
-    fn take_buffers(
-        &mut self,
-    ) -> (
-        HashMap<String, Vec<Vec<u8>>>,
-        HashMap<String, Vec<Vec<u8>>>,
-        HashSet<String>,
-    ) {
+    fn take_buffers(&mut self) -> TakenBuffers {
         (HashMap::new(), HashMap::new(), HashSet::new())
     }
 }
@@ -365,7 +367,7 @@ mod tests {
     #[test]
     fn test_worker_state_clone() {
         let state = WorkerState::Pending;
-        let cloned = state.clone();
+        let cloned = state;
         assert_eq!(state, cloned);
     }
 

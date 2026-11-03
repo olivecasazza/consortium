@@ -136,11 +136,13 @@ impl Default for DagBuilder {
 
 // ─── StageBuilder ────────────────────────────────────────────────────────────
 
+type TaskFactory = Box<dyn Fn(&str) -> Box<dyn DagTask>>;
+
 /// A stage definition for the template pattern.
 struct StageDef {
     name: String,
     concurrency_limit: Option<usize>,
-    factory: Box<dyn Fn(&str) -> Box<dyn DagTask>>,
+    factory: TaskFactory,
 }
 
 /// Template/stage pattern builder.

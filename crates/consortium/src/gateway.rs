@@ -361,8 +361,7 @@ mod tests {
         );
         assert!(gw.channel.closed);
         assert!(!gw.channel.setup);
-        // protocol 7 must exceed the pinned gateway protocol
-        assert!(7 > GW_PICKLE_PROTOCOL);
+        const _: () = assert!(7 > GW_PICKLE_PROTOCOL);
     }
 
     /// Mirror of TreeGatewayTest::test_channel_err_no_type_msg (gateway
