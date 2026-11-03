@@ -178,7 +178,7 @@ pub(crate) fn prepare_builders(
         exec.diagnostic("warning: no healthy builders available, building locally");
         return Ok(None);
     }
-    build::generate_machines_file_from_healthy(exec, &healthy).map(Some)
+    build::write_machines_file(exec, &healthy).map(Some)
 }
 
 /// Cascade-driven deploy: same eval/build/activate as [`deploy`], but

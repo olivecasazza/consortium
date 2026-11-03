@@ -1,6 +1,7 @@
 //! Nix build orchestration — build closures locally or with distributed builders.
 
 use std::collections::HashMap;
+use std::io::Write as IoWrite;
 use std::sync::{Arc, Mutex};
 
 use consortium::dag::types::{FnTask, TaskOutcome};
@@ -37,7 +38,7 @@ pub fn build_closures(
 ) -> Result<BuildResults> {
     // Generate temporary machines file if we have healthy builders
     let machines_file = healthy_builders
-        .map(|builders| generate_machines_file_from_healthy(&*exec, builders))
+        .map(|builders| write_machines_file(&*exec, builders))
         .transpose()?;
 
     // Shared results collected by DAG tasks
@@ -212,13 +213,8 @@ pub fn build_system_toplevel(
     build_flake_attr_with_args(exec, &attr, machines_file, extra_args)
 }
 
-/// Generate a temporary machines file from healthy builders.
-/// Public so the deploy pipeline can call it before building the DAG.
-pub fn generate_machines_file_from_healthy(
-    exec: &dyn Executor,
-    builders: &[HealthStatus],
-) -> Result<TemporaryFile> {
-    let content: String = builders
+fn machines_content(builders: &[HealthStatus]) -> String {
+    builders
         .iter()
         .filter(|b| b.healthy)
         .map(|b| {
@@ -238,13 +234,46 @@ pub fn generate_machines_file_from_healthy(
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
 
-    exec.temporary_file("consortium-machines", content.as_bytes())
+/// Write a machines file for the healthy builders as an executor-owned
+/// temporary file. Public so the deploy pipeline can call it before building
+/// the DAG.
+pub fn write_machines_file(
+    exec: &dyn Executor,
+    builders: &[HealthStatus],
+) -> Result<TemporaryFile> {
+    exec.temporary_file("consortium-machines", machines_content(builders).as_bytes())
         .map_err(|source| NixError::MachinesFile {
             path: "consortium-machines".into(),
             source,
         })
+}
+
+/// Generate a machines file at a fixed path under the system temp directory.
+#[deprecated(note = "use `write_machines_file`, which uses an executor-owned temporary file")]
+pub fn generate_machines_file_from_healthy(builders: &[HealthStatus]) -> Result<String> {
+    let content = machines_content(builders);
+
+    let dir = std::env::temp_dir().join("consortium-nix");
+    std::fs::create_dir_all(&dir).map_err(|e| NixError::MachinesFile {
+        path: dir.clone(),
+        source: e,
+    })?;
+
+    let path = dir.join("machines");
+    let mut file = std::fs::File::create(&path).map_err(|e| NixError::MachinesFile {
+        path: path.clone(),
+        source: e,
+    })?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| NixError::MachinesFile {
+            path: path.clone(),
+            source: e,
+        })?;
+
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
@@ -272,7 +301,7 @@ mod tests {
         }];
 
         let exec = ScriptedExecutor::new();
-        let file = generate_machines_file_from_healthy(&exec, &builders).unwrap();
+        let file = write_machines_file(&exec, &builders).unwrap();
         let content = String::from_utf8(exec.temporary_contents(file.path()).unwrap()).unwrap();
         assert!(content.contains("ssh-ng://root@192.168.1.121"));
         assert!(content.contains("x86_64-linux"));
@@ -353,11 +382,8 @@ mod temporary_effect_tests {
             latency_ms: None,
             error: None,
         };
-        let file = generate_machines_file_from_healthy(
-            &exec,
-            &[builder("good", true), builder("bad", false)],
-        )
-        .unwrap();
+        let file =
+            write_machines_file(&exec, &[builder("good", true), builder("bad", false)]).unwrap();
         let path = file.path().to_owned();
         let content = String::from_utf8(exec.temporary_contents(&path).unwrap()).unwrap();
         assert!(content.contains("root@good"));
