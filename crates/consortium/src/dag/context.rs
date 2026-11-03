@@ -19,6 +19,13 @@ use crate::dag::types::TaskId;
 pub struct DagContext {
     outputs: Arc<Mutex<HashMap<TaskId, Box<dyn Any + Send>>>>,
     user_state: Arc<Mutex<HashMap<String, Box<dyn Any + Send>>>>,
+    state_override: Option<Arc<StateOverride>>,
+}
+
+struct StateOverride {
+    key: String,
+    value: Mutex<Box<dyn Any + Send>>,
+    parent: Option<Arc<StateOverride>>,
 }
 
 impl DagContext {
@@ -27,6 +34,7 @@ impl DagContext {
         Self {
             outputs: Arc::new(Mutex::new(HashMap::new())),
             user_state: Arc::new(Mutex::new(HashMap::new())),
+            state_override: None,
         }
     }
 
@@ -48,8 +56,29 @@ impl DagContext {
 
     /// Get user-provided state by key.
     pub fn get_state<T: Clone + 'static>(&self, key: &str) -> Option<T> {
+        let mut current = self.state_override.as_ref();
+        while let Some(state) = current {
+            if state.key == key {
+                return state.value.lock().unwrap().downcast_ref::<T>().cloned();
+            }
+            current = state.parent.as_ref();
+        }
         let map = self.user_state.lock().unwrap();
         map.get(key)?.downcast_ref::<T>().cloned()
+    }
+
+    /// Override one read in a task-local view; outputs and ordinary state writes
+    /// remain shared. Existing overrides are inherited without mutating siblings.
+    pub fn with_state_override<T: Send + 'static>(&self, key: &str, value: T) -> Self {
+        Self {
+            outputs: Arc::clone(&self.outputs),
+            user_state: Arc::clone(&self.user_state),
+            state_override: Some(Arc::new(StateOverride {
+                key: key.into(),
+                value: Mutex::new(Box::new(value)),
+                parent: self.state_override.clone(),
+            })),
+        }
     }
 
     /// Set user-provided state.
@@ -102,5 +131,37 @@ mod tests {
         ctx1.set_state("shared", true);
         let val: bool = ctx2.get_state("shared").unwrap();
         assert!(val);
+    }
+
+    #[test]
+    fn task_overrides_isolate_reads_and_share_pipeline_outputs() {
+        let base = DagContext::new();
+        base.set_state("executor", "base".to_owned());
+        let first = base.with_state_override("executor", "first".to_owned());
+        let second = base.with_state_override("executor", "second".to_owned());
+        let nested = first.with_state_override("other", 5_u8);
+        assert_eq!(nested.get_state::<String>("executor").unwrap(), "first");
+        assert_eq!(second.get_state::<String>("executor").unwrap(), "second");
+        assert_eq!(base.get_state::<String>("executor").unwrap(), "base");
+        assert_eq!(nested.get_state::<u8>("other"), Some(5));
+        assert_eq!(first.get_state::<u8>("other"), None);
+        std::thread::scope(|scope| {
+            for (index, view) in [first, second].into_iter().enumerate() {
+                scope.spawn(move || {
+                    view.set_output(TaskId::from(format!("out:{index}")), index);
+                    view.set_state(&format!("state:{index}"), index);
+                });
+            }
+        });
+        for index in 0..2 {
+            assert_eq!(
+                base.get_output::<usize>(&TaskId::from(format!("out:{index}"))),
+                Some(index)
+            );
+            assert_eq!(
+                base.get_state::<usize>(&format!("state:{index}")),
+                Some(index)
+            );
+        }
     }
 }

@@ -40,3 +40,8 @@ A design document that has not been broken into tasks is a `draft/`.
 declarative microVM test fleet in `nix/vms/`. See
 [`nix/vms/README.md`](../nix/vms/README.md) for the module contract it
 describes.
+
+## Integration grammar
+
+[Integration grammar](draft/integration-grammar.md) specifies the shared runtime
+and CLI contract and its parameterized acceptance suite.

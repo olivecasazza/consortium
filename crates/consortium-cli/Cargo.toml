@@ -70,3 +70,10 @@ tempfile = "3"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.consortium.integrations]
+consortium-nix = "NixIntegration"
+consortium-ansible = "AnsibleIntegration"
+consortium-slurm = "SlurmIntegration"
+consortium-ray = "RayIntegration"
+consortium-skypilot = "SkypilotIntegration"

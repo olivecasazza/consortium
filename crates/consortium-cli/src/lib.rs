@@ -8,6 +8,7 @@ pub mod event_render;
 pub mod fold;
 pub mod grammar;
 pub mod groups;
+pub mod integration;
 pub mod inventory;
 pub mod molt;
 pub mod output;

@@ -15,7 +15,6 @@
 
 use std::fmt::Display;
 use std::sync::Arc;
-use std::time::Instant;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
 use consortium_integration::exec::Executor;
@@ -46,15 +45,17 @@ fn options_from(ctx: &DagContext) -> DeployOptions {
 
 /// Look up `host` in the fleet config.
 fn node_from<'c>(config: &'c FleetConfig, host: &str) -> Result<&'c DeploymentNode, TaskOutcome> {
-    config
+    let node = config
         .nodes
         .get(host)
-        .ok_or_else(|| TaskOutcome::Failed(format!("unknown host: {}", host)))
+        .ok_or_else(|| TaskOutcome::Failed(format!("unknown host: {}", host)))?;
+    crate::endpoint::validate_port(node).map_err(|error| TaskOutcome::Failed(error.to_string()))?;
+    Ok(node)
 }
 
 /// The node's own nix store, reached over ssh as its deploy user.
 fn target_store_uri(node: &DeploymentNode) -> String {
-    format!("ssh-ng://{}@{}", node.target_user, node.target_host)
+    crate::endpoint::store_uri(node)
 }
 
 /// Evaluate a single host — resolve its toplevel store path.
@@ -228,7 +229,7 @@ impl DagTask for NixCopyTask {
 
         let store_uri = target_store_uri(node);
 
-        match stage(&self.host, "copy", || {
+        match stage(&*exec, &self.host, "copy", || {
             copy::copy_closure_with(&*exec, &toplevel_path, &store_uri)
         }) {
             Ok(()) => {
@@ -297,7 +298,7 @@ impl DagTask for NixActivateTask {
         };
 
         let options = options_from(ctx);
-        let result = stage(&self.host, "activate", || {
+        let result = stage(&*exec, &self.host, "activate", || {
             if options.is_local(&self.host) {
                 activate::activate_local_bounded(
                     &*exec,
@@ -308,10 +309,11 @@ impl DagTask for NixActivateTask {
                     options.activate_timeout,
                 )
             } else {
-                activate::activate_host_bounded(
+                activate::activate_host_bounded_with_port(
                     &*exec,
                     &node.target_host,
                     &node.target_user,
+                    node.target_port,
                     &toplevel_path,
                     &node.profile_type,
                     action,
@@ -331,14 +333,19 @@ impl DagTask for NixActivateTask {
 }
 
 /// Run one host's `name` stage, reporting its start and outcome on stderr.
-fn stage<T, E: Display>(host: &str, name: &str, f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
-    eprintln!("[{host}] {name}: started");
-    let started = Instant::now();
+fn stage<T, E: Display>(
+    exec: &dyn Executor,
+    host: &str,
+    name: &str,
+    f: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    exec.diagnostic(&format!("[{host}] {name}: started"));
+    let started = exec.monotonic_now();
     let result = f();
-    let secs = started.elapsed().as_secs_f64();
+    let secs = exec.monotonic_now().saturating_sub(started).as_secs_f64();
     match &result {
-        Ok(_) => eprintln!("[{host}] {name}: done in {secs:.1}s"),
-        Err(e) => eprintln!("[{host}] {name}: failed after {secs:.1}s: {e}"),
+        Ok(_) => exec.diagnostic(&format!("[{host}] {name}: done in {secs:.1}s")),
+        Err(e) => exec.diagnostic(&format!("[{host}] {name}: failed after {secs:.1}s: {e}")),
     }
     result
 }
@@ -550,5 +557,100 @@ mod tests {
         scripted.assert_not_invoked_containing("nix copy");
         let copied: Option<String> = ctx.get_output(&TaskId("copy:hp01".to_string()));
         assert_eq!(copied.as_deref(), Some("/nix/store/abc-toplevel"));
+    }
+    #[test]
+    fn configured_ports_reach_build_copy_and_every_activation_command() {
+        use consortium_integration::Effect;
+        for profile in [ProfileType::Nixos, ProfileType::NixDarwin] {
+            for build_on_target in [false, true] {
+                let exec =
+                    Arc::new(ScriptedExecutor::new().on("", ExecOutput::ok("/nix/store/toplevel")));
+                let mut config = test_fleet_config();
+                let node = config.nodes.get_mut("hp01").unwrap();
+                node.profile_type = profile.clone();
+                node.target_port = Some(2222);
+                node.build_on_target = build_on_target;
+                let ctx = DagContext::new();
+                ctx.set_state("executor", exec.clone() as Arc<dyn Executor>);
+                ctx.set_state("fleet_config", config);
+                ctx.set_state("action", DeployAction::Switch);
+                ctx.set_output(TaskId("eval:hp01".into()), "/nix/store/toplevel".to_owned());
+                assert!(matches!(
+                    NixBuildTask::new("hp01").execute(&ctx),
+                    TaskOutcome::Success
+                ));
+                assert!(matches!(
+                    NixCopyTask::new("hp01").execute(&ctx),
+                    TaskOutcome::Success
+                ));
+                assert!(matches!(
+                    NixActivateTask::new("hp01").execute(&ctx),
+                    TaskOutcome::Success
+                ));
+                let commands: Vec<_> = exec
+                    .effects()
+                    .into_iter()
+                    .filter_map(|effect| match effect {
+                        Effect::Command { spec, .. } => Some(spec),
+                        _ => None,
+                    })
+                    .collect();
+                let build = commands
+                    .iter()
+                    .find(|spec| {
+                        spec.program == "nix" && spec.args.first().is_some_and(|arg| arg == "build")
+                    })
+                    .unwrap();
+                let uri = "ssh-ng://root@192.168.1.121:2222";
+                if build_on_target {
+                    assert!(build.args.windows(2).any(|args| args == ["--store", uri]));
+                    assert!(!commands
+                        .iter()
+                        .any(|spec| spec.args.first().is_some_and(|arg| arg == "copy")));
+                } else {
+                    let copy = commands
+                        .iter()
+                        .find(|spec| spec.args.first().is_some_and(|arg| arg == "copy"))
+                        .unwrap();
+                    assert!(copy.args.windows(2).any(|args| args == ["--to", uri]));
+                }
+                let remote: Vec<_> = commands
+                    .iter()
+                    .filter_map(|spec| spec.ssh.as_ref())
+                    .collect();
+                assert!(!remote.is_empty());
+                assert!(remote
+                    .iter()
+                    .all(|target| target.port == Some(2222) && target.host == "192.168.1.121"));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_port_blocks_tasks_before_effects() {
+        let exec = Arc::new(ScriptedExecutor::new());
+        let mut config = test_fleet_config();
+        config.nodes.get_mut("hp01").unwrap().target_port = Some(0);
+        let ctx = DagContext::new();
+        ctx.set_state("executor", exec.clone() as Arc<dyn Executor>);
+        ctx.set_state("fleet_config", config);
+        ctx.set_state("action", DeployAction::Switch);
+        for phase in ["eval", "build", "copy"] {
+            ctx.set_output(
+                TaskId(format!("{phase}:hp01")),
+                "/nix/store/toplevel".to_owned(),
+            );
+        }
+        for task in [
+            Box::new(NixEvalTask::new("hp01")) as Box<dyn DagTask>,
+            Box::new(NixBuildTask::new("hp01")),
+            Box::new(NixCopyTask::new("hp01")),
+            Box::new(NixActivateTask::new("hp01")),
+        ] {
+            assert!(
+                matches!(task.execute(&ctx), TaskOutcome::Failed(message) if message.contains("port must be positive"))
+            );
+        }
+        assert!(exec.effects().is_empty());
     }
 }

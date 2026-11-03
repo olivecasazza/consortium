@@ -27,16 +27,11 @@ let
   workspace = (builtins.fromTOML (builtins.readFile (workspaceRoot + "/Cargo.toml"))).workspace;
 
   manifestOf =
-    member:
-    builtins.fromTOML (builtins.readFile (workspaceRoot + "/${member}/Cargo.toml"));
+    member: builtins.fromTOML (builtins.readFile (workspaceRoot + "/${member}/Cargo.toml"));
 
-  hasNormalDep =
-    manifest: crate:
-    builtins.hasAttr crate (manifest.dependencies or { });
+  hasNormalDep = manifest: crate: builtins.hasAttr crate (manifest.dependencies or { });
 
-  hasDevDep =
-    manifest: crate:
-    builtins.hasAttr crate (manifest.dev-dependencies or { });
+  hasDevDep = manifest: crate: builtins.hasAttr crate (manifest.dev-dependencies or { });
 
   hasContractSuite = member: builtins.pathExists (workspaceRoot + "/${member}/tests/contract.rs");
 
@@ -58,30 +53,46 @@ let
     hasNormalDep m "consortium-integration" && !lib.elem m.package.name infraCrates
   ) crateMembers;
 
-  harnessDevs = lib.filter (member: hasDevDep (manifestOf member) "consortium-integration-testkit") crateMembers;
+  harnessDevs = lib.filter (
+    member: hasDevDep (manifestOf member) "consortium-integration-testkit"
+  ) crateMembers;
 
-  assertions =
-    [
-      (lib.assertMsg (adapters != [ ])
-        "integration-enrollment: no integration adapters found — expected at least one crates/ member with a normal dependency on consortium-integration")
-    ]
-    ++ map (
-      member:
-      let
-        m = manifestOf member;
-      in
-      lib.assertMsg
-        ((hasDevDep m "consortium-integration-testkit") && hasContractSuite member)
-        "integration-enrollment: adapter `${m.package.name}` (${member}) depends on consortium-integration but is not enrolled in the contract suite; add a dev-dependency on consortium-integration-testkit and tests/contract.rs (see crates/consortium-slurm/tests/contract.rs), or add it to infraCrates in nix/lib/enrollment.nix if it is infrastructure"
-    ) adapters
-    ++ map (
-      member:
-      let
-        m = manifestOf member;
-      in
-      lib.assertMsg (hasContractSuite member)
-        "integration-enrollment: `${m.package.name}` (${member}) dev-depends on consortium-integration-testkit but has no tests/contract.rs contract suite"
-    ) harnessDevs;
+  cliManifest = manifestOf "crates/consortium-cli";
+  registry = cliManifest.package.metadata.consortium.integrations or { };
+  adapterNames = map (member: (manifestOf member).package.name) adapters;
+
+  assertions = [
+    (lib.assertMsg (adapters != [ ])
+      "integration-enrollment: no integration adapters found — expected at least one crates/ member with a normal dependency on consortium-integration"
+    )
+  ]
+  ++ map (
+    member:
+    let
+      m = manifestOf member;
+    in
+    lib.assertMsg ((hasDevDep m "consortium-integration-testkit") && hasContractSuite member)
+      "integration-enrollment: adapter `${m.package.name}` (${member}) depends on consortium-integration but is not enrolled in the contract suite; add a dev-dependency on consortium-integration-testkit and tests/contract.rs (see crates/consortium-slurm/tests/contract.rs), or add it to infraCrates in nix/lib/enrollment.nix if it is infrastructure"
+  ) adapters
+  ++ map (
+    member:
+    let
+      m = manifestOf member;
+    in
+    lib.assertMsg (builtins.hasAttr m.package.name registry && hasNormalDep cliManifest m.package.name)
+      "integration-enrollment: adapter `${m.package.name}` must be a CLI dependency and registered in package.metadata.consortium.integrations"
+  ) adapters
+  ++ map (
+    name:
+    lib.assertMsg (lib.elem name adapterNames) "integration-enrollment: CLI registry entry `${name}` is not an integration adapter"
+  ) (builtins.attrNames registry)
+  ++ map (
+    member:
+    let
+      m = manifestOf member;
+    in
+    lib.assertMsg (hasContractSuite member) "integration-enrollment: `${m.package.name}` (${member}) dev-depends on consortium-integration-testkit but has no tests/contract.rs contract suite"
+  ) harnessDevs;
 in
 assert lib.all lib.id assertions;
 {

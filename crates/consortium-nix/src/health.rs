@@ -1,7 +1,5 @@
 //! Builder health checking — probe builders for SSH connectivity and Nix store access.
 
-use std::time::Instant;
-
 use consortium_integration::exec::{CommandSpec, Executor, ProcessExecutor, SshTarget};
 
 use crate::config::{Builder, FleetConfig};
@@ -40,7 +38,7 @@ pub fn check_builders_with(exec: &dyn Executor, config: &FleetConfig) -> Vec<Hea
 
 /// Probe a single builder for health via an [`Executor`].
 pub fn check_builder_with(exec: &dyn Executor, builder: &Builder) -> HealthStatus {
-    let start = Instant::now();
+    let start = exec.monotonic_now();
 
     // First check SSH connectivity
     let ssh_spec = CommandSpec::new("true")
@@ -59,7 +57,7 @@ pub fn check_builder_with(exec: &dyn Executor, builder: &Builder) -> HealthStatu
             error: Some(format!("SSH connection failed: {}", output.stderr.trim())),
         },
         Ok(_) => {
-            let ssh_latency = start.elapsed().as_millis() as u64;
+            let ssh_latency = exec.monotonic_now().saturating_sub(start).as_millis() as u64;
 
             // Now check nix store accessibility
             let store_uri = format!("{}://{}@{}", builder.protocol, builder.user, builder.host);
@@ -81,7 +79,7 @@ pub fn check_builder_with(exec: &dyn Executor, builder: &Builder) -> HealthStatu
                 Ok(_) => HealthStatus {
                     builder: builder.clone(),
                     healthy: true,
-                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    latency_ms: Some(exec.monotonic_now().saturating_sub(start).as_millis() as u64),
                     error: None,
                 },
             }
@@ -119,11 +117,11 @@ pub fn warm_connections(
 
         if !output.success() {
             // Non-fatal: just log and continue
-            eprintln!(
+            exec.diagnostic(&format!(
                 "warning: failed to warm SSH connection to {}: {}",
                 b.host,
                 output.stderr.trim()
-            );
+            ));
         }
     }
 

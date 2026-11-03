@@ -7,7 +7,7 @@
 //! fails with `executor not in context` when the key is absent.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
 use consortium_integration::exec::{CommandSpec, Executor, SshTarget};
@@ -135,13 +135,16 @@ impl DagTask for SlurmSubmitTask {
 
         match exec.exec(&spec) {
             Ok(out) if out.success() => {
-                // sbatch output: "Submitted batch job 12345"
-                let job_id: u64 = out
+                let Some(job_id) = out
                     .stdout
                     .trim()
-                    .rsplit_once(' ')
-                    .and_then(|(_, id)| id.parse().ok())
-                    .unwrap_or(0);
+                    .strip_prefix("Submitted batch job ")
+                    .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .filter(|id| *id > 0)
+                else {
+                    return TaskOutcome::Failed("sbatch returned no valid job ID".into());
+                };
                 ctx.set_output(TaskId(format!("slurm-submit:{}", self.job_name)), job_id);
                 TaskOutcome::Success
             }
@@ -189,6 +192,11 @@ impl SlurmWaitTask {
         self.timeout = Some(timeout);
         self
     }
+
+    pub fn with_optional_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
 }
 
 impl DagTask for SlurmWaitTask {
@@ -203,16 +211,19 @@ impl DagTask for SlurmWaitTask {
             None => return TaskOutcome::Failed("no job ID from submit".into()),
         };
 
-        let start = Instant::now();
+        if self.poll_interval.is_zero() {
+            return TaskOutcome::Failed("poll interval must be positive".into());
+        }
+        let start = exec.monotonic_now();
 
         loop {
             // Check timeout
             if let Some(timeout) = self.timeout {
-                if start.elapsed() > timeout {
+                if exec.monotonic_now().saturating_sub(start) >= timeout {
                     return TaskOutcome::Failed(format!(
                         "job {} timed out after {}s",
                         job_id,
-                        start.elapsed().as_secs()
+                        exec.monotonic_now().saturating_sub(start).as_secs()
                     ));
                 }
             }
@@ -229,7 +240,14 @@ impl DagTask for SlurmWaitTask {
                 ])
                 .ssh(SshTarget::new(&self.submit_user, &self.submit_host));
 
-            match exec.exec(&spec) {
+            let output = match self.timeout {
+                Some(timeout) => exec.exec_timeout(
+                    &spec,
+                    timeout.saturating_sub(exec.monotonic_now().saturating_sub(start)),
+                ),
+                None => exec.exec(&spec),
+            };
+            match output {
                 Ok(out) if out.success() => {
                     let state = out.stdout.lines().next().unwrap_or("").trim().to_string();
                     match state.as_str() {
@@ -249,7 +267,15 @@ impl DagTask for SlurmWaitTask {
                 _ => {} // exec/ssh error — retry next poll
             }
 
-            std::thread::sleep(self.poll_interval);
+            let delay = match self.timeout {
+                Some(timeout) => self
+                    .poll_interval
+                    .min(timeout.saturating_sub(exec.monotonic_now().saturating_sub(start))),
+                None => self.poll_interval,
+            };
+            if let Err(error) = exec.sleep(delay) {
+                return TaskOutcome::Failed(format!("poll delay failed: {error}"));
+            }
         }
     }
 
@@ -289,6 +315,7 @@ impl DagTask for SlurmCollectTask {
         }
 
         let spec = CommandSpec::new("cat")
+            .arg("--")
             .arg(&self.output_pattern)
             .ssh(SshTarget::new(&self.submit_user, &self.submit_host));
 
@@ -594,5 +621,75 @@ mod tests {
             _ => panic!("expected Failed outcome"),
         }
         assert_eq!(scripted.invocation_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod poll_effect_tests {
+    use super::*;
+    use consortium_integration::exec::{Effect, ExecOutput, Rule, ScriptedExecutor};
+
+    fn ctx(exec: Arc<dyn Executor>) -> DagContext {
+        let ctx = DagContext::new();
+        ctx.set_state("executor", exec);
+        ctx.set_output(TaskId("slurm-submit:job".into()), 17u64);
+        ctx
+    }
+
+    #[test]
+    fn timeout_bounds_poll_command_and_sleep_without_wall_clock_waiting() {
+        let exec = Arc::new(ScriptedExecutor::new().on("sacct", ExecOutput::ok("RUNNING")));
+        let outcome = SlurmWaitTask::new("job", "submit", "root")
+            .with_poll_interval(Duration::from_secs(10))
+            .with_timeout(Duration::from_secs(3))
+            .execute(&ctx(exec.clone()));
+        assert!(matches!(outcome, TaskOutcome::Failed(message) if message.contains("timed out")));
+        assert_eq!(exec.invocation_count(), 1);
+        assert_eq!(exec.monotonic_now(), Duration::from_secs(3));
+        assert!(
+            matches!(&exec.effects()[..], [Effect::Command { timeout: Some(limit), .. }, Effect::Sleep { duration }] if *limit == Duration::from_secs(3) && *duration == Duration::from_secs(3))
+        );
+    }
+
+    #[test]
+    fn hung_status_poll_cannot_outlive_declared_timeout() {
+        let exec = Arc::new(ScriptedExecutor::new().rule(Rule::slow_containing_all(
+            ["sacct"],
+            Duration::from_secs(20),
+            ExecOutput::ok("COMPLETED"),
+        )));
+        let outcome = SlurmWaitTask::new("job", "submit", "root")
+            .with_timeout(Duration::from_secs(3))
+            .execute(&ctx(exec.clone()));
+        assert!(matches!(outcome, TaskOutcome::Failed(message) if message.contains("timed out")));
+        assert_eq!(exec.invocation_count(), 1);
+        assert_eq!(exec.monotonic_now(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn zero_poll_interval_is_rejected_before_any_effect() {
+        let exec = Arc::new(ScriptedExecutor::new());
+        let outcome = SlurmWaitTask::new("job", "submit", "root")
+            .with_poll_interval(Duration::ZERO)
+            .execute(&ctx(exec.clone()));
+        assert!(matches!(outcome, TaskOutcome::Failed(message) if message.contains("positive")));
+        assert!(exec.effects().is_empty());
+    }
+
+    #[test]
+    fn unsupported_sleep_stops_retrying_instead_of_using_host_sleep() {
+        struct NoSleep;
+        impl Executor for NoSleep {
+            fn exec(
+                &self,
+                _: &CommandSpec,
+            ) -> Result<ExecOutput, consortium_integration::ExecError> {
+                Ok(ExecOutput::ok("RUNNING"))
+            }
+        }
+        let outcome = SlurmWaitTask::new("job", "submit", "root").execute(&ctx(Arc::new(NoSleep)));
+        assert!(
+            matches!(outcome, TaskOutcome::Failed(message) if message.contains("poll delay failed"))
+        );
     }
 }

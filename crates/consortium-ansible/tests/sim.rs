@@ -102,18 +102,21 @@ fn run(sim: &Arc<SimExecutor>, targets: &[String], opts: &AnsibleOptions) -> Dag
         .expect("run_playbook returns Ok(report); task failures live in the report")
 }
 
-/// Every completed `<stage>:<host>` task id for both targets.
+/// Shared staging completes once, followed by one playbook task per target.
 fn assert_all_stages_completed(report: &DagReport) {
-    for host in ["node01", "node02"] {
-        for stage in ["build-env", "copy-env", "run-playbook"] {
-            let id = TaskId(format!("{stage}:{host}"));
-            assert!(
-                report.completed.contains(&id),
-                "missing completed task {stage}:{host} (failed: {:?})",
-                report.failed
-            );
-        }
+    for id in [
+        format!("build-ansible-env:{ENV_NAME}"),
+        format!("copy-ansible-env:{ENV_NAME}"),
+        "run-playbook:node01".into(),
+        "run-playbook:node02".into(),
+    ] {
+        assert!(
+            report.completed.contains(&TaskId(id.clone())),
+            "missing completed task {id} (failed: {:?})",
+            report.failed
+        );
     }
+    assert_eq!(report.completed.len(), 4);
 }
 
 /// Playbook invocations: ssh control commands running ansible-playbook.
@@ -153,23 +156,22 @@ fn happy_path_all_hosts_configured() {
     let ctrl = sim.host_node("ctrl01").unwrap();
     let ctrl_edge = Some((sentinel, ctrl));
 
-    // Two identical per-host `nix build`s: local work — no edge, no
-    // failure-schedule involvement.
+    // Staging is shared across targets; local builds have no network edge.
     let builds: Vec<_> = log
         .iter()
         .filter(|e| e.kind == SimCommandKind::Local)
         .collect();
-    assert_eq!(builds.len(), 2);
+    assert_eq!(builds.len(), 1);
     assert!(builds
         .iter()
         .all(|e| e.command_line.contains("nix build") && e.edge.is_none()));
 
-    // Two identical per-host copies onto the control edge.
+    // One shared closure copy targets the control node.
     let copies: Vec<_> = log
         .iter()
         .filter(|e| e.kind == SimCommandKind::DataCopy)
         .collect();
-    assert_eq!(copies.len(), 2);
+    assert_eq!(copies.len(), 1);
     assert!(copies.iter().all(|e| e.edge == ctrl_edge));
     assert!(copies
         .iter()
@@ -180,8 +182,8 @@ fn happy_path_all_hosts_configured() {
     assert_both_playbooks_attempted(&log);
     assert!(playbook_events(&log).iter().all(|e| e.edge == ctrl_edge));
 
-    // Virtual clock: 2 × 50 MiB at 100 MiB/s of aggregate transfer work.
-    assert_eq!(sim.simulated_transfer_time(), Duration::from_secs(1));
+    // Virtual clock: one 50 MiB closure at 100 MiB/s.
+    assert_eq!(sim.simulated_transfer_time(), Duration::from_millis(500));
 }
 
 // ─── Scenario 2: control node killed ────────────────────────────────────────
@@ -206,27 +208,22 @@ fn killed_control_node_aborts_playbooks() {
     let report = run(&sim, &targets(), &AnsibleOptions::default());
 
     assert!(!report.is_success());
-    // Both copies onto the dead control node failed (status 1 = copy-edge
-    // failure); both playbook tasks were cancelled before running.
+    // Shared copy failure cancels both playbooks before execution.
     assert!(report
         .failed
-        .contains_key(&TaskId("copy-env:node01".into())));
-    assert!(report
-        .failed
-        .contains_key(&TaskId("copy-env:node02".into())));
+        .contains_key(&TaskId(format!("copy-ansible-env:{ENV_NAME}"))));
+    assert_eq!(report.failed.len(), 1);
     assert!(report
         .cancelled
         .contains(&TaskId("run-playbook:node01".into())));
     assert!(report
         .cancelled
         .contains(&TaskId("run-playbook:node02".into())));
-    // Builds are local: the network kill does not touch them.
+    // The shared local build precedes the failed network operation.
     assert!(report
         .completed
-        .contains(&TaskId("build-env:node01".into())));
-    assert!(report
-        .completed
-        .contains(&TaskId("build-env:node02".into())));
+        .contains(&TaskId(format!("build-ansible-env:{ENV_NAME}"))));
+    assert_eq!(report.completed.len(), 1);
 
     let log = sim.invocation_log();
     // Zero playbook attempts: no ssh command ever reached the executor.
@@ -239,7 +236,7 @@ fn killed_control_node_aborts_playbooks() {
         .iter()
         .filter(|e| e.kind == SimCommandKind::DataCopy)
         .collect();
-    assert_eq!(copies.len(), 2);
+    assert_eq!(copies.len(), 1);
     assert!(copies
         .iter()
         .all(|e| matches!(e.outcome, SimOutcome::Failed { status: 1, .. })));
@@ -308,18 +305,18 @@ fn check_mode_still_runs_all_phases() {
     assert_all_stages_completed(&report);
 
     let log = sim.invocation_log();
-    // Build and copy phases still executed for both hosts.
+    // Check mode preserves shared staging and per-target playbooks.
     assert_eq!(
         log.iter()
             .filter(|e| e.kind == SimCommandKind::Local)
             .count(),
-        2
+        1
     );
     assert_eq!(
         log.iter()
             .filter(|e| e.kind == SimCommandKind::DataCopy)
             .count(),
-        2
+        1
     );
     // Every playbook invocation carries --check.
     let playbooks = playbook_events(&log);
@@ -355,13 +352,9 @@ fn deterministic_under_threads() {
         sim_a.simulated_transfer_time(),
         sim_b.simulated_transfer_time()
     );
-    assert_eq!(sim_a.simulated_transfer_time(), Duration::from_secs(1));
+    assert_eq!(sim_a.simulated_transfer_time(), Duration::from_millis(500));
 
-    // Both copies AND both playbooks share the single control edge across
-    // per-host chains, so the attempt-index binding is arrival-order
-    // dependent. The harness's native assertion compares logs and
-    // per-edge outcomes attempt-insensitively (multisets), so thread
-    // interleaving cannot flake this.
+    // Parallel playbooks share the control edge; compare attempts independent of arrival order.
     assert_deterministic_equivalence(&sim_a.invocation_log(), &sim_b.invocation_log());
 }
 

@@ -1,12 +1,11 @@
 //! Nix build orchestration — build closures locally or with distributed builders.
 
 use std::collections::HashMap;
-use std::io::Write as IoWrite;
 use std::sync::{Arc, Mutex};
 
 use consortium::dag::types::{FnTask, TaskOutcome};
 use consortium::dag::DagBuilder;
-use consortium_integration::exec::Executor;
+use consortium_integration::exec::{Executor, TemporaryFile};
 use consortium_integration::staging::{self, StagingError};
 
 use crate::config::{DeploymentPlan, ProfileType};
@@ -38,7 +37,7 @@ pub fn build_closures(
 ) -> Result<BuildResults> {
     // Generate temporary machines file if we have healthy builders
     let machines_file = healthy_builders
-        .map(generate_machines_file_from_healthy)
+        .map(|builders| generate_machines_file_from_healthy(&*exec, builders))
         .transpose()?;
 
     // Shared results collected by DAG tasks
@@ -61,7 +60,9 @@ pub fn build_closures(
 
         let hostname = target.node.name.clone();
         let flake_uri_clone = flake_uri_owned.clone();
-        let machines_file_clone = machines_file.clone();
+        let machines_file_clone = machines_file
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned());
         let exec_clone = Arc::clone(&exec);
         let paths = Arc::clone(&build_paths);
         let errors = Arc::clone(&build_errors);
@@ -101,8 +102,11 @@ pub fn build_closures(
     }
 
     // Execute the DAG
-    let executor = dag_builder.build()?;
-    let _report = executor.run()?;
+    let result = dag_builder
+        .build()
+        .map_err(NixError::from)
+        .and_then(|executor| executor.run().map_err(NixError::from));
+    close_machines_file(machines_file, result)?;
 
     // Extract results from Arc<Mutex<_>>
     let final_paths = build_paths.lock().unwrap().clone();
@@ -114,6 +118,21 @@ pub fn build_closures(
     };
 
     Ok(results)
+}
+
+pub(crate) fn close_machines_file<T>(file: Option<TemporaryFile>, result: Result<T>) -> Result<T> {
+    if let Some(file) = file {
+        let path = file.path().to_owned();
+        if let Err(source) = file.close() {
+            return Err(match result {
+                Ok(_) => NixError::MachinesFile { path, source },
+                Err(error) => {
+                    NixError::General(format!("{error}; machines file cleanup failed: {source}"))
+                }
+            });
+        }
+    }
+    result
 }
 
 /// Build any flake attribute and return its store path, via an [`Executor`].
@@ -195,7 +214,10 @@ pub fn build_system_toplevel(
 
 /// Generate a temporary machines file from healthy builders.
 /// Public so the deploy pipeline can call it before building the DAG.
-pub fn generate_machines_file_from_healthy(builders: &[HealthStatus]) -> Result<String> {
+pub fn generate_machines_file_from_healthy(
+    exec: &dyn Executor,
+    builders: &[HealthStatus],
+) -> Result<TemporaryFile> {
     let content: String = builders
         .iter()
         .filter(|b| b.healthy)
@@ -218,24 +240,11 @@ pub fn generate_machines_file_from_healthy(builders: &[HealthStatus]) -> Result<
         .collect::<Vec<_>>()
         .join("\n");
 
-    let dir = std::env::temp_dir().join("consortium-nix");
-    std::fs::create_dir_all(&dir).map_err(|e| NixError::MachinesFile {
-        path: dir.clone(),
-        source: e,
-    })?;
-
-    let path = dir.join("machines");
-    let mut file = std::fs::File::create(&path).map_err(|e| NixError::MachinesFile {
-        path: path.clone(),
-        source: e,
-    })?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| NixError::MachinesFile {
-            path: path.clone(),
-            source: e,
-        })?;
-
-    Ok(path.to_string_lossy().to_string())
+    exec.temporary_file("consortium-machines", content.as_bytes())
+        .map_err(|source| NixError::MachinesFile {
+            path: "consortium-machines".into(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -262,12 +271,13 @@ mod tests {
             error: None,
         }];
 
-        let path = generate_machines_file_from_healthy(&builders).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let exec = ScriptedExecutor::new();
+        let file = generate_machines_file_from_healthy(&exec, &builders).unwrap();
+        let content = String::from_utf8(exec.temporary_contents(file.path()).unwrap()).unwrap();
         assert!(content.contains("ssh-ng://root@192.168.1.121"));
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("big-parallel,kvm"));
-        std::fs::remove_file(path).ok();
+        file.close().unwrap();
     }
 
     #[test]
@@ -316,6 +326,65 @@ mod tests {
                 assert!(message.contains("builder busy"), "{}", message)
             }
             other => panic!("expected BuildFailed, got: {}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod temporary_effect_tests {
+    use super::*;
+    use consortium_integration::ScriptedExecutor;
+
+    #[test]
+    fn scoped_builder_file_contains_only_healthy_builders() {
+        let exec = ScriptedExecutor::new();
+        let builder = |host: &str, healthy| HealthStatus {
+            builder: crate::config::Builder {
+                host: host.into(),
+                user: "root".into(),
+                max_jobs: 1,
+                speed_factor: 1,
+                systems: vec!["x86_64-linux".into()],
+                features: vec![],
+                ssh_key: None,
+                protocol: "ssh-ng".into(),
+            },
+            healthy,
+            latency_ms: None,
+            error: None,
+        };
+        let file = generate_machines_file_from_healthy(
+            &exec,
+            &[builder("good", true), builder("bad", false)],
+        )
+        .unwrap();
+        let path = file.path().to_owned();
+        let content = String::from_utf8(exec.temporary_contents(&path).unwrap()).unwrap();
+        assert!(content.contains("root@good"));
+        assert!(!content.contains("root@bad"));
+        close_machines_file(Some(file), Ok(())).unwrap();
+        assert!(exec.temporary_contents(&path).is_none());
+    }
+
+    #[test]
+    fn builder_cleanup_error_preserves_the_original_failure() {
+        for failed in [false, true] {
+            let file = TemporaryFile::new("/virtual/builders".into(), |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "cleanup denied",
+                ))
+            });
+            let result = if failed {
+                Err(NixError::General("build failed".into()))
+            } else {
+                Ok(())
+            };
+            let message = close_machines_file(Some(file), result)
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains("cleanup denied"));
+            assert_eq!(message.contains("build failed"), failed);
         }
     }
 }

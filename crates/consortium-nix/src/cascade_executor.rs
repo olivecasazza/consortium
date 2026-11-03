@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use consortium_integration::exec::{CommandSpec, Executor, ProcessExecutor, SshTarget};
 
@@ -114,7 +114,7 @@ impl NixCopyExecutor {
             self.store_path.as_str(),
         ];
 
-        let started = Instant::now();
+        let started = self.exec.monotonic_now();
         let spec = if src == self.seed {
             // Local nix copy from the seed.
             CommandSpec::new("nix").args(copy_args)
@@ -134,13 +134,13 @@ impl NixCopyExecutor {
                 // host makes ssh resolve "host:port" as a single name.
                 Some(p) => SshTarget::new(user, host)
                     .extra_opt("-oStrictHostKeyChecking=accept-new")
-                    .extra_opt(format!("-p{p}")),
+                    .port(p),
                 None => SshTarget::new(user, host).extra_opt("-oStrictHostKeyChecking=accept-new"),
             })
         };
 
-        let result = self.exec.exec(&spec);
-        let elapsed = started.elapsed();
+        let result = self.exec.exec_timeout(&spec, self.timeout);
+        let elapsed = self.exec.monotonic_now().saturating_sub(started);
         match result {
             Ok(output) if output.success() => Ok(elapsed),
             Ok(output) => Err(classify_copy_error(tgt, src, &output.stderr)),
@@ -153,6 +153,10 @@ impl NixCopyExecutor {
 }
 
 impl RoundExecutor for NixCopyExecutor {
+    fn wall_now(&self) -> std::time::SystemTime {
+        self.exec.wall_now()
+    }
+
     fn dispatch(
         &self,
         _nodes: &[CascadeNode],
@@ -225,6 +229,14 @@ fn split_ssh_addr(addr: &str) -> (String, String, Option<u16>) {
         Some((user, host)) => (user.to_string(), host.to_string()),
         None => ("root".to_string(), addr.to_string()),
     };
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some((literal, suffix)) = rest.split_once(']') {
+            let port = suffix
+                .strip_prefix(':')
+                .and_then(|value| value.parse::<u16>().ok());
+            return (user, literal.to_owned(), port);
+        }
+    }
     // An IPv6 literal has several colons, and its last group is often all
     // digits (`fe80::1`). Only a single colon can introduce a port.
     if host.matches(':').count() != 1 {
@@ -360,7 +372,7 @@ mod tests {
             .find(|c| c.starts_with("ssh ") && c.contains("ssh-ng://root@n2"))
             .expect("relayed edge should be ssh-wrapped");
         assert!(relay.contains("-l root"), "{}", relay);
-        assert!(relay.contains("accept-new n1 "), "{}", relay);
+        assert!(relay.contains("accept-new -- n1 "), "{}", relay);
     }
 
     #[test]
@@ -380,5 +392,69 @@ mod tests {
             }
             other => panic!("expected transient Copy error, got: {:?}", other),
         }
+    }
+    #[test]
+    fn cascade_wall_clock_delegates_to_injected_executor() {
+        let exec = Arc::new(ScriptedExecutor::new());
+        exec.sleep(Duration::from_secs(7)).unwrap();
+        let transport = NixCopyExecutor::new(exec, HashMap::new(), "/nix/store/test", NodeId(0));
+        assert_eq!(
+            transport.wall_now(),
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(7)
+        );
+    }
+    #[test]
+    fn bracketed_ipv6_source_preserves_its_explicit_port() {
+        assert_eq!(
+            split_ssh_addr("root@[::1]:2222"),
+            ("root".into(), "::1".into(), Some(2222))
+        );
+        assert_eq!(
+            split_ssh_addr("root@[::1]"),
+            ("root".into(), "::1".into(), None)
+        );
+    }
+    #[test]
+    fn peer_copy_preserves_source_and_destination_ports_in_the_command_spec() {
+        use consortium_integration::Effect;
+        let exec = Arc::new(ScriptedExecutor::new().on("", ExecOutput::ok("")));
+        let addrs = HashMap::from([
+            (NodeId(1), "admin@[::1]:2222".into()),
+            (NodeId(2), "root@target:3333".into()),
+        ]);
+        let transport = NixCopyExecutor::new(exec.clone(), addrs, "/nix/store/test", NodeId(0));
+        transport.run_edge(NodeId(1), NodeId(2)).unwrap();
+        let effects = exec.effects();
+        let Effect::Command { spec, timeout } = &effects[0] else {
+            panic!("expected copy command")
+        };
+        assert_eq!(*timeout, Some(Duration::from_secs(300)));
+        let ssh = spec.ssh.as_ref().unwrap();
+        assert_eq!(ssh.user, "admin");
+        assert_eq!(ssh.host, "::1");
+        assert_eq!(ssh.port, Some(2222));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|args| args == ["--to", "ssh-ng://root@target:3333"]));
+    }
+
+    #[test]
+    fn cascade_transport_enforces_its_configured_edge_timeout() {
+        use consortium_integration::Rule;
+        let exec = Arc::new(ScriptedExecutor::new().rule(Rule::slow_containing_all(
+            ["nix"],
+            Duration::from_secs(10),
+            ExecOutput::ok(""),
+        )));
+        let transport = NixCopyExecutor::new(
+            exec.clone(),
+            HashMap::from([(NodeId(1), "root@target".into())]),
+            "/nix/store/test",
+            NodeId(0),
+        )
+        .with_timeout(Duration::from_millis(123));
+        assert!(transport.run_edge(NodeId(0), NodeId(1)).is_err());
+        assert_eq!(exec.monotonic_now(), Duration::from_millis(123));
     }
 }

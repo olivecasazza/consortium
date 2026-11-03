@@ -98,7 +98,7 @@ impl Contract for RayContract {
     ) -> Result<Self::Report, Self::Error> {
         // Contract fixtures poll instantly; production keeps the 10s default.
         let opts = RayOptions {
-            poll_interval: Duration::from_millis(0),
+            poll_interval: Duration::from_millis(1),
             ..*opts
         };
         submit_job(exec, config, JOB_NAME, ENTRYPOINT, &opts)

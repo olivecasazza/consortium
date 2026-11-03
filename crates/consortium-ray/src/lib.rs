@@ -10,6 +10,9 @@
 //! pipeline can be driven by a `ProcessExecutor` in production or a
 //! `ScriptedExecutor` in tests.
 
+pub mod integration;
+pub use integration::RayIntegration;
+
 pub mod error;
 pub mod tasks;
 
@@ -18,9 +21,10 @@ pub use error::{RayError, Result};
 use std::sync::Arc;
 use std::time::Duration;
 
-use consortium::dag::{DagBuilder, DagContext, DagReport, ErrorPolicy};
+use consortium::dag::DagReport;
 use consortium_integration::exec::Executor;
 use consortium_integration::fleet::FleetConfig;
+use consortium_integration::grammar::{duration_text, Integration, Request};
 
 /// Options controlling a ray job submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +34,7 @@ pub struct RayOptions {
     pub wait: bool,
 
     /// Interval between `ray job status` polls while waiting. Defaults to
-    /// 10 seconds; test fixtures typically set this to ~0.
+    /// 10 seconds. Positive subsecond intervals are supported.
     pub poll_interval: Duration,
 
     /// Maximum time to wait for the job before failing the wait task.
@@ -60,59 +64,130 @@ pub fn submit_job(
     entrypoint: &str,
     opts: &RayOptions,
 ) -> Result<DagReport> {
-    let ray_config = config.ray_config.as_ref().ok_or(RayError::NoConfig)?;
-
-    let ctx = DagContext::new();
-    ctx.set_state("fleet_config", config.clone());
-    ctx.set_state("executor", exec);
-
-    let mut dag = DagBuilder::new();
-
-    // Build ray environment
-    let build_id = format!("build-ray-env:{}", job_name);
-    dag.add_task(
-        &build_id,
-        tasks::NixBuildRayEnvTask::new(job_name, &config.flake_uri),
-    );
-
-    // Submit job
-    let submit_id = format!("ray-submit:{}", job_name);
-    dag.add_task(
-        &submit_id,
-        tasks::RaySubmitTask {
-            job_name: job_name.to_string(),
-            entrypoint: entrypoint.to_string(),
-            head_address: ray_config.head_address.clone(),
-            dashboard_port: ray_config.dashboard_port,
-            working_dir: None,
-        },
-    );
-    dag.add_dep(&submit_id, &build_id);
-
-    // Wait (optional)
+    config.ray_config.as_ref().ok_or(RayError::NoConfig)?;
+    let mut request = Request::default()
+        .with("name", job_name)
+        .with("entrypoint", entrypoint)
+        .with("wait", opts.wait.to_string());
     if opts.wait {
-        let wait_id = format!("ray-wait:{}", job_name);
-        dag.add_task(
-            &wait_id,
-            tasks::RayWaitTask {
-                job_name: job_name.to_string(),
-                head_address: ray_config.head_address.clone(),
-                dashboard_port: ray_config.dashboard_port,
-                poll_interval: opts.poll_interval,
-                timeout: opts.timeout,
-            },
-        );
-        dag.add_dep(&wait_id, &submit_id);
+        request = request.with("poll-seconds", duration_text(opts.poll_interval));
+        if let Some(timeout) = opts.timeout {
+            request = request.with("timeout", duration_text(timeout));
+        }
+    }
+    RayIntegration
+        .run_detailed(exec, config, &request)
+        .map(|result| result.dag)
+        .map_err(|error| RayError::Dag(error.to_string()))
+}
+
+#[cfg(test)]
+mod typed_contract_tests {
+    use super::*;
+    use consortium_integration::{Effect, ExecOutput, ScriptedExecutor};
+
+    fn config() -> FleetConfig {
+        FleetConfig {
+            nodes: Default::default(),
+            builders: Default::default(),
+            flake_uri: ".".into(),
+            ansible_config: None,
+            skypilot_config: None,
+            ray_config: Some(consortium_integration::fleet::RayFleetConfig {
+                head_address: "head".into(),
+                dashboard_port: 8265,
+                kubernetes: false,
+                worker_groups: Default::default(),
+            }),
+            slurm_config: None,
+        }
+    }
+    fn running() -> Arc<ScriptedExecutor> {
+        Arc::new(
+            ScriptedExecutor::new()
+                .on("nix build", ExecOutput::ok("/nix/store/env"))
+                .on("job submit", ExecOutput::ok("raysubmit_test"))
+                .on("job status", ExecOutput::ok("Status: RUNNING")),
+        )
     }
 
-    dag.error_policy(ErrorPolicy::FailFast);
-    dag.context(ctx);
+    #[test]
+    fn typed_wait_preserves_subsecond_duration_precision() {
+        for (poll, timeout) in [
+            (Duration::from_nanos(1), Duration::from_nanos(3)),
+            (
+                Duration::from_nanos(1_234_567),
+                Duration::from_nanos(2_345_678),
+            ),
+            (Duration::from_millis(250), Duration::from_millis(600)),
+        ] {
+            let exec = running();
+            let report = submit_job(
+                exec.clone(),
+                &config(),
+                "test",
+                "run",
+                &RayOptions {
+                    wait: true,
+                    poll_interval: poll,
+                    timeout: Some(timeout),
+                },
+            )
+            .unwrap();
+            assert_eq!(report.failed.len(), 1);
+            assert!(report
+                .failed
+                .values()
+                .any(|message| message.contains("timed out")));
+            assert_eq!(exec.monotonic_now(), timeout);
+            let sleeps: Vec<_> = exec
+                .effects()
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Sleep { duration } => Some(duration),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(sleeps.iter().copied().sum::<Duration>(), timeout);
+            assert!(sleeps
+                .iter()
+                .all(|duration| !duration.is_zero() && *duration <= poll));
+            let limits: Vec<_> = exec
+                .effects()
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Command {
+                        timeout: Some(limit),
+                        ..
+                    } => Some(limit),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(limits.first(), Some(&timeout));
+            assert!(limits.iter().all(|limit| !limit.is_zero()));
+        }
+    }
 
-    let report = dag
-        .build()
-        .map_err(|e| RayError::Dag(e.to_string()))?
-        .run()
-        .map_err(|e| RayError::Dag(e.to_string()))?;
-
-    Ok(report)
+    #[test]
+    fn no_wait_ignores_unused_zero_poll_and_timeout_options() {
+        let exec = running();
+        let report = submit_job(
+            exec.clone(),
+            &config(),
+            "test",
+            "run",
+            &RayOptions {
+                wait: false,
+                poll_interval: Duration::ZERO,
+                timeout: Some(Duration::ZERO),
+            },
+        )
+        .unwrap();
+        assert!(report.failed.is_empty());
+        assert!(!exec
+            .effects()
+            .iter()
+            .any(|effect| matches!(effect, Effect::Sleep { .. })));
+        assert_eq!(exec.monotonic_now(), Duration::ZERO);
+    }
 }

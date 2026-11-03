@@ -18,6 +18,9 @@ pub struct CopyResults {
 
 /// Copy closures to all targets in the deployment plan.
 pub fn copy_closures(exec: &dyn Executor, plan: &DeploymentPlan) -> Result<CopyResults> {
+    for target in &plan.targets {
+        crate::endpoint::validate_port(&target.node)?;
+    }
     let mut results = CopyResults {
         succeeded: Vec::new(),
         errors: HashMap::new(),
@@ -30,10 +33,7 @@ pub fn copy_closures(exec: &dyn Executor, plan: &DeploymentPlan) -> Result<CopyR
             continue;
         }
 
-        let store_uri = format!(
-            "ssh-ng://{}@{}",
-            target.node.target_user, target.node.target_host
-        );
+        let store_uri = crate::endpoint::store_uri(&target.node);
 
         match copy_closure_with(exec, &target.toplevel_path, &store_uri) {
             Ok(()) => {

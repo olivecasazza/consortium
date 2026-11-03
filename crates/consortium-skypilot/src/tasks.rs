@@ -8,36 +8,28 @@
 //! (`sky launch` / `sky exec` / `sky down`) run against the operator's
 //! local cloud credentials.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
 use consortium_integration::exec::{CommandSpec, Executor};
 use consortium_integration::staging;
 
+type TaskFile = Arc<Mutex<Option<consortium_integration::TemporaryFile>>>;
+
+/// Release invocation files after resource teardown has had a chance to run.
+pub fn cleanup_task_yaml(ctx: &DagContext, cluster_name: &str) -> std::io::Result<()> {
+    if let Some(file) = ctx.get_state::<TaskFile>(&format!("sky-task-file:{cluster_name}")) {
+        if let Some(file) = file.lock().unwrap().take() {
+            file.close()?;
+        }
+    }
+    Ok(())
+}
+
 /// Fetch the shared executor from the DAG context.
 fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, TaskOutcome> {
     ctx.get_state::<Arc<dyn Executor>>("executor")
         .ok_or_else(|| TaskOutcome::Failed("executor not in context".into()))
-}
-
-/// Write a SkyPilot task yaml to a unique temp file and return its path.
-///
-/// Purely local fs, no executor: `sky launch` takes a yaml *path*, and the
-/// path then appears in the rendered command line, keeping the invocation
-/// matchable for scripted executors.
-fn write_task_yaml(cluster_name: &str, task_yaml: &str) -> std::io::Result<PathBuf> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "consortium-sky-{}-{}-{}.yaml",
-        cluster_name,
-        std::process::id(),
-        seq
-    ));
-    std::fs::write(&path, task_yaml)?;
-    Ok(path)
 }
 
 /// Build a skypilot task environment via nix.
@@ -91,7 +83,7 @@ impl DagTask for SkyLaunchTask {
             Err(outcome) => return outcome,
         };
 
-        let yaml_path = match write_task_yaml(&self.cluster_name, &self.task_yaml) {
+        let yaml_path = match exec.temporary_file("consortium-sky", self.task_yaml.as_bytes()) {
             Ok(p) => p,
             Err(e) => return TaskOutcome::Failed(format!("sky launch failed: {}", e)),
         };
@@ -100,7 +92,7 @@ impl DagTask for SkyLaunchTask {
             "launch".to_string(),
             "-c".to_string(),
             self.cluster_name.clone(),
-            yaml_path.to_string_lossy().into_owned(),
+            yaml_path.path().to_string_lossy().into_owned(),
             "-y".to_string(),
         ]);
         if let Some(ref cloud) = self.cloud {
@@ -110,6 +102,10 @@ impl DagTask for SkyLaunchTask {
             spec = spec.args(["--region".to_string(), region.clone()]);
         }
 
+        ctx.set_state(
+            &format!("sky-task-file:{}", self.cluster_name),
+            Arc::new(Mutex::new(Some(yaml_path))),
+        );
         match exec.exec(&spec) {
             Ok(out) if out.success() => {
                 ctx.set_output(
@@ -342,5 +338,107 @@ mod tests {
         scripted.assert_invoked_containing("sky exec my-cluster -- python train.py");
         let stdout: Option<String> = ctx.get_output(&TaskId("sky-exec:my-cluster".to_string()));
         assert_eq!(stdout.as_deref(), Some("training done\n"));
+    }
+}
+
+#[cfg(test)]
+mod temporary_effect_tests {
+    use super::*;
+    use consortium_integration::{Effect, ExecError, ExecOutput, ScriptedExecutor, TemporaryFile};
+
+    fn launch(exec: Arc<dyn Executor>) -> TaskOutcome {
+        let ctx = DagContext::new();
+        ctx.set_state("executor", exec);
+        SkyLaunchTask {
+            cluster_name: "test".into(),
+            task_yaml: "resources: {}".into(),
+            cloud: None,
+            region: None,
+        }
+        .execute(&ctx)
+    }
+
+    #[test]
+    fn yaml_is_scoped_around_launch_for_success_and_failure() {
+        for output in [ExecOutput::ok("launched"), ExecOutput::new(1, "", "denied")] {
+            let exec = Arc::new(ScriptedExecutor::new().on("sky launch", output.clone()));
+            let result = launch(exec.clone());
+            assert_eq!(matches!(result, TaskOutcome::Success), output.success());
+            assert!(
+                matches!(&exec.effects()[..], [Effect::TemporaryFileCreated { path, contents }, Effect::Command { spec, .. }, Effect::TemporaryFileRemoved { path: removed }] if contents == b"resources: {}" && path == removed && spec.args.iter().any(|arg| std::path::Path::new(arg) == path))
+            );
+        }
+    }
+
+    #[test]
+    fn launch_spawn_error_also_removes_yaml() {
+        let exec = Arc::new(ScriptedExecutor::new().on_error("sky launch", "spawn failed"));
+        assert!(
+            matches!(launch(exec.clone()), TaskOutcome::Failed(message) if message.contains("spawn failed"))
+        );
+        assert!(matches!(
+            exec.effects().last(),
+            Some(Effect::TemporaryFileRemoved { .. })
+        ));
+    }
+
+    #[test]
+    fn unsupported_temporary_files_stop_before_launch() {
+        struct NoFiles;
+        impl Executor for NoFiles {
+            fn exec(&self, _: &CommandSpec) -> Result<ExecOutput, ExecError> {
+                panic!("launch must not execute")
+            }
+        }
+        assert!(
+            matches!(launch(Arc::new(NoFiles)), TaskOutcome::Failed(message) if message.contains("does not implement"))
+        );
+    }
+
+    #[test]
+    fn cleanup_errors_do_not_change_the_acquisition_outcome() {
+        struct CleanupFailure {
+            command_fails: bool,
+        }
+        impl Executor for CleanupFailure {
+            fn exec(&self, _: &CommandSpec) -> Result<ExecOutput, ExecError> {
+                if self.command_fails {
+                    Err(ExecError::Scripted("command failed".into()))
+                } else {
+                    Ok(ExecOutput::ok("launched"))
+                }
+            }
+            fn temporary_file(&self, _: &str, _: &[u8]) -> std::io::Result<TemporaryFile> {
+                Ok(TemporaryFile::new("/virtual/task".into(), |_| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "cleanup denied",
+                    ))
+                }))
+            }
+        }
+        for command_fails in [false, true] {
+            let ctx = DagContext::new();
+            ctx.set_state(
+                "executor",
+                Arc::new(CleanupFailure { command_fails }) as Arc<dyn Executor>,
+            );
+            let result = SkyLaunchTask {
+                cluster_name: "test".into(),
+                task_yaml: "resources: {}".into(),
+                cloud: None,
+                region: None,
+            }
+            .execute(&ctx);
+            assert_eq!(result.is_success(), !command_fails);
+            assert_eq!(
+                ctx.has_output(&TaskId("sky-launch:test".into())),
+                !command_fails
+            );
+            assert!(cleanup_task_yaml(&ctx, "test")
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup denied"));
+        }
     }
 }
