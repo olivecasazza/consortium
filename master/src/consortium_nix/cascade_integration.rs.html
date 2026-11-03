@@ -65,8 +65,8 @@
 <a href=#65 id=65 data-nosnippet>65</a>    <span class="doccomment">/// Children-per-node in the F-ary tree. 2 = binary; bigger trades
 <a href=#66 id=66 data-nosnippet>66</a>    /// per-source bandwidth contention for fewer rounds. Default 2.
 <a href=#67 id=67 data-nosnippet>67</a>    </span><span class="kw">pub </span>fanout: u32,
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="doccomment">/// Per-edge `nix copy` timeout. Default 5min.
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub </span>timeout: Duration,
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="doccomment">/// Per-edge `nix copy` timeout. `None` (the default) is unbounded.
+<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub </span>timeout: <span class="prelude-ty">Option</span>&lt;Duration&gt;,
 <a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Optional event sink for live UI. Use [`NullSink`] for headless.
 <a href=#71 id=71 data-nosnippet>71</a>    /// Reused across all groups (the renderer can handle multiple
 <a href=#72 id=72 data-nosnippet>72</a>    /// cascade runs back-to-back, though it'll show them sequentially).
@@ -79,7 +79,7 @@
 <a href=#79 id=79 data-nosnippet>79</a>            seed_addr: seed_addr.into(),
 <a href=#80 id=80 data-nosnippet>80</a>            targets,
 <a href=#81 id=81 data-nosnippet>81</a>            fanout: <span class="number">2</span>,
-<a href=#82 id=82 data-nosnippet>82</a>            timeout: Duration::from_secs(<span class="number">300</span>),
+<a href=#82 id=82 data-nosnippet>82</a>            timeout: <span class="prelude-val">None</span>,
 <a href=#83 id=83 data-nosnippet>83</a>            events: <span class="prelude-val">None</span>,
 <a href=#84 id=84 data-nosnippet>84</a>        }
 <a href=#85 id=85 data-nosnippet>85</a>    }
@@ -90,7 +90,7 @@
 <a href=#90 id=90 data-nosnippet>90</a>    </span>}
 <a href=#91 id=91 data-nosnippet>91</a>
 <a href=#92 id=92 data-nosnippet>92</a>    <span class="kw">pub fn </span>timeout(<span class="kw-2">mut </span><span class="self">self</span>, t: Duration) -&gt; <span class="self">Self </span>{
-<a href=#93 id=93 data-nosnippet>93</a>        <span class="self">self</span>.timeout = t;
+<a href=#93 id=93 data-nosnippet>93</a>        <span class="self">self</span>.timeout = <span class="prelude-val">Some</span>(t);
 <a href=#94 id=94 data-nosnippet>94</a>        <span class="self">self
 <a href=#95 id=95 data-nosnippet>95</a>    </span>}
 <a href=#96 id=96 data-nosnippet>96</a>
@@ -161,7 +161,7 @@
 <a href=#161 id=161 data-nosnippet>161</a>    group: Vec&lt;CascadeCopyTarget&gt;,
 <a href=#162 id=162 data-nosnippet>162</a>    strategy: <span class="kw-2">&amp;</span>LevelTreeFanOut,
 <a href=#163 id=163 data-nosnippet>163</a>    events: <span class="kw-2">&amp;</span><span class="kw">dyn </span>EventSink,
-<a href=#164 id=164 data-nosnippet>164</a>    timeout: Duration,
+<a href=#164 id=164 data-nosnippet>164</a>    timeout: <span class="prelude-ty">Option</span>&lt;Duration&gt;,
 <a href=#165 id=165 data-nosnippet>165</a>    result: <span class="kw-2">&amp;mut </span>CascadeCopyResult,
 <a href=#166 id=166 data-nosnippet>166</a>) {
 <a href=#167 id=167 data-nosnippet>167</a>    <span class="comment">// Build NodeIds: seed at NodeId(0), targets at NodeId(1)..
@@ -185,8 +185,8 @@
 <a href=#185 id=185 data-nosnippet>185</a>    <span class="kw">let </span><span class="kw-2">mut </span>seeded = HashSet::new();
 <a href=#186 id=186 data-nosnippet>186</a>    seeded.insert(seed_id);
 <a href=#187 id=187 data-nosnippet>187</a>
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">let </span>executor = NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id)
-<a href=#189 id=189 data-nosnippet>189</a>        .with_timeout(timeout);
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">let </span><span class="kw-2">mut </span>executor = NixCopyExecutor::new(Arc::clone(exec), addrs, toplevel.to_string(), seed_id);
+<a href=#189 id=189 data-nosnippet>189</a>    executor.timeout = timeout;
 <a href=#190 id=190 data-nosnippet>190</a>
 <a href=#191 id=191 data-nosnippet>191</a>    <span class="kw">let </span>cascade_result = Cascade::new()
 <a href=#192 id=192 data-nosnippet>192</a>        .nodes(cascade_nodes)
@@ -258,8 +258,41 @@
 <a href=#258 id=258 data-nosnippet>258</a>        );
 <a href=#259 id=259 data-nosnippet>259</a>    }
 <a href=#260 id=260 data-nosnippet>260</a>
-<a href=#261 id=261 data-nosnippet>261</a>    <span class="comment">// Heterogeneous multi-group bookkeeping and relayed-edge behavior are
-<a href=#262 id=262 data-nosnippet>262</a>    // covered by the cascade_executor tests (which drive a ScriptedExecutor
-<a href=#263 id=263 data-nosnippet>263</a>    // through NixCopyExecutor directly).
-<a href=#264 id=264 data-nosnippet>264</a></span>}
+<a href=#261 id=261 data-nosnippet>261</a>    <span class="attr">#[test]
+<a href=#262 id=262 data-nosnippet>262</a>    </span><span class="kw">fn </span>grouped_copy_is_unbounded_unless_a_timeout_is_configured() {
+<a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">use </span>consortium_integration::Effect;
+<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">let </span>target = || CascadeCopyTarget {
+<a href=#265 id=265 data-nosnippet>265</a>            host_name: <span class="string">"hp01"</span>.into(),
+<a href=#266 id=266 data-nosnippet>266</a>            ssh_addr: <span class="string">"root@hp01"</span>.into(),
+<a href=#267 id=267 data-nosnippet>267</a>            toplevel_path: <span class="string">"/nix/store/abc-top"</span>.into(),
+<a href=#268 id=268 data-nosnippet>268</a>        };
+<a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>timeouts = |cfg: CascadeCopyConfig&lt;<span class="lifetime">'_</span>&gt;| {
+<a href=#270 id=270 data-nosnippet>270</a>            <span class="kw">let </span>scripted = Arc::new(ScriptedExecutor::new().on(<span class="string">"nix copy"</span>, ExecOutput::ok(<span class="string">""</span>)));
+<a href=#271 id=271 data-nosnippet>271</a>            <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
+<a href=#272 id=272 data-nosnippet>272</a>            cascade_copy_grouped(<span class="kw-2">&amp;</span>exec, cfg);
+<a href=#273 id=273 data-nosnippet>273</a>            scripted
+<a href=#274 id=274 data-nosnippet>274</a>                .effects()
+<a href=#275 id=275 data-nosnippet>275</a>                .iter()
+<a href=#276 id=276 data-nosnippet>276</a>                .map(|effect| <span class="kw">match </span>effect {
+<a href=#277 id=277 data-nosnippet>277</a>                    Effect::Command { timeout, .. } =&gt; <span class="kw-2">*</span>timeout,
+<a href=#278 id=278 data-nosnippet>278</a>                    other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected effect {other:?}"</span>),
+<a href=#279 id=279 data-nosnippet>279</a>                })
+<a href=#280 id=280 data-nosnippet>280</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#281 id=281 data-nosnippet>281</a>        };
+<a href=#282 id=282 data-nosnippet>282</a>        <span class="macro">assert_eq!</span>(
+<a href=#283 id=283 data-nosnippet>283</a>            timeouts(CascadeCopyConfig::new(<span class="string">"root@seed"</span>, <span class="macro">vec!</span>[target()])),
+<a href=#284 id=284 data-nosnippet>284</a>            [<span class="prelude-val">None</span>]
+<a href=#285 id=285 data-nosnippet>285</a>        );
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="macro">assert_eq!</span>(
+<a href=#287 id=287 data-nosnippet>287</a>            timeouts(
+<a href=#288 id=288 data-nosnippet>288</a>                CascadeCopyConfig::new(<span class="string">"root@seed"</span>, <span class="macro">vec!</span>[target()]).timeout(Duration::from_secs(<span class="number">7</span>))
+<a href=#289 id=289 data-nosnippet>289</a>            ),
+<a href=#290 id=290 data-nosnippet>290</a>            [<span class="prelude-val">Some</span>(Duration::from_secs(<span class="number">7</span>))]
+<a href=#291 id=291 data-nosnippet>291</a>        );
+<a href=#292 id=292 data-nosnippet>292</a>    }
+<a href=#293 id=293 data-nosnippet>293</a>
+<a href=#294 id=294 data-nosnippet>294</a>    <span class="comment">// Heterogeneous multi-group bookkeeping and relayed-edge behavior are
+<a href=#295 id=295 data-nosnippet>295</a>    // covered by the cascade_executor tests (which drive a ScriptedExecutor
+<a href=#296 id=296 data-nosnippet>296</a>    // through NixCopyExecutor directly).
+<a href=#297 id=297 data-nosnippet>297</a></span>}
 </code></pre></div></section></main></body></html>

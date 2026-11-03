@@ -18,22 +18,22 @@
 <a href=#18 id=18 data-nosnippet>18</a>
 <a href=#19 id=19 data-nosnippet>19</a><span class="doccomment">/// Copy closures to all targets in the deployment plan.
 <a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub fn </span>copy_closures(exec: <span class="kw-2">&amp;</span><span class="kw">dyn </span>Executor, plan: <span class="kw-2">&amp;</span>DeploymentPlan) -&gt; <span class="prelude-ty">Result</span>&lt;CopyResults&gt; {
-<a href=#21 id=21 data-nosnippet>21</a>    <span class="kw">let </span><span class="kw-2">mut </span>results = CopyResults {
-<a href=#22 id=22 data-nosnippet>22</a>        succeeded: Vec::new(),
-<a href=#23 id=23 data-nosnippet>23</a>        errors: HashMap::new(),
-<a href=#24 id=24 data-nosnippet>24</a>    };
-<a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a>    <span class="comment">// TODO: parallelize with consortium's Task/Worker fanout
-<a href=#27 id=27 data-nosnippet>27</a>    </span><span class="kw">for </span>target <span class="kw">in </span><span class="kw-2">&amp;</span>plan.targets {
-<a href=#28 id=28 data-nosnippet>28</a>        <span class="kw">if </span>!target.needs_copy {
-<a href=#29 id=29 data-nosnippet>29</a>            results.succeeded.push(target.node.name.clone());
-<a href=#30 id=30 data-nosnippet>30</a>            <span class="kw">continue</span>;
-<a href=#31 id=31 data-nosnippet>31</a>        }
-<a href=#32 id=32 data-nosnippet>32</a>
-<a href=#33 id=33 data-nosnippet>33</a>        <span class="kw">let </span>store_uri = <span class="macro">format!</span>(
-<a href=#34 id=34 data-nosnippet>34</a>            <span class="string">"ssh-ng://{}@{}"</span>,
-<a href=#35 id=35 data-nosnippet>35</a>            target.node.target_user, target.node.target_host
-<a href=#36 id=36 data-nosnippet>36</a>        );
+<a href=#21 id=21 data-nosnippet>21</a>    <span class="kw">for </span>target <span class="kw">in </span><span class="kw-2">&amp;</span>plan.targets {
+<a href=#22 id=22 data-nosnippet>22</a>        <span class="kw">crate</span>::endpoint::validate_port(<span class="kw-2">&amp;</span>target.node)<span class="question-mark">?</span>;
+<a href=#23 id=23 data-nosnippet>23</a>    }
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">let </span><span class="kw-2">mut </span>results = CopyResults {
+<a href=#25 id=25 data-nosnippet>25</a>        succeeded: Vec::new(),
+<a href=#26 id=26 data-nosnippet>26</a>        errors: HashMap::new(),
+<a href=#27 id=27 data-nosnippet>27</a>    };
+<a href=#28 id=28 data-nosnippet>28</a>
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="comment">// TODO: parallelize with consortium's Task/Worker fanout
+<a href=#30 id=30 data-nosnippet>30</a>    </span><span class="kw">for </span>target <span class="kw">in </span><span class="kw-2">&amp;</span>plan.targets {
+<a href=#31 id=31 data-nosnippet>31</a>        <span class="kw">if </span>!target.needs_copy {
+<a href=#32 id=32 data-nosnippet>32</a>            results.succeeded.push(target.node.name.clone());
+<a href=#33 id=33 data-nosnippet>33</a>            <span class="kw">continue</span>;
+<a href=#34 id=34 data-nosnippet>34</a>        }
+<a href=#35 id=35 data-nosnippet>35</a>
+<a href=#36 id=36 data-nosnippet>36</a>        <span class="kw">let </span>store_uri = <span class="kw">crate</span>::endpoint::store_uri(<span class="kw-2">&amp;</span>target.node);
 <a href=#37 id=37 data-nosnippet>37</a>
 <a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">match </span>copy_closure_with(exec, <span class="kw-2">&amp;</span>target.toplevel_path, <span class="kw-2">&amp;</span>store_uri) {
 <a href=#39 id=39 data-nosnippet>39</a>            <span class="prelude-val">Ok</span>(()) =&gt; {

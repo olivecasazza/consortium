@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["NixBuildSkyEnvTask","SkyDownTask","SkyExecTask","SkyLaunchTask"]};
+window.SIDEBAR_ITEMS = {"fn":["cleanup_task_yaml"],"struct":["NixBuildSkyEnvTask","SkyDownTask","SkyExecTask","SkyLaunchTask"]};
