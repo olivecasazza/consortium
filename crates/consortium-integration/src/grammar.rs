@@ -184,6 +184,9 @@ pub struct Phase {
     pub release_policy: Option<ReleasePolicy>,
     pub dependency_policy: DependencyPolicy,
     pub requires: &'static [&'static str],
+    /// Upper bound on the phase's concurrency group; the `fanout` parameter
+    /// cannot raise it. `None` leaves the group at the plan's fanout.
+    pub limit_cap: Option<usize>,
 }
 
 impl Phase {
@@ -197,6 +200,7 @@ impl Phase {
             release_policy: None,
             dependency_policy: DependencyPolicy::Success,
             requires: &[],
+            limit_cap: None,
         }
     }
 
@@ -213,6 +217,12 @@ impl Phase {
 
     pub const fn after_settled(mut self) -> Self {
         self.dependency_policy = DependencyPolicy::Settled;
+        self
+    }
+
+    /// Bound this phase's concurrency to at most `limit` tasks.
+    pub const fn capped(mut self, limit: usize) -> Self {
+        self.limit_cap = Some(limit);
         self
     }
 
@@ -469,11 +479,7 @@ pub trait Integration: Send + Sync {
             };
             dag.concurrency_group(
                 phase.name,
-                if phase.kind == PhaseKind::Execute {
-                    limit.min(4)
-                } else {
-                    limit
-                },
+                phase.limit_cap.map_or(limit, |cap| limit.min(cap)),
             );
             let mut current = Vec::new();
             for resource in resources {
@@ -1293,6 +1299,115 @@ mod tests {
                 selected
             );
         }
+    }
+
+    struct Sleepers {
+        grammar: &'static Grammar,
+        inflight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+    impl Integration for Sleepers {
+        fn grammar(&self) -> &'static Grammar {
+            self.grammar
+        }
+        fn validate_config(&self, _: &FleetConfig) -> Result<(), IntegrationError> {
+            Ok(())
+        }
+        fn task(
+            &self,
+            _: &FleetConfig,
+            _: &Plan,
+            _: &Phase,
+            resource: &str,
+        ) -> Result<PhaseTask, IntegrationError> {
+            let inflight = self.inflight.clone();
+            let peak = self.peak.clone();
+            Ok(PhaseTask::new(
+                format!("execute:{resource}"),
+                FnTask::new("hold", move |_| {
+                    let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(200));
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    TaskOutcome::Success
+                }),
+            ))
+        }
+    }
+    static UNCAPPED_EXECUTE: Grammar = Grammar {
+        name: "uncapped",
+        about: "uncapped",
+        targets: true,
+        parameters: &[Parameter::defaulted(
+            "fanout",
+            "fanout",
+            ParameterKind::PositiveInteger,
+            "1",
+        )],
+        phases: &[Phase::new("execute").behavior(
+            PhaseKind::Execute,
+            PhaseScope::Target,
+            &[EffectKind::Process],
+        )],
+        failure_policy: FailurePolicy::ContinueIndependent,
+    };
+    static CAPPED_EXECUTE: Grammar = Grammar {
+        name: "capped",
+        phases: &[Phase::new("execute")
+            .behavior(
+                PhaseKind::Execute,
+                PhaseScope::Target,
+                &[EffectKind::Process],
+            )
+            .capped(4)],
+        ..UNCAPPED_EXECUTE
+    };
+
+    fn peak_concurrency(grammar: &'static Grammar, fanout: &str) -> usize {
+        let mut fleet = config();
+        for index in 0..16 {
+            let name = format!("host{index:02}");
+            fleet.nodes.insert(
+                name.clone(),
+                crate::fleet::DeploymentNode {
+                    name,
+                    target_host: "127.0.0.1".into(),
+                    target_user: "root".into(),
+                    target_port: None,
+                    system: "x86_64-linux".into(),
+                    profile_type: crate::fleet::ProfileType::Nixos,
+                    build_on_target: false,
+                    tags: vec![],
+                    drv_path: None,
+                    toplevel: None,
+                },
+            );
+        }
+        let peak = Arc::new(AtomicUsize::new(0));
+        let adapter = Sleepers {
+            grammar,
+            inflight: Arc::new(AtomicUsize::new(0)),
+            peak: peak.clone(),
+        };
+        let report = adapter
+            .run(
+                Arc::new(AuditExecutor::default()),
+                &fleet,
+                &Request::default().with("fanout", fanout),
+            )
+            .unwrap();
+        assert!(report.success);
+        peak.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn execute_phase_fanout_is_not_capped_unless_the_phase_declares_a_cap() {
+        assert!(peak_concurrency(&UNCAPPED_EXECUTE, "16") > 4);
+    }
+
+    #[test]
+    fn phase_cap_bounds_the_fanout_it_is_declared_on() {
+        assert!(peak_concurrency(&CAPPED_EXECUTE, "16") <= 4);
     }
     #[test]
     fn resource_release_requires_selected_adjacent_single_acquisition() {

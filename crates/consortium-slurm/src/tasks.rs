@@ -255,13 +255,25 @@ impl DagTask for SlurmWaitTask {
                             ctx.set_output(TaskId(format!("slurm-wait:{}", self.job_name)), job_id);
                             return TaskOutcome::Success;
                         }
-                        "FAILED" | "CANCELLED" | "TIMEOUT" | "OUT_OF_MEMORY" | "NODE_FAIL" => {
+                        "PENDING" | "RUNNING" | "COMPLETING" | "CONFIGURING" | "SUSPENDED"
+                        | "REQUEUED" => {}
+                        "FAILED" | "TIMEOUT" | "OUT_OF_MEMORY" | "NODE_FAIL" | "BOOT_FAIL"
+                        | "DEADLINE" | "PREEMPTED" | "REVOKED" => {
                             return TaskOutcome::Failed(format!(
                                 "job {job_id} ended with state: {state}"
                             ));
                         }
-                        // PENDING, RUNNING, etc. — keep polling
-                        _ => {}
+                        // sacct appends the canceller: "CANCELLED by 1000".
+                        _ if state.starts_with("CANCELLED") => {
+                            return TaskOutcome::Failed(format!(
+                                "job {job_id} ended with state: {state}"
+                            ));
+                        }
+                        _ => {
+                            return TaskOutcome::Failed(format!(
+                                "job {job_id}: ambiguous sacct state {state:?}"
+                            ));
+                        }
                     }
                 }
                 _ => {} // exec/ssh error — retry next poll
@@ -559,6 +571,53 @@ mod tests {
         match task.execute(&ctx) {
             TaskOutcome::Failed(msg) => assert!(msg.contains("FAILED")),
             _ => panic!("expected Failed outcome"),
+        }
+    }
+
+    #[test]
+    fn test_wait_task_fails_closed_on_empty_and_unknown_states() {
+        for stdout in ["", "\n", "   \n", "MYSTERY\n", "completed\n"] {
+            let scripted = Arc::new(ScriptedExecutor::new().on("sacct", ExecOutput::ok(stdout)));
+            let exec: Arc<dyn Executor> = scripted.clone();
+            let ctx = DagContext::new();
+            ctx.set_state("executor", exec);
+            ctx.set_output(TaskId("slurm-submit:train".to_string()), 12345u64);
+
+            let task = SlurmWaitTask::new("train", "submit01", "root")
+                .with_poll_interval(Duration::from_millis(1));
+            match task.execute(&ctx) {
+                TaskOutcome::Failed(msg) => {
+                    assert!(msg.contains("ambiguous sacct state"), "{stdout:?}: {msg}")
+                }
+                _ => panic!("expected Failed outcome for {stdout:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_wait_task_fails_on_cancelled_and_other_terminal_failure_states() {
+        for state in [
+            "CANCELLED by 1000",
+            "CANCELLED+",
+            "BOOT_FAIL",
+            "DEADLINE",
+            "PREEMPTED",
+        ] {
+            let scripted =
+                Arc::new(ScriptedExecutor::new().on("sacct", ExecOutput::ok(format!("{state}\n"))));
+            let exec: Arc<dyn Executor> = scripted.clone();
+            let ctx = DagContext::new();
+            ctx.set_state("executor", exec);
+            ctx.set_output(TaskId("slurm-submit:train".to_string()), 12345u64);
+
+            let task = SlurmWaitTask::new("train", "submit01", "root")
+                .with_poll_interval(Duration::from_millis(1));
+            match task.execute(&ctx) {
+                TaskOutcome::Failed(msg) => {
+                    assert!(msg.contains("ended with state"), "{state}: {msg}")
+                }
+                _ => panic!("expected Failed outcome for {state}"),
+            }
         }
     }
 

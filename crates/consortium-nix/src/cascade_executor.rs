@@ -57,10 +57,10 @@ pub struct NixCopyExecutor {
     /// NodeId of the seed — edges originating from it run via local
     /// `nix copy`; all other src edges run via `ssh <src> 'nix copy …'`.
     pub seed: NodeId,
-    /// Per-edge command timeout. Cascade halts the edge if the SSH
-    /// or `nix copy` hasn't returned by this point — typically the
-    /// remote is unreachable. Default 5 minutes.
-    pub timeout: Duration,
+    /// Per-edge command timeout. When set, an edge whose SSH or `nix copy`
+    /// hasn't returned by then is killed. `None` (the default) lets a copy
+    /// run to completion.
+    pub timeout: Option<Duration>,
 }
 
 impl NixCopyExecutor {
@@ -76,7 +76,7 @@ impl NixCopyExecutor {
             addrs,
             store_path: store_path.into(),
             seed,
-            timeout: Duration::from_secs(300),
+            timeout: None,
         }
     }
 
@@ -90,7 +90,7 @@ impl NixCopyExecutor {
     }
 
     pub fn with_timeout(mut self, t: Duration) -> Self {
-        self.timeout = t;
+        self.timeout = Some(t);
         self
     }
 
@@ -139,7 +139,10 @@ impl NixCopyExecutor {
             })
         };
 
-        let result = self.exec.exec_timeout(&spec, self.timeout);
+        let result = match self.timeout {
+            Some(limit) => self.exec.exec_timeout(&spec, limit),
+            None => self.exec.exec(&spec),
+        };
         let elapsed = self.exec.monotonic_now().saturating_sub(started);
         match result {
             Ok(output) if output.success() => Ok(elapsed),
@@ -428,7 +431,7 @@ mod tests {
         let Effect::Command { spec, timeout } = &effects[0] else {
             panic!("expected copy command")
         };
-        assert_eq!(*timeout, Some(Duration::from_secs(300)));
+        assert_eq!(*timeout, None);
         let ssh = spec.ssh.as_ref().unwrap();
         assert_eq!(ssh.user, "admin");
         assert_eq!(ssh.host, "::1");
@@ -437,6 +440,28 @@ mod tests {
             .args
             .windows(2)
             .any(|args| args == ["--to", "ssh-ng://root@target:3333"]));
+    }
+
+    #[test]
+    fn default_edge_copy_has_no_timeout_and_configured_timeout_is_forwarded() {
+        use consortium_integration::Effect;
+        let exec = Arc::new(ScriptedExecutor::new().on("", ExecOutput::ok("")));
+        let addrs = HashMap::from([(NodeId(1), "root@target".into())]);
+        let default = NixCopyExecutor::new(exec.clone(), addrs.clone(), "/nix/store/t", NodeId(0));
+        assert_eq!(default.timeout, None);
+        default.run_edge(NodeId(0), NodeId(1)).unwrap();
+        let bounded = NixCopyExecutor::new(exec.clone(), addrs, "/nix/store/t", NodeId(0))
+            .with_timeout(Duration::from_secs(9));
+        bounded.run_edge(NodeId(0), NodeId(1)).unwrap();
+        let timeouts: Vec<_> = exec
+            .effects()
+            .iter()
+            .map(|effect| match effect {
+                Effect::Command { timeout, .. } => *timeout,
+                other => panic!("unexpected effect {other:?}"),
+            })
+            .collect();
+        assert_eq!(timeouts, [None, Some(Duration::from_secs(9))]);
     }
 
     #[test]

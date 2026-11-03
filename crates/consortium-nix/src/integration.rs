@@ -101,16 +101,18 @@ static GRAMMAR: Grammar = Grammar {
                 ],
             )
             .requiring(&["build"]),
-        Phase::when("activate", Condition::NotEquals("action", "build")).behavior(
-            PhaseKind::Execute,
-            PhaseScope::Target,
-            &[
-                EffectKind::Process,
-                EffectKind::RemoteProcess,
-                EffectKind::Clock,
-                EffectKind::Diagnostic,
-            ],
-        ),
+        Phase::when("activate", Condition::NotEquals("action", "build"))
+            .behavior(
+                PhaseKind::Execute,
+                PhaseScope::Target,
+                &[
+                    EffectKind::Process,
+                    EffectKind::RemoteProcess,
+                    EffectKind::Clock,
+                    EffectKind::Diagnostic,
+                ],
+            )
+            .capped(4),
     ],
 };
 
@@ -289,10 +291,18 @@ pub(crate) fn deployment_request(
         .with("fanout", fanout.to_string())
         .with("builders", builders.to_string());
     request.targets = targets.to_vec();
+    // A typed caller may deploy a subset of the hosts its options describe
+    // (a retry pass); only the selected hosts are local for this request.
+    let local_hosts: Vec<String> = options
+        .local_hosts
+        .iter()
+        .filter(|host| targets.contains(host))
+        .cloned()
+        .collect();
     for (key, words) in [
         ("nixos-nix-args", &options.nix_args.nixos),
         ("darwin-nix-args", &options.nix_args.darwin),
-        ("local", &options.local_hosts),
+        ("local", &local_hosts),
     ] {
         if !words.is_empty() {
             request = request.with(
@@ -573,6 +583,39 @@ mod typed_workflow_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn deploying_a_subset_that_excludes_a_local_host_succeeds() {
+        let config = config();
+        let exec = Arc::new(executor());
+        let options = crate::DeployOptions::new().local_hosts(["node01"]);
+        let report = crate::deploy_with_options(
+            exec.clone(),
+            &config,
+            &["node02".into()],
+            crate::DeployAction::Switch,
+            2,
+            false,
+            &options,
+        )
+        .unwrap();
+        assert!(report.is_success());
+        assert_eq!(report.activated, ["node02"]);
+    }
+
+    #[test]
+    fn explicit_local_selection_outside_the_targets_is_still_rejected() {
+        let request = deployment_request(
+            &["node02".into()],
+            crate::DeployAction::Switch,
+            2,
+            false,
+            &crate::DeployOptions::new(),
+        )
+        .unwrap()
+        .with("local", r#"["node01"]"#);
+        assert!(NixIntegration.plan(&config(), &request).is_err());
     }
 
     struct Sink(Mutex<Vec<crate::cascade_events::CascadeEvent>>);
