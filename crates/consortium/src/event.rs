@@ -161,14 +161,6 @@ mod tests {
         for handler in &mut handlers {
             handler.ev_read(&dyn_any_placeholder(), "node1", "stdout", "test");
         }
-
-        // The fact that we can compile and run this code proves that
-        // EventHandler is object-safe. The trait object can be used
-        // polymorphically.
-        assert!(
-            true,
-            "Object safety test passed - Box<dyn EventHandler> works"
-        );
     }
 
     /// Helper to create a placeholder for dyn Any

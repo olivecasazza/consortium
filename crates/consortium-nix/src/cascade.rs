@@ -1576,7 +1576,6 @@ mod tests {
         let mut nodes = nodes;
         nodes[1].parent = Some(NodeId(0));
         nodes[2].parent = Some(NodeId(5));
-        let mut has_closure = has_closure;
         has_closure.insert(NodeId(1));
         has_closure.insert(NodeId(2));
         let mut attempted = HashSet::new();

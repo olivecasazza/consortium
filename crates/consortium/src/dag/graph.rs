@@ -24,6 +24,12 @@ pub struct DagGraph {
     pub(crate) task_cache: HashMap<TaskId, Box<dyn CacheStrategy>>,
 }
 
+impl Default for DagGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DagGraph {
     /// Create an empty graph.
     pub fn new() -> Self {
@@ -216,7 +222,7 @@ impl DagGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::context::DagContext;
+
     use crate::dag::types::{FnTask, TaskOutcome};
 
     fn noop_task(name: &str) -> Box<dyn DagTask> {

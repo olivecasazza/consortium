@@ -409,6 +409,7 @@ impl ScpWorker {
     /// * `reverse` - If true, copy from remote to local.
     /// * `preserve` - If true, preserve file attributes.
     /// * `directory` - If true, copy recursively.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nodes: Vec<String>,
         source: String,

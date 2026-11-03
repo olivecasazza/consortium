@@ -189,8 +189,16 @@ fn repeated_cast_arg_ids_have_distinct_subcommand_keys() {
     assert_eq!(build, "typed cast build on");
     assert_eq!(deploy, "typed cast deploy on");
     assert_ne!(build, deploy);
-    assert!(grammar::check_keys(&[build.clone(), deploy.clone()], &[build.clone()]).is_err());
-    assert!(grammar::check_keys(&[build.clone()], &[build.clone(), deploy.clone()]).is_err());
+    assert!(grammar::check_keys(
+        &[build.clone(), deploy.clone()],
+        std::slice::from_ref(&build)
+    )
+    .is_err());
+    assert!(grammar::check_keys(
+        std::slice::from_ref(&build),
+        &[build.clone(), deploy.clone()]
+    )
+    .is_err());
     assert_eq!(
         grammar::check_keys(&[build.clone(), deploy.clone()], &[build, deploy]).unwrap(),
         2
@@ -200,6 +208,6 @@ fn repeated_cast_arg_ids_have_distinct_subcommand_keys() {
 #[test]
 fn duplicate_keys_cannot_hide_distinct_violations() {
     let key = "typed cast build on".to_string();
-    assert!(grammar::check_keys(&[key.clone(), key.clone()], &[key.clone()]).is_err());
-    assert!(grammar::check_keys(&[key.clone()], &[key.clone(), key]).is_err());
+    assert!(grammar::check_keys(&[key.clone(), key.clone()], std::slice::from_ref(&key)).is_err());
+    assert!(grammar::check_keys(std::slice::from_ref(&key), &[key.clone(), key.clone()]).is_err());
 }

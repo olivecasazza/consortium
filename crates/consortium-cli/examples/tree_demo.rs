@@ -6,6 +6,7 @@ struct N {
     meta: Vec<(String, String)>,
     kids: Vec<N>,
 }
+#[allow(clippy::self_named_constructors)]
 impl N {
     fn n(s: &str) -> Self {
         Self {

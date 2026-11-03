@@ -299,7 +299,7 @@ fn execute(args: Args) -> anyhow::Result<i32> {
 
     if args.maxrc {
         Ok(max_rc.unwrap_or(0))
-    } else if max_rc.map_or(false, |rc| rc != 0) {
+    } else if max_rc.is_some_and(|rc| rc != 0) {
         Ok(1)
     } else {
         Ok(0)

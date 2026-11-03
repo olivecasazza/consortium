@@ -296,7 +296,7 @@ impl LevelTreeFanOut {
         let fanout = u128::from(self.fanout);
         let mut covered: u128 = 0;
         let mut level = fanout; // level r adds fanout^r nodes, r >= 1
-        let mut rounds: u32 = 0;
+        let mut rounds: u64 = 0;
         while covered < u128::from(pending as u64) {
             covered += level;
             level = level.saturating_mul(fanout);

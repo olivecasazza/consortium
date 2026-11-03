@@ -311,7 +311,7 @@ impl EventSink for SnapshotAccumulator {
                     if !acc
                         .nodes
                         .get(&src)
-                        .map_or(false, |n| n.children.contains(&tgt))
+                        .is_some_and(|n| n.children.contains(&tgt))
                     {
                         acc.node(src).children.push(tgt);
                     }
@@ -337,7 +337,7 @@ impl EventSink for SnapshotAccumulator {
                 if !acc
                     .nodes
                     .get(&src)
-                    .map_or(false, |n| n.children.contains(&tgt))
+                    .is_some_and(|n| n.children.contains(&tgt))
                 {
                     acc.node(src).children.push(tgt);
                 }
@@ -359,7 +359,7 @@ impl EventSink for SnapshotAccumulator {
                 if !acc
                     .nodes
                     .get(&src)
-                    .map_or(false, |n| n.children.contains(&tgt))
+                    .is_some_and(|n| n.children.contains(&tgt))
                 {
                     acc.node(src).children.push(tgt);
                 }
@@ -667,6 +667,7 @@ pub struct LiveTreeRenderer {
     /// Header lines rendered at the top of each frame:
     /// - First line gets `┏━ ` prefix (top-left corner)
     /// - Subsequent lines get `┣ ` prefix (T-junction)
+    ///
     /// Default: `vec!["Cascade deploy"]`. Override via `with_header_text()`
     /// (single line) or `with_header_lines()` (multiple).
     header_lines: Mutex<Vec<String>>,
@@ -1212,7 +1213,7 @@ mod tests {
         assert!(matches!(&evs[2], CascadeEvent::Finished { .. }));
     }
 
-    /// 3. SnapshotAccumulator builds correct tree topology from EdgeCompleted
+    /// Case 3: SnapshotAccumulator builds correct tree topology from EdgeCompleted
     /// AND adopts pre-populated unparented nodes (orphans) under root.
     #[test]
     fn snapshot_accumulator_builds_correct_tree_topology() {
@@ -1282,7 +1283,7 @@ mod tests {
         assert_eq!(n1.status, Some(NodeStatus::Ok));
     }
 
-    /// 5. render_events Tree format includes all four status glyphs.
+    /// Case 5: render_events Tree format includes all four status glyphs.
     /// Status semantics:
     /// - PlanComputed marks a target as InProgress (⏵ "spinning")
     /// - EdgeCompleted clears in_progress and sets has_closure (✔)
@@ -1341,7 +1342,7 @@ mod tests {
         );
     }
 
-    /// 7. LiveTreeRenderer emits a frame on each PlanComputed +
+    /// Case 7: LiveTreeRenderer emits a frame on each PlanComputed +
     /// RoundCompleted + Finished, uses cursor-home + clear-screen
     /// escapes (alt-screen idiom, like top/htop/vim/less), and
     /// captures multiple distinct frames over the cascade lifetime.
@@ -1462,7 +1463,7 @@ mod tests {
         );
     }
 
-    /// 8. Truncation: a tall cascade frame is capped at max_height lines
+    /// Case 8: Truncation: a tall cascade frame is capped at max_height lines
     /// per NOM/IO.hs `truncateRows`, with ` ⋮ ` ellipsis inserted.
     #[test]
     fn live_tree_renderer_truncates_tall_frames() {
