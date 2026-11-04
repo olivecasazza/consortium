@@ -3,6 +3,11 @@
 
 ## Features
 
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
+## Features
+
 - executor-based base implementation with contract suite enrollment
 - harden SimExecutor determinism comparison, status visibility, and ergonomics
 
