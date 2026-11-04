@@ -1,5 +1,10 @@
 # Changelog
 
+## Features
+
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
 ## Bug Fixes
 
 - seed-aware fuzz oracles + checked-in regression corpus
