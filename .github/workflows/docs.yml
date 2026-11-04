@@ -28,45 +28,20 @@ jobs:
           echo '<meta http-equiv="refresh" content="0; url=consortium/index.html">' \
             > target/doc/index.html
 
-      - name: Determine version
-        id: version
+      # One gh-pages push per run: back-to-back pushes from separate deploy
+      # steps are rejected by GitHub with Internal Server Error.
+      - name: Stage site
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-            echo "is_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "version=latest" >> $GITHUB_OUTPUT
-            echo "is_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Deploy versioned docs
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./target/doc
-          destination_dir: ${{ steps.version.outputs.version }}
-          keep_files: true
-
-      - name: Also update /latest/ on release
-        if: steps.version.outputs.is_release == 'true'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./target/doc
-          destination_dir: latest
-          keep_files: true
-
-      - name: Write root index.html redirect to latest
-        run: |
-          mkdir -p pages-root
+          mkdir -p site
+          cp -r target/doc site/latest
           echo '<meta http-equiv="refresh" content="0; url=latest/consortium/index.html">' \
-            > pages-root/index.html
+            > site/index.html
 
-      - name: Deploy root index.html
+      - name: Deploy docs
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./pages-root
+          publish_dir: ./site
           destination_dir: .
           keep_files: true
 
@@ -76,6 +51,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| URL | https://olivecasazza.github.io/consortium/${{ steps.version.outputs.version }}/consortium/ |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://olivecasazza.github.io/consortium/latest/consortium/ |" >> $GITHUB_STEP_SUMMARY
           echo "| Crates | $(ls -d target/doc/consortium* 2>/dev/null | wc -l) |" >> $GITHUB_STEP_SUMMARY
