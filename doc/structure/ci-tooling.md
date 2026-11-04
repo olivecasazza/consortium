@@ -1,7 +1,8 @@
 # CI and tooling
 
 `.github/workflows/ci.yml` runs Rust tests, formatting, clippy, the CLI grammar
-gate, documentation, Docker integration tests, and Nix checks.
+gate, documentation, Docker integration tests, and the SemVer gate; Buildbot
+builds every root Nix check.
 `.config/nextest.toml` defines the CI test profile and JUnit output.
 
 The migration scorecard checks out consortium-tests, builds its PyO3 bridge,

@@ -13,7 +13,7 @@ fi
 baseline_rev="$1"
 mapfile -t published_libs < <(
   cargo metadata --no-deps --format-version 1 |
-    jq -r '.packages[] | select(.manifest_path | contains("/crates/")) | select(.name != "consortium-py") | .name'
+    jq -r '.packages[] | select(.manifest_path | test("/crates/[^/]+/Cargo\\.toml$")) | .name'
 )
 test "${#published_libs[@]}" -gt 0
 
