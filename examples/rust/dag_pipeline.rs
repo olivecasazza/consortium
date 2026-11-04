@@ -14,7 +14,7 @@
 //! `ErrorPolicy::ContinueIndependent` semantics: the failing host stops,
 //! every other host runs to completion, and the report records both.
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example dag_pipeline

@@ -8,8 +8,9 @@ lives under `doc/`; requirements and planning live under `.specs/`.
 - Structure: use this category for repository, build, and tooling references.
   [Workspace](workspace-crates.md), [Nix](nix.md),
   [CI](ci-tooling.md), and [documentation](documentation.md).
-- Usage: use this category for operator references, including
-  [`cast` deploys](../cast.md) and [integrations](../integrations.md).
+- Usage: use this category for operator references:
+  [SSH fan-out](../ssh.md), [`cast` deploys](../cast.md),
+  [the Rust library](../library.md), and [integrations](../integrations.md).
 - Architecture: use this category for runtime designs, including
   [scatter/gather builds](../scatter-gather-build.md).
 

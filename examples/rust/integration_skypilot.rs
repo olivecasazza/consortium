@@ -11,7 +11,7 @@
 //! Requires `skypilotConfig` in the fleet file — without it, `launch_task`
 //! returns `SkypilotError::NoConfig` before issuing any command.
 //!
-//! Prerequisites: none — fully offline (ScriptedExecutor).
+//! Runs against: a ScriptedExecutor; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example integration_skypilot

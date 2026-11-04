@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::process;
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,8 @@ use crate::output::{CliOutput, OutputArgs};
 use consortium::node_set::NodeSet;
 use consortium::task::{Task, TaskError};
 use consortium::worker::exec::ExecWorker;
-use consortium::worker::ssh::SshOptions;
-use consortium::worker::EventHandler;
+use consortium::worker::ssh::{ScpWorker, SshOptions};
+use consortium::worker::{EventHandler, Worker};
 
 /// claw — execute commands in parallel across cluster nodes.
 ///
@@ -182,70 +183,65 @@ fn execute(args: Args) -> anyhow::Result<i32> {
         ));
     }
 
-    // ── Build the command string ───────────────────────────────────────
-    let command = if !args.command.is_empty() {
-        args.command.join(" ")
-    } else if !is_terminal::is_terminal(io::stdin()) {
-        // Read command from stdin
-        let mut buf = String::new();
-        io::stdin().read_to_string(&mut buf)?;
-        buf.trim_end().to_string()
-    } else {
-        anyhow::bail!("no command specified");
-    };
-
-    if command.is_empty() {
-        anyhow::bail!("empty command");
-    }
-
-    // ── Build SSH options if needed ────────────────────────────────────
-    let _ssh_opts = build_ssh_options(&args);
-
-    // ── Determine worker type ──────────────────────────────────────────
-    let use_ssh = match args.worker.as_deref() {
-        Some("exec") => false,
-        Some("ssh") => true,
-        Some(other) => anyhow::bail!("unknown worker type: {other} (use 'exec' or 'ssh')"),
-        None => {
-            // Auto-detect: if all nodes are localhost, use exec
-            let all_local = target_nodes
-                .iter()
-                .all(|n| n == "localhost" || n == "127.0.0.1" || n == "::1");
-            !all_local
-        }
-    };
-
-    // ── Build the command with SSH wrapping if needed ───────────────────
     let node_list: Vec<String> = target_nodes.iter().collect();
     let fanout = args.fanout.unwrap_or(64);
     let timeout = args.command_timeout.map(Duration::from_secs);
 
-    let effective_command = if use_ssh {
-        // Build SSH command: ssh [options] [user@]%h command
-        let mut ssh_cmd = args.remote.clone();
-        if let Some(ref opts) = args.options {
-            ssh_cmd.push(' ');
-            ssh_cmd.push_str(opts);
-        }
-        if let Some(ref ct) = args.connect_timeout {
-            ssh_cmd.push_str(&format!(" -o ConnectTimeout={ct}"));
-        }
-        if let Some(ref user) = args.user {
-            ssh_cmd.push_str(&format!(" {user}@%h"));
-        } else {
-            ssh_cmd.push_str(" %h");
-        }
-        ssh_cmd.push(' ');
-        ssh_cmd.push_str(&shell_escape(&command));
-        ssh_cmd
+    let worker: Box<dyn Worker> = if args.copy.is_some() || args.rcopy.is_some() {
+        Box::new(copy_worker(&args, node_list.clone(), fanout, timeout)?)
     } else {
-        command.clone()
+        let command = if !args.command.is_empty() {
+            args.command.join(" ")
+        } else if !is_terminal::is_terminal(io::stdin()) {
+            let mut buf = String::new();
+            io::stdin().read_to_string(&mut buf)?;
+            buf.trim_end().to_string()
+        } else {
+            anyhow::bail!("no command specified");
+        };
+        if command.is_empty() {
+            anyhow::bail!("empty command");
+        }
+
+        let use_ssh = match args.worker.as_deref() {
+            Some("exec") => false,
+            Some("ssh") => true,
+            Some(other) => anyhow::bail!("unknown worker type: {other} (use 'exec' or 'ssh')"),
+            // All-localhost targets run through the local exec worker.
+            None => !target_nodes
+                .iter()
+                .all(|n| n == "localhost" || n == "127.0.0.1" || n == "::1"),
+        };
+
+        let effective_command = if use_ssh {
+            // ssh [options] [user@]%h command
+            let mut ssh_cmd = args.remote.clone();
+            if let Some(ref opts) = args.options {
+                ssh_cmd.push(' ');
+                ssh_cmd.push_str(opts);
+            }
+            if let Some(ref ct) = args.connect_timeout {
+                ssh_cmd.push_str(&format!(" -o ConnectTimeout={ct}"));
+            }
+            if let Some(ref user) = args.user {
+                ssh_cmd.push_str(&format!(" {user}@%h"));
+            } else {
+                ssh_cmd.push_str(" %h");
+            }
+            ssh_cmd.push(' ');
+            ssh_cmd.push_str(&shell_escape(&command));
+            ssh_cmd
+        } else {
+            command
+        };
+        Box::new(
+            ExecWorker::new(node_list.clone(), effective_command, fanout, timeout)
+                .with_stderr(true),
+        )
     };
 
     // ── Create and run the task ────────────────────────────────────────
     let mut task = Task::new();
-    let worker =
-        ExecWorker::new(node_list.clone(), effective_command, fanout, timeout).with_stderr(true);
 
     // Set up progress tracking (only when stderr is a TTY and >1 node)
     let num_nodes = node_list.len();
@@ -273,7 +269,7 @@ fn execute(args: Args) -> anyhow::Result<i32> {
         progress.2.map(|h| Box::new(h) as Box<dyn EventHandler>)
     };
 
-    task.schedule(Box::new(worker), user_handler, false);
+    task.schedule(worker, user_handler, false);
     let pb = progress.0;
     let state = progress.1;
 
@@ -379,21 +375,79 @@ fn resolve_nodes(args: &Args) -> anyhow::Result<NodeSet> {
     Ok(ns)
 }
 
-/// Build SSH options from CLI args.
-fn build_ssh_options(args: &Args) -> SshOptions {
-    let mut opts = SshOptions::default();
-    if let Some(ref user) = args.user {
-        opts.user = Some(user.clone());
+/// SCP options from CLI args. `--options` accepts `-o Key=Value` and
+/// `-oKey=Value` words; anything else is rejected because scp cannot take it.
+fn build_ssh_options(args: &Args) -> anyhow::Result<SshOptions> {
+    let mut opts = SshOptions {
+        user: args.user.clone(),
+        connect_timeout: args.connect_timeout.map(|ct| ct as u32),
+        ..SshOptions::default()
+    };
+    if let Some(extra) = &args.options {
+        let mut words = extra.split_whitespace();
+        while let Some(word) = words.next() {
+            let option = match word.strip_prefix("-o") {
+                Some("") => words
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--options: '-o' needs a Key=Value"))?,
+                Some(inline) => inline,
+                None => anyhow::bail!(
+                    "--options: unsupported word '{word}' for copy (use -o Key=Value)"
+                ),
+            };
+            opts.options.push(option.to_string());
+        }
     }
-    if let Some(ct) = args.connect_timeout {
-        opts.connect_timeout = Some(ct as u32);
+    Ok(opts)
+}
+
+/// `--copy SRC [--dest DIR]` pushes SRC to every node (DIR defaults to SRC's
+/// directory). `--rcopy SRC [--dest DIR]` pulls SRC from every node into
+/// DIR (default: the current directory) as `<name>.<node>`.
+fn copy_worker(
+    args: &Args,
+    nodes: Vec<String>,
+    fanout: usize,
+    timeout: Option<Duration>,
+) -> anyhow::Result<ScpWorker> {
+    if !args.command.is_empty() {
+        anyhow::bail!("--copy/--rcopy take no command");
     }
-    if let Some(ref _extra) = args.options {
-        // Parse "-o Key=Value" style options
-        opts.ssh_path = args.remote.clone(); // String, not Option
-                                             // Store raw options for passthrough
-    }
-    opts
+    let (source, reverse) = match (&args.copy, &args.rcopy) {
+        (Some(_), Some(_)) => anyhow::bail!("--copy and --rcopy are mutually exclusive"),
+        (Some(source), None) => (source, false),
+        (None, Some(source)) => (source, true),
+        (None, None) => unreachable!("copy_worker requires --copy or --rcopy"),
+    };
+    let path = Path::new(source);
+    let dest = if reverse {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("--rcopy: '{source}' has no file name"))?
+            .to_string_lossy();
+        let dir = args.dest.as_deref().unwrap_or(".").trim_end_matches('/');
+        format!("{dir}/{name}.%h")
+    } else {
+        match &args.dest {
+            Some(dest) => dest.clone(),
+            None => path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(|| ".".to_string(), |p| p.to_string_lossy().into_owned()),
+        }
+    };
+    let directory = !reverse && path.is_dir();
+    Ok(ScpWorker::new(
+        nodes,
+        shell_escape(source),
+        shell_escape(&dest),
+        fanout,
+        timeout,
+        build_ssh_options(args)?,
+        reverse,
+        false,
+        directory,
+    ))
 }
 
 /// Display results from a completed task.

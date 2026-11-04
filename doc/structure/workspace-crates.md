@@ -9,8 +9,10 @@ Ray, and SkyPilot adapters share `consortium-integration` execution, fleet,
 staging, and report types. `consortium-integration-testkit` supplies the
 shared semantic contract suite; `consortium-fanout-sim` supplies simulation.
 
-`examples` is an unpublished Cargo workspace member with Rust examples,
-CLI walkthroughs, and inventory fixtures. See [examples](../../examples/README.md).
+`examples` is an unpublished Cargo workspace member holding runnable code
+only: Rust examples, the SSH and Nix walkthrough scripts CI runs, and
+inventory fixtures. Their prose lives in `doc/` ([library](../library.md),
+[SSH](../ssh.md), [cast](../cast.md)).
 
 Python bindings, compatibility shims, and Python examples belong to
 consortium-tests. Its `crates/consortium-py` depends on this repository's

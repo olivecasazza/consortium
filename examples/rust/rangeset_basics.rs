@@ -14,7 +14,7 @@
 //! contiguous sub-sets); the Rust core does not — use `striter()`/`sorted()`
 //! here.
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example rangeset_basics

@@ -13,10 +13,10 @@ nix shell .   # claw, pinch, molt, cast, cascade-copy on PATH
 
 | You want to… | Read |
 | --- | --- |
-| Run a command on many hosts, fold node sets, gather output (`claw`, `pinch`, `molt`) | [CLI walkthrough](examples/cli/README.md) |
-| Deploy a flake to NixOS / nix-darwin machines (`cast`) | [cast](doc/cast.md) |
+| Run a command on many hosts over SSH, fold node sets, copy files, gather output (`claw`, `pinch`, `molt`) | [SSH fan-out](doc/ssh.md) |
+| Deploy a flake to NixOS / nix-darwin machines (`cast`, `cascade-copy`) | [cast](doc/cast.md) |
 | Drive Nix, Slurm, Ansible, Ray, or SkyPilot through one grammar | [Integrations](doc/integrations.md) |
-| Use the Rust library | [Rust examples](examples/README.md), `cargo doc --workspace --no-deps` |
+| Use the Rust library | [Library guide](doc/library.md), `cargo doc --workspace --no-deps` |
 | Add an integration | [Integrations → contract tests](doc/integrations.md#contract-test-suite), [grammar design](.specs/draft/integration-grammar.md) |
 | Find your way around the code | [Repository structure](doc/structure/index.md) |
 | Contribute | [CI, commits, grammar gate](doc/structure/ci-tooling.md), [specs and roadmap](.specs/index.md) |

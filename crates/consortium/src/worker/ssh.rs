@@ -425,7 +425,7 @@ impl ScpWorker {
         let scp_cmd = ssh_options.build_scp_cmd("%h", &source, &dest, reverse, preserve, directory);
 
         ScpWorker {
-            inner: ExecWorker::new(nodes, scp_cmd, fanout, timeout),
+            inner: ExecWorker::new(nodes, scp_cmd, fanout, timeout).with_stderr(true),
             ssh_options,
             source,
             dest,

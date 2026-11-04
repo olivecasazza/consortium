@@ -8,7 +8,7 @@
 //! version, a couple differ, and shows the gathered view — plus folding the
 //! node keys back into bracket notation with NodeSet.
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example gather_outputs

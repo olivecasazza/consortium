@@ -12,7 +12,7 @@
 //! "ssh" rule (a broad "ssh" rule would also swallow `nix copy` lines,
 //! which contain `ssh-ng://` target URLs).
 //!
-//! Prerequisites: none — fully offline (ScriptedExecutor).
+//! Runs against: a ScriptedExecutor; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example integration_nix_deploy
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for cmd in scripted.invocations() {
         println!("  {cmd}");
     }
-    scripted.assert_invoked_containing("switch-to-configuration switch");
+    scripted.assert_invoked_containing("/bin/switch-to-configuration' 'switch'");
 
     // ── Cascade variant ──────────────────────────────────────────────────
     // For larger fleets, replace the per-host `nix copy` fan-out with a
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // When NOT to use it: 1–2 targets (cascade overhead > parallel direct
     // copy), or DeployAction::Build (nothing to copy). See also the
-    // `cascade-copy` and `cast cascade` CLIs (examples/cli/README.md).
+    // `cascade-copy` and `cast cascade` CLIs (doc/cast.md).
 
     Ok(())
 }

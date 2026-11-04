@@ -3,13 +3,13 @@
 //! `Task::shell` with a nodeset schedules an `ExecWorker`: the command runs
 //! once per node **locally**, with `%h` substituted for the node name. This
 //! is the same fan-out engine `claw` uses; with the exec worker no SSH is
-//! involved, so the example is fully offline.
+//! involved, so it runs against this machine only.
 //!
 //! After `task.run()` the example reads results back through the task:
 //! per-node return codes (`iter_retcodes`, `node_retcode`), merged stdout
 //! per node (`node_buffer`), and the worst exit status (`max_retcode`).
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example fanout_local

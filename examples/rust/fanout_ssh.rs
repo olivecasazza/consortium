@@ -15,9 +15,9 @@
 //! Example:
 //!   cargo run -p consortium-examples --example fanout_ssh -- 'web[01-04]' 'uptime'
 //!
-//! *** NOT offline *** — requires SSH-reachable hosts (key auth, resolvable
-//! names). Against the default `node[1-3]` pattern it will simply fail to
-//! connect; pass real hosts to see it work. Compile-checked only in CI.
+//! Requires hosts reachable over non-interactive SSH as `$SSH_USER` (default:
+//! the ssh client's default user). Exits non-zero unless every host returns 0.
+//! `examples/ssh/walkthrough.sh` runs it in CI against loopback sshd.
 
 use std::time::Duration;
 
@@ -37,16 +37,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(2)
         .unwrap_or_else(|| "uname -r".to_string());
 
-    banner("SSH fan-out — requires SSH-reachable hosts");
+    banner("SSH fan-out");
     println!("targets : {pattern}");
     println!("command : {command}");
-    println!("(default targets node[1-3] are placeholders; pass real hosts as argv[1])");
 
     let nodes: Vec<String> = NodeSet::parse(&pattern)?.iter().collect();
 
     banner("Schedule SshWorker");
     let ssh_opts = SshOptions {
-        user: Some("root".to_string()),
+        user: std::env::var("SSH_USER").ok(),
         connect_timeout: Some(5),
         strict_host_key_checking: false,
         ..Default::default()
@@ -76,5 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("max_retcode: {:?}", task.max_retcode());
     println!("num_timeout: {}", task.num_timeout());
 
-    Ok(())
+    match task.max_retcode() {
+        Some(0) if task.num_timeout() == 0 => Ok(()),
+        rc => Err(format!("not every host succeeded (max_retcode {rc:?})").into()),
+    }
 }
