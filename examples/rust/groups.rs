@@ -11,7 +11,7 @@
 //!   - composing groups with NodeSet set algebra (how `@group`-style
 //!     selection combines with plain bracket notation)
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example groups

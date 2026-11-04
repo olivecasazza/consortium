@@ -10,7 +10,7 @@
 //! Requires `rayConfig` in the fleet file — without it, `submit_job`
 //! returns `RayError::NoConfig` before issuing any command.
 //!
-//! Prerequisites: none — fully offline (ScriptedExecutor).
+//! Runs against: a ScriptedExecutor; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example integration_ray

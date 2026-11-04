@@ -56,11 +56,17 @@ jobs:
           destination_dir: latest
           keep_files: true
 
-      - name: Deploy version index
+      - name: Write root index.html redirect to latest
+        run: |
+          mkdir -p pages-root
+          echo '<meta http-equiv="refresh" content="0; url=latest/consortium/index.html">' \
+            > pages-root/index.html
+
+      - name: Deploy root index.html
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs-index
+          publish_dir: ./pages-root
           destination_dir: .
           keep_files: true
 

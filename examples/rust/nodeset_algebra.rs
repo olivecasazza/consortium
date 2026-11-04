@@ -8,7 +8,7 @@
 //!   - union / intersection / difference / symmetric_difference
 //!   - `update_str`, `split`, `slice`, `contains`, `index`, `get`
 //!
-//! Prerequisites: none — fully offline.
+//! Runs against: this process; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example nodeset_algebra

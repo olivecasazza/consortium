@@ -6,14 +6,14 @@
 //!
 //! The nix stages run locally; sbatch/sacct/cat run over ssh on the
 //! fleet's `submitNode`. All commands go through the `Executor` trait, so
-//! a `ScriptedExecutor` demonstrates the full pipeline offline. The job
+//! a `ScriptedExecutor` plays back the full pipeline without a cluster. The job
 //! script is staged to the submit node and `sbatch`'ed; `slurm-wait` polls
 //! `sacct` until a terminal state; `slurm-collect` cats the output glob.
 //!
 //! Requires `slurmConfig` in the fleet file — without it, `submit_job`
 //! returns `SlurmError::NoConfig` before issuing any command.
 //!
-//! Prerequisites: none — fully offline (ScriptedExecutor).
+//! Runs against: a ScriptedExecutor; no hosts needed.
 //!
 //! Run with:
 //!   cargo run -p consortium-examples --example integration_slurm

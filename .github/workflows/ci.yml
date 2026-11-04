@@ -66,6 +66,63 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
 
+  # ── Layer 1b: Start-here walkthroughs against real sshd ──────────
+  # Runs the commands shown in doc/ssh.md and doc/cast.md against the
+  # runner's own sshd on three loopback addresses.
+  walkthroughs:
+    name: SSH and cast walkthroughs
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-walkthrough-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build CLI and fanout_ssh example
+        run: |
+          cargo build -p consortium-cli --bins
+          cargo build -p consortium-examples --example fanout_ssh
+
+      - name: Start sshd with key auth for the runner user
+        run: |
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+          sudo systemctl start ssh || sudo service ssh start
+          for host in 127.0.0.1 127.0.0.2 127.0.0.3; do
+            ssh-keyscan -H "$host" >> ~/.ssh/known_hosts 2>/dev/null
+            ssh -o BatchMode=yes "$host" true
+          done
+
+      - name: SSH walkthrough (doc/ssh.md)
+        env:
+          NODES: 127.0.0.[1-3]
+        run: PATH="$PWD/target/debug:$PWD/target/debug/examples:$PATH" examples/ssh/walkthrough.sh
+
+      - name: cast walkthrough (doc/cast.md)
+        env:
+          NODES: 127.0.0.[1-3]
+        run: PATH="$PWD/target/debug:$PATH" examples/nix/walkthrough.sh
+
+      - name: Integration pipelines (doc/library.md)
+        run: |
+          for example in integration_nix_deploy integration_slurm integration_ansible integration_ray integration_skypilot; do
+            cargo run -q -p consortium-examples --example "$example"
+          done
+
   # ── Layer 2: Docker Integration Tests (GitHub-hosted) ─────────────
   docker-integration:
     name: Docker Integration Tests
