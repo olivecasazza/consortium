@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for cmd in scripted.invocations() {
         println!("  {cmd}");
     }
-    scripted.assert_invoked_containing("switch-to-configuration switch");
+    scripted.assert_invoked_containing("/bin/switch-to-configuration' 'switch'");
 
     // ── Cascade variant ──────────────────────────────────────────────────
     // For larger fleets, replace the per-host `nix copy` fan-out with a
