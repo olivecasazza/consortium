@@ -10,6 +10,15 @@
 - declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
 
 
+## Documentation
+
+- consolidate doc/ and examples/; exercised SSH and cast start-here ([#40](https://github.com/olivecasazza/consortium/pull/40))
+
+## Features
+
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
 ## Bug Fixes
 
 - use [lib] table instead of [package].lib.name ([#3](https://github.com/olivecasazza/consortium/pull/3))

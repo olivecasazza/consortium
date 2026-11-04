@@ -14,6 +14,20 @@
 - declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
 
 
+## Bug Fixes
+
+- retry failed closure copies over another endpoint
+
+## Documentation
+
+- consolidate doc/ and examples/; exercised SSH and cast start-here ([#40](https://github.com/olivecasazza/consortium/pull/40))
+
+## Features
+
+- add hosts/tags subcommands, --dry-run, and improve status reachability detection (rebased)
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
 ## Documentation
 
 - fix rustdoc errors under RUSTDOCFLAGS="-D warnings"

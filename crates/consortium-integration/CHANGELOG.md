@@ -7,6 +7,11 @@
 
 ## Features
 
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
+## Features
+
 - native fleet deploys — flake discovery, @groups, live ssh endpoints (replaces cast-on) ([#9](https://github.com/olivecasazza/consortium/pull/9))
 - per-host deploy progress and --activate-timeout ([#18](https://github.com/olivecasazza/consortium/pull/18))
 

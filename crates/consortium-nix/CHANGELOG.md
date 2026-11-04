@@ -13,6 +13,17 @@
 
 ## Bug Fixes
 
+- retry failed closure copies over another endpoint
+
+## Features
+
+- honour buildOnTarget
+- add hosts/tags subcommands, --dry-run, and improve status reachability detection (rebased)
+- declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))
+
+
+## Bug Fixes
+
 - qualify Log2FanOut intra-doc link in MaxBottleneckSpanning docs
 - move expected_rounds off the trait to inherent methods
 
