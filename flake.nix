@@ -224,28 +224,18 @@
           # See nix/lib/fleet-contract-fixture.nix for the exact values.
           fleetFixture = consortiumLib.mkFleet (import ./nix/lib/fleet-contract-fixture.nix);
 
-          # ── Published library crates (SemVer gate) ─────────────────────
-          # All library crates are checked against Git and crates.io baselines.
-          publishedLibs =
-            let
-              workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
-              pkgName =
-                member: (builtins.fromTOML (builtins.readFile (./. + "/${member}/Cargo.toml"))).package.name;
-            in
-            map pkgName (lib.filter (lib.strings.hasPrefix "crates/") workspace.members);
-
           # Two baselines, both run for every published lib crate on every
           # change, and either one failing fails the gate: the git baseline at
           # --release-type minor, so removing or altering a public item is
           # rejected regardless of what has been published, and crates.io,
-          # which catches a version that was never bumped. Publication state
-          # gates nothing here. Both run outside the Nix sandbox; CI passes
-          # the exact PR base (or pre-push tip) rather than relying on the
-          # checkout depth.
+          # which catches a version that was never bumped. Both run outside
+          # the Nix sandbox. The loop lives in scripts/semver-check.sh, which
+          # GitHub Actions also runs directly.
           semverCheck = pkgs.writeShellApplication {
             name = "semver-check";
             runtimeInputs = [
               pkgs.cargo-semver-checks
+              pkgs.jq
               # cargo-semver-checks runs `cargo rustdoc`, whose proc-macro
               # build scripts need a C linker; without `cc` on PATH every
               # published crate fails with "linker `cc` not found".
@@ -253,29 +243,7 @@
               rustToolchain
             ];
             text = ''
-              if [ "$#" -ne 1 ]; then
-                echo "usage: nix run .#semver-check -- <base-commit>" >&2
-                exit 2
-              fi
-              if [ ! -f Cargo.toml ]; then
-                echo "semver-check: run from the consortium workspace root" >&2
-                exit 1
-              fi
-              baseline_rev="$1"
-              status=0
-              for pkg in ${lib.escapeShellArgs publishedLibs}; do
-                echo "=== cargo semver-checks -p $pkg (git baseline: $baseline_rev; API release type: minor)"
-                if ! cargo semver-checks -p "$pkg" --baseline-rev "$baseline_rev" --release-type minor; then
-                  echo "semver-check: $pkg FAILED API compatibility against $baseline_rev" >&2
-                  status=1
-                fi
-                echo "=== cargo semver-checks -p $pkg (baseline: crates.io)"
-                if ! cargo semver-checks -p "$pkg"; then
-                  echo "semver-check: $pkg FAILED crates.io version check" >&2
-                  status=1
-                fi
-              done
-              exit "$status"
+              exec ${pkgs.bash}/bin/bash ${./scripts/semver-check.sh} "$@"
             '';
           };
 
@@ -359,7 +327,9 @@
                   echo "enrolled contract-suite adapters: $adapters" > $out
                 '';
 
-            inherit consortium;
+            # Buildbot builds every root check; these make it own the library
+            # and CLI package builds too.
+            inherit consortium consortium-cli;
 
             # The installed CLI starts, and the grammar gate it carries
             # compares its own command surface against the baseline embedded
@@ -394,7 +364,7 @@
           apps = {
             # `nix run .#semver-check` from the workspace root: real
             # cargo-semver-checks against the crates.io baseline for every
-            # published library crate (see publishedLibs above). Exits
+            # published library crate (scripts/semver-check.sh). Exits
             # nonzero on substantive SemVer breakage or baseline lookup
             # errors. Network use happens here at runtime, never inside a
             # Nix derivation.
