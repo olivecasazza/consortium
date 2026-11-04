@@ -9,9 +9,12 @@ The development shell supplies Rust and Nix tooling without a Python environment
 check. `enrollment.nix` requires each integration to enroll in the shared
 contract suite.
 
-The flake checks cover Cargo tests and clippy, fleet JSON, integration
-enrollment, repository source policy, and installed CLI grammar.
-The `semver-check` app compares public Rust APIs with Git and crates.io baselines.
+The flake checks cover Cargo tests, clippy, and fmt, fleet JSON, integration
+enrollment, repository source policy, the library and CLI packages, and the
+installed CLI grammar. Buildbot builds every root check for each change.
+`scripts/semver-check.sh` compares public Rust APIs with Git and crates.io
+baselines; it needs the network, so it runs outside Nix, from GitHub Actions
+or `nix run .#semver-check`.
 
 `nix/vms/` contains the declarative integration fleet and its
 [runbook](../../nix/vms/README.md). VM tool environments can include Python
