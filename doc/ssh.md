@@ -9,9 +9,11 @@ targets — no agent, no Nix on the remote side.
 nix shell github:olivecasazza/consortium   # claw, pinch, molt, cast on PATH
 ```
 
-Every command below runs in CI against real `sshd` hosts through
-[`examples/ssh/walkthrough.sh`](../examples/ssh/walkthrough.sh). Point it at
-your own hosts to try them:
+[`examples/ssh/walkthrough.sh`](../examples/ssh/walkthrough.sh) runs each
+feature below — pinch algebra, `claw` run, `-b`, `-S`, `--copy`, `--rcopy`,
+`molt`, and the Rust example — against real `sshd` hosts in CI. Host names,
+paths, and services in the examples are placeholders. Point the script at
+your own hosts:
 
 ```sh
 NODES='web[01-04]' SSH_USER=ops examples/ssh/walkthrough.sh

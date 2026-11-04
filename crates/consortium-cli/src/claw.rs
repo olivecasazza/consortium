@@ -439,8 +439,8 @@ fn copy_worker(
     let directory = !reverse && path.is_dir();
     Ok(ScpWorker::new(
         nodes,
-        source.clone(),
-        dest,
+        shell_escape(source),
+        shell_escape(&dest),
         fanout,
         timeout,
         build_ssh_options(args)?,

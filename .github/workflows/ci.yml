@@ -96,7 +96,7 @@ jobs:
 
       - name: Start sshd with key auth for the runner user
         run: |
-          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo apt-get update -q && sudo apt-get install -y --no-install-recommends openssh-server
           sudo mkdir -p /run/sshd
           ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
           cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
