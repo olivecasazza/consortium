@@ -1008,6 +1008,29 @@ impl Task {
     // Buffer accessors (MsgTree-based)
     // -----------------------------------------------------------------------
 
+    /// Group worker/node sources by their complete stdout lines, in no particular order.
+    /// `None` means no output; `Some(vec![])` means one empty line. As with
+    /// [`Self::node_buffer`], line separators are included but the final terminator is not.
+    pub fn gathered_stdout(
+        &mut self,
+    ) -> Result<impl Iterator<Item = (Option<Vec<u8>>, Vec<Source>)> + '_> {
+        let tree = self
+            .stdout_tree
+            .as_mut()
+            .ok_or_else(|| TaskError::MsgTreeDisabled("stdout".to_string()))?;
+        let silent: Vec<_> = self
+            .d_source_rc
+            .keys()
+            .chain(&self.timeout_sources)
+            .filter(|source| tree.get(source).is_none())
+            .cloned()
+            .collect();
+        Ok(tree
+            .walk(None)
+            .map(|(message, sources)| (Some(message), sources))
+            .chain((!silent.is_empty()).then_some((None, silent))))
+    }
+
     /// Get the stdout buffer for a specific node across all workers.
     ///
     /// Returns the node's stdout lines joined by `\n`, without a trailing

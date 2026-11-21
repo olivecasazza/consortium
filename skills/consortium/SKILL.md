@@ -96,7 +96,7 @@ subtraction. If the set ends up empty, claw exits with
 
 | Mode | Behavior |
 | default | Streams each line as it completes, prefixed with its node label unless `-N` is set. A progress bar appears on stderr when stderr is a TTY and more than one node is targeted. |
-| `-b, --dshbak` | Buffers instead of streaming, then prints one header per group of nodes that produced identical output, largest group first, with a folded bracket header and a node count. |
+| `-b, --dshbak` | Groups nodes by output lines, not pipe reads. A silent node and one that printed a blank line form separate groups; trailing blank lines are preserved. The largest group prints first, with a folded header and node count. |
 | `-L, --line` | Line mode, no output gathering. |
 | `-q, --quiet` | No stdout, no progress bar, no per-node return-code lines. The exit code is the only signal. |
 
