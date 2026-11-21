@@ -51,7 +51,7 @@ transfers unchanged.
 | `-o, --options OPTS` | Verbatim ssh option string, inserted into the command line as written. Include the leading `-o` yourself. |
 | `--remote PATH` | The binary that stands in for ssh. Default `ssh`. |
 | `--topology FILE` | Topology file for tree mode. |
-| `-b, --dshbak` | Gather nodes whose output is byte-identical under one header. |
+| `-b, --dshbak` | Gather nodes whose output is identical, line for line, under one header. |
 | `-L, --line` | Line mode: no output gathering. |
 | `-N, --label` | Turn node labels off. The flag reads as "label" but it disables them. |
 | `-q, --quiet` | Print nothing; report only through the exit code. |

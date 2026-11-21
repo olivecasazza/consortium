@@ -202,10 +202,12 @@ struct TaskGatheringHandler {
     /// Worker ID that this handler is associated with.
     #[allow(dead_code)]
     worker_id: usize,
-    /// Collected stdout lines: node -> Vec<lines>.
+    /// Collected stdout lines: node -> Vec<lines>. A line has no trailing newline.
     stdout: HashMap<String, Vec<Vec<u8>>>,
-    /// Collected stderr lines: node -> Vec<lines>.
+    /// Collected stderr lines: node -> Vec<lines>. A line has no trailing newline.
     stderr: HashMap<String, Vec<Vec<u8>>>,
+    /// The unterminated tail of each pipe's output so far: (node, fd) -> bytes.
+    partial: HashMap<(String, std::os::unix::io::RawFd), Vec<u8>>,
     /// Return codes: node -> rc.
     retcodes: HashMap<String, i32>,
     /// Timed-out nodes.
@@ -220,6 +222,7 @@ impl TaskGatheringHandler {
             worker_id,
             stdout: HashMap::new(),
             stderr: HashMap::new(),
+            partial: HashMap::new(),
             retcodes: HashMap::new(),
             timeouts: HashSet::new(),
             user_handler,
@@ -236,12 +239,21 @@ impl EventHandler for TaskGatheringHandler {
 
     fn on_read(&mut self, node: &str, fd: std::os::unix::io::RawFd, msg: &[u8]) {
         // fd 1 = stdout, fd 2 = stderr
-        let map = if fd == 2 {
+        let lines = if fd == 2 {
             &mut self.stderr
         } else {
             &mut self.stdout
         };
-        map.entry(node.to_string()).or_default().push(msg.to_vec());
+        // A read can end anywhere in a line. A line is complete at its newline;
+        // the rest waits in `partial` for the next read of the same pipe.
+        let partial = self.partial.entry((node.to_string(), fd)).or_default();
+        let mut rest = msg;
+        while let Some(end) = rest.iter().position(|b| *b == b'\n') {
+            partial.extend_from_slice(&rest[..end]);
+            push_line(lines, node, std::mem::take(partial));
+            rest = &rest[end + 1..];
+        }
+        partial.extend_from_slice(rest);
 
         if let Some(ref mut h) = self.user_handler {
             h.on_read(node, fd, msg);
@@ -277,11 +289,36 @@ impl EventHandler for TaskGatheringHandler {
         HashMap<String, Vec<Vec<u8>>>,
         HashSet<String>,
     ) {
+        // A last line without a newline is still a line.
+        let mut unterminated: Vec<_> = std::mem::take(&mut self.partial)
+            .into_iter()
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .collect();
+        unterminated.sort_by(|a, b| a.0.cmp(&b.0));
+        for ((node, fd), bytes) in unterminated {
+            let lines = if fd == 2 {
+                &mut self.stderr
+            } else {
+                &mut self.stdout
+            };
+            push_line(lines, &node, bytes);
+        }
+
         (
             std::mem::take(&mut self.stdout),
             std::mem::take(&mut self.stderr),
             std::mem::take(&mut self.timeouts),
         )
+    }
+}
+
+/// Append one line to a node's lines without allocating a key per line.
+fn push_line(lines: &mut HashMap<String, Vec<Vec<u8>>>, node: &str, line: Vec<u8>) {
+    match lines.get_mut(node) {
+        Some(node_lines) => node_lines.push(line),
+        None => {
+            lines.insert(node.to_string(), vec![line]);
+        }
     }
 }
 
@@ -973,7 +1010,8 @@ impl Task {
 
     /// Get the stdout buffer for a specific node across all workers.
     ///
-    /// Returns a concatenation of all stdout messages for that node.
+    /// Returns the node's stdout lines joined by `\n`, without a trailing
+    /// newline, whatever the size of the reads the output arrived in.
     pub fn node_buffer(&self, node: &str) -> Result<Vec<u8>> {
         let tree = self
             .stdout_tree
@@ -1459,6 +1497,120 @@ mod tests {
         }
     }
 
+    /// Worker double that delivers one node's output in scripted reads.
+    struct ScriptedReads {
+        node: String,
+        reads: Vec<Vec<u8>>,
+        handler: Option<Box<dyn EventHandler>>,
+        retcodes: HashMap<String, i32>,
+        done: bool,
+    }
+
+    impl ScriptedReads {
+        fn new(node: &str, reads: &[&[u8]]) -> Self {
+            Self {
+                node: node.to_string(),
+                reads: reads.iter().map(|read| read.to_vec()).collect(),
+                handler: None,
+                retcodes: HashMap::new(),
+                done: false,
+            }
+        }
+    }
+
+    impl Worker for ScriptedReads {
+        fn start(&mut self) -> crate::worker::Result<()> {
+            if let Some(handler) = self.handler.as_mut() {
+                for read in &self.reads {
+                    handler.on_read(&self.node, 1, read);
+                }
+                handler.on_close(&self.node, 0);
+            }
+            self.retcodes.insert(self.node.clone(), 0);
+            self.done = true;
+            Ok(())
+        }
+
+        fn abort(&mut self, _kill: bool) {
+            self.done = true;
+        }
+
+        fn state(&self) -> WorkerState {
+            if self.done {
+                WorkerState::Done
+            } else {
+                WorkerState::Pending
+            }
+        }
+
+        fn set_handler(&mut self, handler: Box<dyn EventHandler>) {
+            self.handler = Some(handler);
+        }
+
+        fn read_fds(&self) -> Vec<std::os::unix::io::RawFd> {
+            Vec::new()
+        }
+
+        fn write_fds(&self) -> Vec<std::os::unix::io::RawFd> {
+            Vec::new()
+        }
+
+        fn handle_read(&mut self, _fd: std::os::unix::io::RawFd) -> crate::worker::Result<()> {
+            Ok(())
+        }
+
+        fn handle_write(&mut self, _fd: std::os::unix::io::RawFd) -> crate::worker::Result<()> {
+            Ok(())
+        }
+
+        fn is_done(&self) -> bool {
+            self.done
+        }
+
+        fn retcodes(&self) -> &HashMap<String, i32> {
+            &self.retcodes
+        }
+
+        fn num_nodes(&self) -> usize {
+            1
+        }
+
+        fn take_handler(&mut self) -> Option<Box<dyn EventHandler>> {
+            self.handler.take()
+        }
+    }
+
+    #[test]
+    fn node_buffer_does_not_depend_on_read_boundaries() {
+        let gathered = |reads: &[&[u8]]| {
+            let mut task = Task::new();
+            task.schedule(Box::new(ScriptedReads::new("n1", reads)), None, false);
+            task.run(None).unwrap();
+            task.node_buffer("n1").unwrap()
+        };
+
+        let output: &[u8] = b"a\nbb\n\nc";
+        let whole = gathered(&[output]);
+        for cut in 1..output.len() {
+            let (head, tail) = output.split_at(cut);
+            assert_eq!(gathered(&[head, tail]), whole, "reads cut at byte {cut}");
+        }
+        assert_eq!(whole, output);
+    }
+
+    #[test]
+    fn node_buffer_holds_lines_without_the_final_newline() {
+        let mut task = Task::new();
+        task.schedule(
+            Box::new(ScriptedReads::new("n1", &[b"a\n", b"b\n"])),
+            None,
+            false,
+        );
+        task.run(None).unwrap();
+
+        assert_eq!(task.node_buffer("n1").unwrap(), b"a\nb");
+    }
+
     #[test]
     fn test_task_terminate_only_once_on_repeated_abort() {
         // Mirrors upstream ClusterShell #110 ("Task: only terminate Task
@@ -1789,9 +1941,9 @@ mod tests {
     #[test]
     fn test_gathering_handler_collects_stdout() {
         let mut handler = TaskGatheringHandler::new(0, None);
-        handler.on_read("node1", 1, b"hello");
-        handler.on_read("node1", 1, b"world");
-        handler.on_read("node2", 1, b"hi");
+        handler.on_read("node1", 1, b"hello\n");
+        handler.on_read("node1", 1, b"world\n");
+        handler.on_read("node2", 1, b"hi\n");
         assert_eq!(handler.stdout["node1"].len(), 2);
         assert_eq!(handler.stdout["node2"].len(), 1);
     }
@@ -1799,9 +1951,21 @@ mod tests {
     #[test]
     fn test_gathering_handler_collects_stderr() {
         let mut handler = TaskGatheringHandler::new(0, None);
-        handler.on_read("node1", 2, b"error msg");
+        handler.on_read("node1", 2, b"error msg\n");
         assert_eq!(handler.stderr["node1"].len(), 1);
         assert!(handler.stdout.is_empty());
+    }
+
+    #[test]
+    fn test_gathering_handler_keeps_partial_lines_per_pipe() {
+        let mut handler = TaskGatheringHandler::new(0, None);
+        handler.on_read("node1", 3, b"out");
+        handler.on_read("node1", 4, b"err\n");
+        handler.on_read("node1", 3, b"put\n");
+
+        let (stdout, _stderr, _timeouts) = handler.take_buffers();
+
+        assert_eq!(stdout["node1"], [b"err".to_vec(), b"output".to_vec()]);
     }
 
     #[test]

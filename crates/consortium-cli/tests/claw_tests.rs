@@ -84,6 +84,26 @@ fn test_045_pipe_line_buffering() {
     );
 }
 
+/// Two nodes print the same bytes; one writes them in two bursts, so the
+/// worker reads them separately. Gathering must not see the difference.
+#[test]
+fn gathered_output_does_not_depend_on_read_boundaries() {
+    let (stdout, stderr, rc) = run_claw(&[
+        "-R",
+        "exec",
+        "-w",
+        "foo[1-2]",
+        "-b",
+        "if [ %h = foo1 ]; then printf 'a\\nb\\n'; else printf 'a\\n'; sleep 0.3; printf 'b\\n'; fi",
+    ]);
+
+    assert_eq!(rc, 0, "claw failed: {stderr}");
+    assert_eq!(
+        stdout,
+        "---------------\nfoo[1-2] (2)\n---------------\na\nb\n"
+    );
+}
+
 /// Mirror of `CLIClushTest.test_046_axis`.
 #[test]
 fn test_046_axis() {

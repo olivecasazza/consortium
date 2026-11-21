@@ -254,7 +254,8 @@ pub enum WorkerState {
 }
 
 /// Buffered output taken from an [`EventHandler`]: (stdout, stderr, timeouts),
-/// with stdout/stderr keyed by node.
+/// with stdout/stderr keyed by node and holding one entry per line, without its
+/// trailing newline.
 pub type TakenBuffers = (
     HashMap<String, Vec<Vec<u8>>>,
     HashMap<String, Vec<Vec<u8>>>,
@@ -291,7 +292,8 @@ pub trait EventHandler: Send {
     }
 
     /// Extract buffered stdout/stderr data from this handler.
-    /// Returns (stdout, stderr, timeouts) where stdout/stderr are node -> `Vec<chunks>`.
+    /// Returns (stdout, stderr, timeouts) where stdout/stderr are node -> `Vec<lines>`;
+    /// a line is one entry however many reads it took to arrive.
     /// Default returns empty maps. Used by Task to collect results after execution.
     fn take_buffers(&mut self) -> TakenBuffers {
         (HashMap::new(), HashMap::new(), HashSet::new())
