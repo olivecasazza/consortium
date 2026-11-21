@@ -125,7 +125,8 @@
 //!
 //! ## Determinism contract
 //!
-//! Same builder config + same pipeline inputs ⇒
+//! In threaded runs where outcomes do not depend on which command reaches a
+//! shared edge first, the same builder config and pipeline inputs produce:
 //!
 //! - identical [`SimExecutor::invocation_log`] contents as an
 //!   attempt-insensitive multiset ([`logs_equivalent`] /
@@ -155,7 +156,12 @@
 //!   the attempt index;
 //! - **dependency-ordered per-host chains** give each edge a single
 //!   arrival order, so attempt binding — and [`per_edge_outcomes`] — is
-//!   stable there. Keep test DAGs that way when asserting on sequences.
+//!   stable there.
+//!
+//! To test arrival-sensitive faults, use [`crate::CompletionSchedule`] with
+//! [`consortium::dag::DagExecutor::run_simulated`]. The same task trace and
+//! fresh network fixture reproduce the raw invocation order for deterministic
+//! task bodies; reversing independent hosts can change which host fails.
 //!
 //! ## Writing a sim test for an integration
 //!
@@ -169,10 +175,9 @@
 //! 2. **Wire it in**: wrap in `Arc`, store as `Arc<dyn Executor>` under
 //!    the `"executor"` context state key, then call the integration's
 //!    entry fn (or drive its DAG directly, as below).
-//! 3. **Assert semantics, not order**: the `DagReport` / pipeline result
-//!    plus edge/kind-filtered views of the invocation log. Never assert on
-//!    log order (worker threads interleave) or wall-clock time (none
-//!    passes — the clock is virtual).
+//! 3. **Assert outcomes**: check the `DagReport` and edge/kind-filtered log.
+//!    Assert exact log order only with a controlled completion schedule or
+//!    dependency-ordered chain. Use virtual time, not wall-clock time.
 //! 4. **Assert determinism**: run the identical scenario twice and call
 //!    [`assert_deterministic_equivalence`] on both logs.
 //!

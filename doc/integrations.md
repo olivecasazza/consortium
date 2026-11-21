@@ -122,17 +122,23 @@ assertions. Every integration ships a `tests/sim.rs` suite on top of it:
 | ----- | -------------- |
 | `consortium-nix` | `healthy_baseline_converges` (per-host copy + activation edges, virtual clock), `killed_target_fails_copy_but_fleet_continues` (round-0 kill fails one copy, fleet converges), `build_action_ignores_network_kill` (build-only deploy is all-local), `unhealthy_builder_falls_back_to_local_build` (ssh probe failure → local fallback), `deterministic_under_threads` |
 | `consortium-slurm` | `happy_path_full_pipeline` (build → copy → sbatch → sacct → collect), `slow_submit_uplink_still_succeeds` (100 MiB at 1 MiB/s on the virtual clock), `killed_submit_node_aborts_before_sbatch` (FailFast cancels downstream), `sacct_reports_failed_state` (terminal job state fails the wait), `deterministic_under_threads` |
-| `consortium-ansible` | `happy_path_all_hosts_configured` (shared control edge: per-host copies + playbooks), `killed_control_node_aborts_playbooks` (no playbook attempted against a dead control node), `one_target_playbook_fails_others_continue` (per-command scripted failure, ContinueIndependent), `check_mode_still_runs_all_phases`, `deterministic_under_threads`, `deterministic_single_target_native_equivalence` |
+| `consortium-ansible` | Shared build and copy, per-host playbooks, continued execution after one target fails, check mode, and replay of either host hitting the same control-edge partition. |
 | `consortium-skypilot` | `happy_path_launch_and_teardown` (all-local pipeline, command ordering), `no_teardown_leaves_cluster_up`, `launch_failure_skips_teardown`, `env_build_failure_aborts_before_any_sky_command`, `deterministic_runs` (unique temp yaml paths scrubbed via `.normalize_command_line(..)`) |
 | `consortium-ray` | `happy_path_submit_and_succeeded` (submit → status SUCCEEDED), `no_wait_submits_and_returns`, `submit_failure_skips_wait`, `job_failed_terminal_state`, `status_endpoint_flapping_then_timeout` (retried until timeout), `deterministic_runs` |
 
-Writing a sim test: build a `SimExecutor` mirroring the fleet, wrap it in an
-`Arc`, pass it as the integration's executor (`Arc<dyn Executor>`), run the
-pipeline, and assert on the report plus edge/kind-filtered views of
-`invocation_log()` — never on log order — then run the identical scenario
-twice and check `assert_deterministic_equivalence`. The canonical example is
-the `crates/consortium-fanout-sim/src/simexec.rs` module documentation; the
-fullest real suite is `crates/consortium-nix/tests/sim.rs`.
+For threaded `execute` runs, pass an `Arc<SimExecutor>` and compare reports
+and per-edge outcomes with `assert_deterministic_equivalence`. Independent
+tasks can reach the same edge in either order. `simexec.rs` in
+`consortium-fanout-sim` shows how to build a network fixture.
+
+When order itself is under test, use `CompletionSchedule::seeded(seed)` and
+pass `Some(&mut order)` to `Integration::execute_scheduled` with a
+`SimExecutor`. Save `order.trace().to_vec()`, then pass those task IDs to
+`CompletionSchedule::replay` with a fresh executor and the same plan and
+network fixture. A missing, extra, or not-yet-dispatched task is an error.
+The trace orders whole dispatched tasks, not instructions or I/O within a
+task. `crates/consortium-ansible/tests/sim.rs` uses two orders against the
+same partition to reproduce a different failing host.
 
 Fuzz discipline: `crates/consortium-fanout-sim/tests/fuzz.proptest-regressions`
 is checked in. When a fuzz run finds a new failing seed, commit it there and

@@ -55,7 +55,7 @@ pub use builder::{DagBuilder, StageBuilder};
 pub use cache::{CacheStrategy, NoCache};
 pub use context::DagContext;
 pub use error::{DagError, Result};
-pub use executor::{DagEvent, DagExecutor, DagMonitor, DagReport};
+pub use executor::{CompletionOrder, DagEvent, DagExecutor, DagMonitor, DagReport};
 pub use graph::DagGraph;
 pub use pool::{DynamicPool, FixedPool, UnlimitedPool, WorkerPool};
 pub use types::{ConcurrencyLimit, DagTask, ErrorPolicy, FnTask, ShellTask, TaskId, TaskOutcome};
