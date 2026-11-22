@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SubmissionReceipt"],"fn":["accepted","not_submitted","receipt","rejected","unknown"]};

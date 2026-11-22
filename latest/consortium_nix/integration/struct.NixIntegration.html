@@ -24,7 +24,12 @@
     exec: <a class="struct" href="https://doc.rust-lang.org/1.100.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;dyn Executor&gt;,
     config: &amp;<a class="struct" href="../struct.FleetConfig.html" title="struct consortium_nix::FleetConfig">FleetConfig</a>,
     plan: &amp;Plan,
-) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.100.0/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;ExecutionResult, IntegrationError&gt;</h4></section></summary><div class='docblock'>Execute only the phase selection validated and bound to this configuration.</div></details><details class="toggle method-toggle" open><summary><section id="method.plan" class="method trait-impl"><a href="#method.plan" class="anchor">§</a><h4 class="code-header">fn <a class="fn">plan</a>(
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.100.0/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;ExecutionResult, IntegrationError&gt;</h4></section></summary><div class='docblock'>Execute only the phase selection validated and bound to this configuration. <a>Read more</a></div></details><details class="toggle method-toggle" open><summary><section id="method.execute_with_receipt" class="method trait-impl"><a href="#method.execute_with_receipt" class="anchor">§</a><h4 class="code-header">fn <a class="fn">execute_with_receipt</a>(
+    &amp;self,
+    exec: <a class="struct" href="https://doc.rust-lang.org/1.100.0/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;dyn Executor&gt;,
+    config: &amp;<a class="struct" href="../struct.FleetConfig.html" title="struct consortium_nix::FleetConfig">FleetConfig</a>,
+    plan: &amp;Plan,
+) -&gt; <a class="enum" href="https://doc.rust-lang.org/1.100.0/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;ExecutionWithReceipt, IntegrationError&gt;</h4></section></summary><div class='docblock'>Execute the bound plan once, retaining a receipt when a submit task ran. <a>Read more</a></div></details><details class="toggle method-toggle" open><summary><section id="method.plan" class="method trait-impl"><a href="#method.plan" class="anchor">§</a><h4 class="code-header">fn <a class="fn">plan</a>(
     &amp;self,
     config: &amp;<a class="struct" href="../struct.FleetConfig.html" title="struct consortium_nix::FleetConfig">FleetConfig</a>,
     request: &amp;Request,
