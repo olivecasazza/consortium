@@ -1,6 +1,16 @@
 # Changelog
 
 
+## Bug Fixes
+
+- read job states from non-TTY Ray CLI output ([#44](https://github.com/olivecasazza/consortium/pull/44))
+
+## Features
+
+- report Slurm and Ray submission receipts ([#45](https://github.com/olivecasazza/consortium/pull/45))
+- replay DAG task completions in integration tests ([#47](https://github.com/olivecasazza/consortium/pull/47))
+
+
 ## Features
 
 - declarative adapter grammar with scoped effects ([#38](https://github.com/olivecasazza/consortium/pull/38))

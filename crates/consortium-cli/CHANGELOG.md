@@ -2,6 +2,16 @@
 
 ## Bug Fixes
 
+- match ClusterShell output gathering and percent escapes ([#46](https://github.com/olivecasazza/consortium/pull/46))
+- deploy only to guessed endpoints that report the node's hostname ([#51](https://github.com/olivecasazza/consortium/pull/51))
+
+## Features
+
+- report Slurm and Ray submission receipts ([#45](https://github.com/olivecasazza/consortium/pull/45))
+
+
+## Bug Fixes
+
 - retry failed closure copies over another endpoint
 
 ## Documentation

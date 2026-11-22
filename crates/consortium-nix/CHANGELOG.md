@@ -2,6 +2,15 @@
 
 ## Bug Fixes
 
+- deploy only to guessed endpoints that report the node's hostname ([#51](https://github.com/olivecasazza/consortium/pull/51))
+
+## Features
+
+- replay DAG task completions in integration tests ([#47](https://github.com/olivecasazza/consortium/pull/47))
+
+
+## Bug Fixes
+
 - retry failed closure copies over another endpoint
 
 ## Features

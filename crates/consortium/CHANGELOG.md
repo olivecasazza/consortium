@@ -1,6 +1,15 @@
 # Changelog
 
 
+## Bug Fixes
+
+- match ClusterShell output gathering and percent escapes ([#46](https://github.com/olivecasazza/consortium/pull/46))
+
+## Features
+
+- replay DAG task completions in integration tests ([#47](https://github.com/olivecasazza/consortium/pull/47))
+
+
 ## Documentation
 
 - consolidate doc/ and examples/; exercised SSH and cast start-here ([#40](https://github.com/olivecasazza/consortium/pull/40))
