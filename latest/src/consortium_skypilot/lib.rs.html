@@ -74,108 +74,115 @@
 <a href=#74 id=74 data-nosnippet>74</a>    }
 <a href=#75 id=75 data-nosnippet>75</a>}
 <a href=#76 id=76 data-nosnippet>76</a>
-<a href=#77 id=77 data-nosnippet>77</a><span class="doccomment">/// Launch a SkyPilot task on a cloud cluster.
-<a href=#78 id=78 data-nosnippet>78</a>///
-<a href=#79 id=79 data-nosnippet>79</a>/// Pipeline: build the sky environment with nix → `sky launch` (the task
-<a href=#80 id=80 data-nosnippet>80</a>/// yaml is written to a temp file so its path shows up in the rendered
-<a href=#81 id=81 data-nosnippet>81</a>/// command line) → `sky down` when `opts.teardown`. Requires
-<a href=#82 id=82 data-nosnippet>82</a>/// [`FleetConfig::skypilot_config`]; returns [`SkypilotError::NoConfig`]
-<a href=#83 id=83 data-nosnippet>83</a>/// before issuing any command when it is absent.
-<a href=#84 id=84 data-nosnippet>84</a></span><span class="kw">pub fn </span>launch_task(
-<a href=#85 id=85 data-nosnippet>85</a>    exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;,
-<a href=#86 id=86 data-nosnippet>86</a>    config: <span class="kw-2">&amp;</span>FleetConfig,
-<a href=#87 id=87 data-nosnippet>87</a>    cluster_name: <span class="kw-2">&amp;</span>str,
-<a href=#88 id=88 data-nosnippet>88</a>    task_yaml: <span class="kw-2">&amp;</span>str,
-<a href=#89 id=89 data-nosnippet>89</a>    opts: <span class="kw-2">&amp;</span>SkyOptions,
-<a href=#90 id=90 data-nosnippet>90</a>) -&gt; <span class="prelude-ty">Result</span>&lt;DagReport&gt; {
-<a href=#91 id=91 data-nosnippet>91</a>    config
-<a href=#92 id=92 data-nosnippet>92</a>        .skypilot_config
-<a href=#93 id=93 data-nosnippet>93</a>        .as_ref()
-<a href=#94 id=94 data-nosnippet>94</a>        .ok_or(SkypilotError::NoConfig)<span class="question-mark">?</span>;
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="kw">let </span>request = Request::default()
-<a href=#96 id=96 data-nosnippet>96</a>        .with(<span class="string">"name"</span>, cluster_name)
-<a href=#97 id=97 data-nosnippet>97</a>        .with(<span class="string">"task"</span>, task_yaml)
-<a href=#98 id=98 data-nosnippet>98</a>        .with(<span class="string">"teardown"</span>, opts.teardown.to_string());
-<a href=#99 id=99 data-nosnippet>99</a>    SkypilotIntegration
-<a href=#100 id=100 data-nosnippet>100</a>        .run_detailed(exec, config, <span class="kw-2">&amp;</span>request)
-<a href=#101 id=101 data-nosnippet>101</a>        .map(|result| result.dag)
-<a href=#102 id=102 data-nosnippet>102</a>        .map_err(|error| SkypilotError::Dag(error.to_string()))
-<a href=#103 id=103 data-nosnippet>103</a>}
-<a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a><span class="attr">#[cfg(test)]
-<a href=#106 id=106 data-nosnippet>106</a></span><span class="kw">mod </span>tests {
-<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">use </span>std::collections::HashMap;
-<a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">use </span>consortium_integration::exec::{ExecOutput, ScriptedExecutor};
-<a href=#111 id=111 data-nosnippet>111</a>    <span class="kw">use </span>consortium_integration::fleet::SkypilotFleetConfig;
-<a href=#112 id=112 data-nosnippet>112</a>
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">fn </span>config(with_skypilot: bool) -&gt; FleetConfig {
-<a href=#114 id=114 data-nosnippet>114</a>        FleetConfig {
-<a href=#115 id=115 data-nosnippet>115</a>            nodes: HashMap::new(),
-<a href=#116 id=116 data-nosnippet>116</a>            builders: HashMap::new(),
-<a href=#117 id=117 data-nosnippet>117</a>            flake_uri: <span class="string">"."</span>.into(),
-<a href=#118 id=118 data-nosnippet>118</a>            ansible_config: <span class="prelude-val">None</span>,
-<a href=#119 id=119 data-nosnippet>119</a>            slurm_config: <span class="prelude-val">None</span>,
-<a href=#120 id=120 data-nosnippet>120</a>            ray_config: <span class="prelude-val">None</span>,
-<a href=#121 id=121 data-nosnippet>121</a>            skypilot_config: with_skypilot.then(|| SkypilotFleetConfig {
-<a href=#122 id=122 data-nosnippet>122</a>                cloud: <span class="string">"gcp"</span>.into(),
-<a href=#123 id=123 data-nosnippet>123</a>                region: <span class="prelude-val">Some</span>(<span class="string">"us-central1"</span>.into()),
-<a href=#124 id=124 data-nosnippet>124</a>                instance_type: <span class="prelude-val">None</span>,
-<a href=#125 id=125 data-nosnippet>125</a>            }),
-<a href=#126 id=126 data-nosnippet>126</a>        }
-<a href=#127 id=127 data-nosnippet>127</a>    }
-<a href=#128 id=128 data-nosnippet>128</a>
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="attr">#[test]
-<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">fn </span>launch_task_errors_without_skypilot_config() {
-<a href=#131 id=131 data-nosnippet>131</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = Arc::new(ScriptedExecutor::new());
-<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw">let </span>err =
-<a href=#133 id=133 data-nosnippet>133</a>            launch_task(exec, <span class="kw-2">&amp;</span>config(<span class="bool-val">false</span>), <span class="string">"c"</span>, <span class="string">"yaml"</span>, <span class="kw-2">&amp;</span>SkyOptions::default()).unwrap_err();
-<a href=#134 id=134 data-nosnippet>134</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(err, SkypilotError::NoConfig));
-<a href=#135 id=135 data-nosnippet>135</a>    }
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a>    <span class="attr">#[test]
-<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">fn </span>launch_task_happy_path_orders_phases() {
-<a href=#139 id=139 data-nosnippet>139</a>        <span class="kw">let </span>scripted = Arc::new(
-<a href=#140 id=140 data-nosnippet>140</a>            ScriptedExecutor::new()
-<a href=#141 id=141 data-nosnippet>141</a>                .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-sky-env\n"</span>))
-<a href=#142 id=142 data-nosnippet>142</a>                .on(<span class="string">"sky launch"</span>, ExecOutput::ok(<span class="string">"Cluster launched\n"</span>))
-<a href=#143 id=143 data-nosnippet>143</a>                .on(<span class="string">"sky down"</span>, ExecOutput::ok(<span class="string">"Terminating cluster\n"</span>)),
-<a href=#144 id=144 data-nosnippet>144</a>        );
-<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
-<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>report = launch_task(
-<a href=#147 id=147 data-nosnippet>147</a>            exec,
-<a href=#148 id=148 data-nosnippet>148</a>            <span class="kw-2">&amp;</span>config(<span class="bool-val">true</span>),
-<a href=#149 id=149 data-nosnippet>149</a>            <span class="string">"train"</span>,
-<a href=#150 id=150 data-nosnippet>150</a>            <span class="string">"resources: {}\n"</span>,
-<a href=#151 id=151 data-nosnippet>151</a>            <span class="kw-2">&amp;</span>SkyOptions::default(),
-<a href=#152 id=152 data-nosnippet>152</a>        )
-<a href=#153 id=153 data-nosnippet>153</a>        .unwrap();
-<a href=#154 id=154 data-nosnippet>154</a>        <span class="macro">assert!</span>(report.failed.is_empty(), <span class="string">"failures: {:?}"</span>, report.failed);
-<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>build = scripted.invocation_index_containing(<span class="string">"nix build"</span>).unwrap();
-<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span>launch = scripted.invocation_index_containing(<span class="string">"sky launch"</span>).unwrap();
-<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">let </span>down = scripted.invocation_index_containing(<span class="string">"sky down"</span>).unwrap();
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="macro">assert!</span>(build &lt; launch &amp;&amp; launch &lt; down);
-<a href=#159 id=159 data-nosnippet>159</a>    }
-<a href=#160 id=160 data-nosnippet>160</a>
-<a href=#161 id=161 data-nosnippet>161</a>    <span class="attr">#[test]
-<a href=#162 id=162 data-nosnippet>162</a>    </span><span class="kw">fn </span>launch_task_no_teardown_skips_down() {
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>scripted = Arc::new(
-<a href=#164 id=164 data-nosnippet>164</a>            ScriptedExecutor::new()
-<a href=#165 id=165 data-nosnippet>165</a>                .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-sky-env\n"</span>))
-<a href=#166 id=166 data-nosnippet>166</a>                .on(<span class="string">"sky launch"</span>, ExecOutput::ok(<span class="string">"Cluster launched\n"</span>)),
-<a href=#167 id=167 data-nosnippet>167</a>        );
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">let </span>report = launch_task(
-<a href=#170 id=170 data-nosnippet>170</a>            exec,
-<a href=#171 id=171 data-nosnippet>171</a>            <span class="kw-2">&amp;</span>config(<span class="bool-val">true</span>),
-<a href=#172 id=172 data-nosnippet>172</a>            <span class="string">"train"</span>,
-<a href=#173 id=173 data-nosnippet>173</a>            <span class="string">"resources: {}\n"</span>,
-<a href=#174 id=174 data-nosnippet>174</a>            <span class="kw-2">&amp;</span>SkyOptions { teardown: <span class="bool-val">false </span>},
-<a href=#175 id=175 data-nosnippet>175</a>        )
-<a href=#176 id=176 data-nosnippet>176</a>        .unwrap();
-<a href=#177 id=177 data-nosnippet>177</a>        <span class="macro">assert!</span>(report.failed.is_empty(), <span class="string">"failures: {:?}"</span>, report.failed);
-<a href=#178 id=178 data-nosnippet>178</a>        scripted.assert_not_invoked_containing(<span class="string">"sky down"</span>);
-<a href=#179 id=179 data-nosnippet>179</a>    }
-<a href=#180 id=180 data-nosnippet>180</a>}
+<a href=#77 id=77 data-nosnippet>77</a><span class="kw">impl </span>SkyOptions {
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Build the launch request for planning or executing this cluster task.
+<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub fn </span>request(<span class="kw-2">&amp;</span><span class="self">self</span>, cluster_name: <span class="kw-2">&amp;</span>str, task_yaml: <span class="kw-2">&amp;</span>str) -&gt; Request {
+<a href=#80 id=80 data-nosnippet>80</a>        Request::default()
+<a href=#81 id=81 data-nosnippet>81</a>            .with(<span class="string">"name"</span>, cluster_name)
+<a href=#82 id=82 data-nosnippet>82</a>            .with(<span class="string">"task"</span>, task_yaml)
+<a href=#83 id=83 data-nosnippet>83</a>            .with(<span class="string">"teardown"</span>, <span class="self">self</span>.teardown.to_string())
+<a href=#84 id=84 data-nosnippet>84</a>    }
+<a href=#85 id=85 data-nosnippet>85</a>}
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a><span class="doccomment">/// Launch a SkyPilot task on a cloud cluster.
+<a href=#88 id=88 data-nosnippet>88</a>///
+<a href=#89 id=89 data-nosnippet>89</a>/// Pipeline: build the sky environment with nix → `sky launch` (the task
+<a href=#90 id=90 data-nosnippet>90</a>/// yaml is written to a temp file so its path shows up in the rendered
+<a href=#91 id=91 data-nosnippet>91</a>/// command line) → `sky down` when `opts.teardown`. Requires
+<a href=#92 id=92 data-nosnippet>92</a>/// [`FleetConfig::skypilot_config`]; returns [`SkypilotError::NoConfig`]
+<a href=#93 id=93 data-nosnippet>93</a>/// before issuing any command when it is absent.
+<a href=#94 id=94 data-nosnippet>94</a></span><span class="kw">pub fn </span>launch_task(
+<a href=#95 id=95 data-nosnippet>95</a>    exec: Arc&lt;<span class="kw">dyn </span>Executor&gt;,
+<a href=#96 id=96 data-nosnippet>96</a>    config: <span class="kw-2">&amp;</span>FleetConfig,
+<a href=#97 id=97 data-nosnippet>97</a>    cluster_name: <span class="kw-2">&amp;</span>str,
+<a href=#98 id=98 data-nosnippet>98</a>    task_yaml: <span class="kw-2">&amp;</span>str,
+<a href=#99 id=99 data-nosnippet>99</a>    opts: <span class="kw-2">&amp;</span>SkyOptions,
+<a href=#100 id=100 data-nosnippet>100</a>) -&gt; <span class="prelude-ty">Result</span>&lt;DagReport&gt; {
+<a href=#101 id=101 data-nosnippet>101</a>    config
+<a href=#102 id=102 data-nosnippet>102</a>        .skypilot_config
+<a href=#103 id=103 data-nosnippet>103</a>        .as_ref()
+<a href=#104 id=104 data-nosnippet>104</a>        .ok_or(SkypilotError::NoConfig)<span class="question-mark">?</span>;
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="kw">let </span>request = opts.request(cluster_name, task_yaml);
+<a href=#106 id=106 data-nosnippet>106</a>    SkypilotIntegration
+<a href=#107 id=107 data-nosnippet>107</a>        .run_detailed(exec, config, <span class="kw-2">&amp;</span>request)
+<a href=#108 id=108 data-nosnippet>108</a>        .map(|result| result.dag)
+<a href=#109 id=109 data-nosnippet>109</a>        .map_err(|error| SkypilotError::Dag(error.to_string()))
+<a href=#110 id=110 data-nosnippet>110</a>}
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a><span class="attr">#[cfg(test)]
+<a href=#113 id=113 data-nosnippet>113</a></span><span class="kw">mod </span>tests {
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">use </span>std::collections::HashMap;
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">use </span>consortium_integration::exec::{ExecOutput, ScriptedExecutor};
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">use </span>consortium_integration::fleet::SkypilotFleetConfig;
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">fn </span>config(with_skypilot: bool) -&gt; FleetConfig {
+<a href=#121 id=121 data-nosnippet>121</a>        FleetConfig {
+<a href=#122 id=122 data-nosnippet>122</a>            nodes: HashMap::new(),
+<a href=#123 id=123 data-nosnippet>123</a>            builders: HashMap::new(),
+<a href=#124 id=124 data-nosnippet>124</a>            flake_uri: <span class="string">"."</span>.into(),
+<a href=#125 id=125 data-nosnippet>125</a>            ansible_config: <span class="prelude-val">None</span>,
+<a href=#126 id=126 data-nosnippet>126</a>            slurm_config: <span class="prelude-val">None</span>,
+<a href=#127 id=127 data-nosnippet>127</a>            ray_config: <span class="prelude-val">None</span>,
+<a href=#128 id=128 data-nosnippet>128</a>            skypilot_config: with_skypilot.then(|| SkypilotFleetConfig {
+<a href=#129 id=129 data-nosnippet>129</a>                cloud: <span class="string">"gcp"</span>.into(),
+<a href=#130 id=130 data-nosnippet>130</a>                region: <span class="prelude-val">Some</span>(<span class="string">"us-central1"</span>.into()),
+<a href=#131 id=131 data-nosnippet>131</a>                instance_type: <span class="prelude-val">None</span>,
+<a href=#132 id=132 data-nosnippet>132</a>            }),
+<a href=#133 id=133 data-nosnippet>133</a>        }
+<a href=#134 id=134 data-nosnippet>134</a>    }
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="attr">#[test]
+<a href=#137 id=137 data-nosnippet>137</a>    </span><span class="kw">fn </span>launch_task_errors_without_skypilot_config() {
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = Arc::new(ScriptedExecutor::new());
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="kw">let </span>err =
+<a href=#140 id=140 data-nosnippet>140</a>            launch_task(exec, <span class="kw-2">&amp;</span>config(<span class="bool-val">false</span>), <span class="string">"c"</span>, <span class="string">"yaml"</span>, <span class="kw-2">&amp;</span>SkyOptions::default()).unwrap_err();
+<a href=#141 id=141 data-nosnippet>141</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(err, SkypilotError::NoConfig));
+<a href=#142 id=142 data-nosnippet>142</a>    }
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a>    <span class="attr">#[test]
+<a href=#145 id=145 data-nosnippet>145</a>    </span><span class="kw">fn </span>launch_task_happy_path_orders_phases() {
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>scripted = Arc::new(
+<a href=#147 id=147 data-nosnippet>147</a>            ScriptedExecutor::new()
+<a href=#148 id=148 data-nosnippet>148</a>                .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-sky-env\n"</span>))
+<a href=#149 id=149 data-nosnippet>149</a>                .on(<span class="string">"sky launch"</span>, ExecOutput::ok(<span class="string">"Cluster launched\n"</span>))
+<a href=#150 id=150 data-nosnippet>150</a>                .on(<span class="string">"sky down"</span>, ExecOutput::ok(<span class="string">"Terminating cluster\n"</span>)),
+<a href=#151 id=151 data-nosnippet>151</a>        );
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">let </span>report = launch_task(
+<a href=#154 id=154 data-nosnippet>154</a>            exec,
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="kw-2">&amp;</span>config(<span class="bool-val">true</span>),
+<a href=#156 id=156 data-nosnippet>156</a>            <span class="string">"train"</span>,
+<a href=#157 id=157 data-nosnippet>157</a>            <span class="string">"resources: {}\n"</span>,
+<a href=#158 id=158 data-nosnippet>158</a>            <span class="kw-2">&amp;</span>SkyOptions::default(),
+<a href=#159 id=159 data-nosnippet>159</a>        )
+<a href=#160 id=160 data-nosnippet>160</a>        .unwrap();
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="macro">assert!</span>(report.failed.is_empty(), <span class="string">"failures: {:?}"</span>, report.failed);
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>build = scripted.invocation_index_containing(<span class="string">"nix build"</span>).unwrap();
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>launch = scripted.invocation_index_containing(<span class="string">"sky launch"</span>).unwrap();
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="kw">let </span>down = scripted.invocation_index_containing(<span class="string">"sky down"</span>).unwrap();
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="macro">assert!</span>(build &lt; launch &amp;&amp; launch &lt; down);
+<a href=#166 id=166 data-nosnippet>166</a>    }
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="attr">#[test]
+<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">fn </span>launch_task_no_teardown_skips_down() {
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>scripted = Arc::new(
+<a href=#171 id=171 data-nosnippet>171</a>            ScriptedExecutor::new()
+<a href=#172 id=172 data-nosnippet>172</a>                .on(<span class="string">"nix build"</span>, ExecOutput::ok(<span class="string">"/nix/store/abc-sky-env\n"</span>))
+<a href=#173 id=173 data-nosnippet>173</a>                .on(<span class="string">"sky launch"</span>, ExecOutput::ok(<span class="string">"Cluster launched\n"</span>)),
+<a href=#174 id=174 data-nosnippet>174</a>        );
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span>exec: Arc&lt;<span class="kw">dyn </span>Executor&gt; = scripted.clone();
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">let </span>report = launch_task(
+<a href=#177 id=177 data-nosnippet>177</a>            exec,
+<a href=#178 id=178 data-nosnippet>178</a>            <span class="kw-2">&amp;</span>config(<span class="bool-val">true</span>),
+<a href=#179 id=179 data-nosnippet>179</a>            <span class="string">"train"</span>,
+<a href=#180 id=180 data-nosnippet>180</a>            <span class="string">"resources: {}\n"</span>,
+<a href=#181 id=181 data-nosnippet>181</a>            <span class="kw-2">&amp;</span>SkyOptions { teardown: <span class="bool-val">false </span>},
+<a href=#182 id=182 data-nosnippet>182</a>        )
+<a href=#183 id=183 data-nosnippet>183</a>        .unwrap();
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="macro">assert!</span>(report.failed.is_empty(), <span class="string">"failures: {:?}"</span>, report.failed);
+<a href=#185 id=185 data-nosnippet>185</a>        scripted.assert_not_invoked_containing(<span class="string">"sky down"</span>);
+<a href=#186 id=186 data-nosnippet>186</a>    }
+<a href=#187 id=187 data-nosnippet>187</a>}
 </code></pre></div></section></main></body></html>

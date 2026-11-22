@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["DagEvent"],"struct":["DagExecutor","DagReport"],"trait":["DagMonitor"]};
+window.SIDEBAR_ITEMS = {"enum":["DagEvent"],"struct":["DagExecutor","DagReport"],"trait":["CompletionOrder","DagMonitor"]};
