@@ -59,10 +59,14 @@ selects by fleet tag; with neither flag every node is targeted.
 **Endpoint resolution.** Before copy and activation, each remote target's
 ssh endpoint is resolved live: the fleet's `targetHost`, then `<name>.local`,
 then `<name>`, then the IPv4 addresses those resolve to, deduplicated; the
-first one accepting a non-interactive `ssh … true` is used for both `nix copy`
-and activation. Hosts that cannot be reached are reported with every endpoint
-tried and skipped (the run exits non-zero). A target whose name is this
-machine's hostname is not copied to and is activated locally through `sudo`.
+first one reachable is used for both `nix copy` and activation. `targetHost`
+is used as written once it accepts a non-interactive `ssh … true`; every
+other endpoint is a guess and must answer `ssh … hostname` with the node's
+name, so a wildcard DNS record or a reused address cannot redirect a deploy
+to another machine. Hosts that cannot be reached are reported with every
+endpoint tried, and any that answered as another host, and skipped (the run
+exits non-zero). A target whose name is this machine's hostname is not
+copied to and is activated locally through `sudo`.
 
 **Activation.** NixOS: `nix-env --set` (switch/boot) then
 `switch-to-configuration <action>`. nix-darwin: `nix-env --set` (switch/boot),
