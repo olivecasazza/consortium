@@ -103,6 +103,7 @@ fn run(
     SkypilotIntegration
         .execute_scheduled(sim.clone(), &config, &plan, Some(order))
         .unwrap()
+        .execution
         .dag
 }
 

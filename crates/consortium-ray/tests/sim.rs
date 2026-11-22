@@ -119,6 +119,7 @@ fn run_submit(
     RayIntegration
         .execute_scheduled(sim, &config, &plan, Some(order))
         .expect("pipeline failures surface in the report, not as Err")
+        .execution
         .dag
 }
 

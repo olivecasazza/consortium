@@ -108,6 +108,7 @@ fn run(
     AnsibleIntegration
         .execute_scheduled(sim.clone(), &config, &plan, Some(order))
         .unwrap()
+        .execution
         .dag
 }
 

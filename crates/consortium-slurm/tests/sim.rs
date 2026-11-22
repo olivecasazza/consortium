@@ -125,6 +125,7 @@ fn run_scenario(
     SlurmIntegration
         .execute_scheduled(sim.clone(), &config, &plan, Some(order))
         .expect("pipeline failures surface in the report, not as Err")
+        .execution
         .dag
 }
 

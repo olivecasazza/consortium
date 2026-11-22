@@ -331,7 +331,8 @@ pub(crate) fn run_deployment(
         .map_err(|error| crate::NixError::General(error.to_string()))?;
     let execution = NixIntegration
         .execute_scheduled(exec, config, &plan, order)
-        .map_err(|error| crate::NixError::General(error.to_string()))?;
+        .map_err(|error| crate::NixError::General(error.to_string()))?
+        .execution;
     let mut report = crate::DeployReport::from_dag_report(&execution.dag, &plan.targets, action);
     for (id, error) in &execution.dag.failed {
         if !["eval:", "build:", "copy:", "activate:"]
