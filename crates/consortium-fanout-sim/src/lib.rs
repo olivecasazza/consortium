@@ -27,6 +27,8 @@
 //!   bridge that runs *integration pipelines* (deploy, submit_job, …)
 //!   under simulated network + failure conditions. Includes the "Writing
 //!   a sim test for an integration" guide.
+//! - [`CompletionSchedule`] — seed or replay which dispatched task finishes
+//!   next, independently of the simulated network.
 //!
 //! ## Quick start
 //!
@@ -54,12 +56,14 @@ pub mod executor;
 pub mod fixtures;
 pub mod invariants;
 pub mod scenario;
+mod schedule;
 pub mod simexec;
 
 pub use consortium_nix::cascade::NodeId;
 pub use executor::DeterministicExecutor;
 pub use fixtures::{BandwidthDistribution, FailureSchedule, SeedDistribution, UplinkDistribution};
 pub use scenario::{Scenario, ScenarioConfig};
+pub use schedule::CompletionSchedule;
 pub use simexec::{
     assert_deterministic_equivalence, canonical_log, logs_equivalent, per_edge_outcome_multisets,
     per_edge_outcomes, SimCommandKind, SimEvent, SimExecutor, SimExecutorBuilder, SimOutcome,

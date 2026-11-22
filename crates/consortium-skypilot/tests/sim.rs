@@ -15,19 +15,21 @@ use std::time::Duration;
 
 use consortium::dag::{DagReport, TaskId};
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimEvent, SimExecutor,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor, SimExecutorBuilder,
 };
-use consortium_integration::exec::{ExecOutput, Executor, Rule};
+use consortium_fanout_sim::CompletionSchedule;
+use consortium_integration::exec::{ExecOutput, Rule};
 use consortium_integration::fleet::{FleetConfig, SkypilotFleetConfig};
-use consortium_skypilot::{launch_task, SkyOptions};
+use consortium_integration::grammar::Integration;
+use consortium_skypilot::{launch_task, SkyOptions, SkypilotIntegration};
 
 /// Cluster name used across scenarios; task ids derive from it.
 const CLUSTER: &str = "test-cluster";
 /// The yaml handed to `sky launch` (the launch task writes it to a unique
 /// temp file whose path lands in the rendered command line).
 const TASK_YAML: &str = "resources:\n  cloud: gcp\n";
-/// Pinned seed. The pipeline is all-local, so the seed only shapes the
-/// (unused) network profile — pin it anyway to keep the harness idiom.
+/// Seed for both the network fixture and the recorded completion order.
 const SEED: u64 = 0x1234;
 
 fn fleet_config() -> FleetConfig {
@@ -67,13 +69,17 @@ fn normalize_task_yaml(line: &str) -> String {
         .join(" ")
 }
 
+fn base_sim() -> SimExecutorBuilder {
+    SimExecutor::builder()
+        .seed(SEED)
+        .normalize_command_line(normalize_task_yaml)
+}
+
 /// The happy-path executor. The pipeline never addresses a fleet host
 /// (every command classifies `Local`), so the fleet is left EMPTY — the
 /// sentinel is still allocated and no dummy host is needed.
 fn make_sim() -> SimExecutor {
-    SimExecutor::builder()
-        .seed(SEED)
-        .normalize_command_line(normalize_task_yaml)
+    base_sim()
         .on("nix build", ExecOutput::ok("/nix/store/sky-env\n"))
         .on(
             "sky launch",
@@ -83,9 +89,22 @@ fn make_sim() -> SimExecutor {
         .build()
 }
 
-fn run(sim: &Arc<SimExecutor>, opts: &SkyOptions) -> DagReport {
-    let exec: Arc<dyn Executor> = sim.clone();
-    launch_task(exec, &fleet_config(), CLUSTER, TASK_YAML, opts).unwrap()
+fn run(
+    sim: &Arc<SimExecutor>,
+    opts: &SkyOptions,
+    order: Option<&mut CompletionSchedule>,
+) -> DagReport {
+    let config = fleet_config();
+    let Some(order) = order else {
+        return launch_task(sim.clone(), &config, CLUSTER, TASK_YAML, opts).unwrap();
+    };
+    let request = opts.request(CLUSTER, TASK_YAML);
+    let plan = SkypilotIntegration.plan(&config, &request).unwrap();
+    SkypilotIntegration
+        .execute_scheduled(sim.clone(), &config, &plan, Some(order))
+        .unwrap()
+        .execution
+        .dag
 }
 
 fn build_id() -> TaskId {
@@ -112,8 +131,12 @@ fn invoked(log: &[SimEvent], marker: &str) -> bool {
 
 #[test]
 fn happy_path_launch_and_teardown() {
+    assert_scenario_replays(SEED, check_launch_and_teardown);
+}
+
+fn check_launch_and_teardown(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_sim());
-    let report = run(&sim, &SkyOptions::default());
+    let report = run(&sim, &SkyOptions::default(), order);
 
     assert!(report.is_success(), "failures: {:?}", report.failed);
     for id in [build_id(), launch_id(), down_id()] {
@@ -154,12 +177,17 @@ fn happy_path_launch_and_teardown() {
         "every skypilot command must classify Local: {log:?}"
     );
     assert_eq!(sim.simulated_transfer_time(), Duration::ZERO);
+    log
 }
 
 #[test]
 fn no_teardown_leaves_cluster_up() {
+    assert_scenario_replays(SEED, check_no_teardown);
+}
+
+fn check_no_teardown(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_sim());
-    let report = run(&sim, &SkyOptions { teardown: false });
+    let report = run(&sim, &SkyOptions { teardown: false }, order);
 
     assert!(report.is_success(), "failures: {:?}", report.failed);
     assert!(report.completed.contains(&build_id()));
@@ -172,16 +200,20 @@ fn no_teardown_leaves_cluster_up() {
         !invoked(&log, "sky down"),
         "sky down must never run with teardown=false: {log:?}"
     );
+    log
 }
 
 #[test]
 fn launch_failure_skips_teardown() {
+    assert_scenario_replays(SEED, check_failed_launch);
+}
+
+fn check_failed_launch(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     // The failing rule comes FIRST: the scripted executor is
     // first-match-wins, so the specific failure must precede the broad
     // success rules.
     let sim = Arc::new(
-        SimExecutor::builder()
-            .seed(SEED)
+        base_sim()
             .rule(Rule::containing(
                 "sky launch",
                 ExecOutput::new(1, "", "cloud quota exceeded"),
@@ -194,7 +226,7 @@ fn launch_failure_skips_teardown() {
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
             .build(),
     );
-    let report = run(&sim, &SkyOptions::default());
+    let report = run(&sim, &SkyOptions::default(), order);
 
     assert!(!report.is_success());
     assert!(report.completed.contains(&build_id()));
@@ -209,13 +241,17 @@ fn launch_failure_skips_teardown() {
         !invoked(&log, "sky down"),
         "sky down must never run after a failed launch: {log:?}"
     );
+    log
 }
 
 #[test]
 fn env_build_failure_aborts_before_any_sky_command() {
+    assert_scenario_replays(SEED, check_failed_env_build);
+}
+
+fn check_failed_env_build(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
-        SimExecutor::builder()
-            .seed(SEED)
+        base_sim()
             .rule(Rule::containing(
                 "nix build",
                 ExecOutput::new(1, "", "hash mismatch in fixed-output derivation"),
@@ -228,7 +264,7 @@ fn env_build_failure_aborts_before_any_sky_command() {
             .on("sky down", ExecOutput::ok("Terminating cluster\n"))
             .build(),
     );
-    let report = run(&sim, &SkyOptions::default());
+    let report = run(&sim, &SkyOptions::default(), order);
 
     assert!(!report.is_success());
     let msg = report
@@ -247,14 +283,15 @@ fn env_build_failure_aborts_before_any_sky_command() {
         "no sky command may run after a failed env build: {log:?}"
     );
     assert_eq!(log.len(), 1, "only the failed nix build was attempted");
+    log
 }
 
 #[test]
 fn deterministic_runs() {
     let sim_a = Arc::new(make_sim());
-    let report_a = run(&sim_a, &SkyOptions::default());
+    let report_a = run(&sim_a, &SkyOptions::default(), None);
     let sim_b = Arc::new(make_sim());
-    let report_b = run(&sim_b, &SkyOptions::default());
+    let report_b = run(&sim_b, &SkyOptions::default(), None);
 
     assert!(report_a.is_success() && report_b.is_success());
     assert_eq!(report_a.completed, report_b.completed);

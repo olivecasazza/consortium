@@ -52,7 +52,8 @@ impl TaskOutcome {
 /// Error handling policy for the DAG executor.
 #[derive(Debug, Clone, Default)]
 pub enum ErrorPolicy {
-    /// Stop all execution on first failure.
+    /// Stop dispatching on the first failure. Record real outcomes for workers
+    /// already running and cancel only tasks that never started.
     FailFast,
     /// Cancel tasks that depend on the failed task, continue independent branches.
     #[default]

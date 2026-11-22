@@ -53,6 +53,35 @@ impl Default for SubmitOptions {
     }
 }
 
+impl SubmitOptions {
+    /// Build the integration request for a typed job submission.
+    pub fn request(
+        &self,
+        job_name: &str,
+        script: &str,
+        partition: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Request {
+        let mut request = Request::default()
+            .with("name", job_name)
+            .with("script", script)
+            .with("wait", self.wait.to_string());
+        if let Some(partition) = partition {
+            request = request.with("partition", partition);
+        }
+        if let Some(collect) = &self.collect {
+            request = request.with("collect", collect);
+        }
+        if self.wait {
+            request = request.with("poll-seconds", duration_text(self.poll_interval));
+            if let Some(timeout) = timeout {
+                request = request.with("timeout", duration_text(timeout));
+            }
+        }
+        request
+    }
+}
+
 /// Submit a single slurm job with a nix-built environment.
 ///
 /// Runs the pipeline `build-job-env → copy-to-submit → submit → wait →
@@ -87,22 +116,7 @@ pub fn submit_job_with_timeout(
     timeout: Option<Duration>,
 ) -> Result<DagReport> {
     config.slurm_config.as_ref().ok_or(SlurmError::NoConfig)?;
-    let mut request = Request::default()
-        .with("name", job_name)
-        .with("script", script)
-        .with("wait", opts.wait.to_string());
-    if let Some(partition) = partition {
-        request = request.with("partition", partition);
-    }
-    if let Some(collect) = &opts.collect {
-        request = request.with("collect", collect);
-    }
-    if opts.wait {
-        request = request.with("poll-seconds", duration_text(opts.poll_interval));
-        if let Some(timeout) = timeout {
-            request = request.with("timeout", duration_text(timeout));
-        }
-    }
+    let request = opts.request(job_name, script, partition, timeout);
     SlurmIntegration
         .run_detailed(exec, config, &request)
         .map(|result| result.dag)

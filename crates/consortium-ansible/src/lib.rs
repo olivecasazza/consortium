@@ -42,6 +42,26 @@ impl Default for AnsibleOptions {
         }
     }
 }
+
+impl AnsibleOptions {
+    /// Build the same explicit-target request used by [`run_playbook`].
+    pub fn request(&self, targets: &[String], playbook: &str, env_name: &str) -> Result<Request> {
+        if targets.is_empty() {
+            return Err(AnsibleError::General(
+                "ansible: explicit targets must not be empty".into(),
+            ));
+        }
+        Ok(Request {
+            targets: targets.to_vec(),
+            ..Request::default()
+                .with("playbook", playbook)
+                .with("environment", env_name)
+                .with("check", self.check_mode.to_string())
+                .with("fanout", self.max_parallel.to_string())
+        })
+    }
+}
+
 /// Run a playbook against target hosts with a nix-built ansible environment.
 ///
 /// All external commands — the local `nix build` / `nix copy` staging steps
@@ -59,17 +79,7 @@ pub fn run_playbook(
         .ansible_config
         .as_ref()
         .ok_or(AnsibleError::NoConfig)?;
-    if targets.is_empty() {
-        return Err(AnsibleError::General(
-            "ansible: explicit targets must not be empty".into(),
-        ));
-    }
-    let mut request = Request::default()
-        .with("playbook", playbook)
-        .with("environment", env_name)
-        .with("check", opts.check_mode.to_string())
-        .with("fanout", opts.max_parallel.to_string());
-    request.targets = targets.to_vec();
+    let request = opts.request(targets, playbook, env_name)?;
     AnsibleIntegration
         .run_detailed(exec, config, &request)
         .map(|result| result.dag)

@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::fleet::FleetConfig;
 use crate::submission::{self, SubmissionReceipt};
 use crate::{Executor, IntegrationReport};
-use consortium::dag::{DagBuilder, DagContext, DagTask, ErrorPolicy, TaskOutcome};
+use consortium::dag::{CompletionOrder, DagBuilder, DagContext, DagTask, ErrorPolicy, TaskOutcome};
 
 /// Parameter values accepted by both the CLI and runtime boundary.
 #[derive(Debug, Clone, Copy)]
@@ -437,9 +437,9 @@ pub trait Integration: Send + Sync {
 
     /// Execute only the phase selection validated and bound to this configuration.
     ///
-    /// This delegates to `execute_with_receipt`, so an implementation that
-    /// overrides `execute_detailed` alone is bypassed by
-    /// `execute_with_receipt`; override `execute_with_receipt` instead.
+    /// This delegates to `execute_scheduled`, so an implementation that
+    /// overrides `execute_detailed` alone is bypassed by the other execution
+    /// methods; override `execute_scheduled` instead.
     fn execute_detailed(
         &self,
         exec: Arc<dyn Executor>,
@@ -451,14 +451,28 @@ pub trait Integration: Send + Sync {
     }
 
     /// Execute the bound plan once, retaining a receipt when a submit task ran.
-    ///
-    /// This is the canonical execution path. `ExecutionWithReceipt` is
-    /// non-exhaustive, so overrides delegate to another implementation.
     fn execute_with_receipt(
         &self,
         exec: Arc<dyn Executor>,
         config: &FleetConfig,
         plan: &Plan,
+    ) -> Result<ExecutionWithReceipt, IntegrationError> {
+        self.execute_scheduled(exec, config, plan, None)
+    }
+
+    /// Execute the validated plan with a controlled task completion order.
+    /// With `Some(order)`, use a simulated executor: each dispatched task runs
+    /// to completion inline. `None` keeps the usual parallel worker threads.
+    ///
+    /// This is the canonical execution path; the other execution methods
+    /// delegate to it. `ExecutionWithReceipt` is non-exhaustive, so overrides
+    /// delegate to another implementation.
+    fn execute_scheduled(
+        &self,
+        exec: Arc<dyn Executor>,
+        config: &FleetConfig,
+        plan: &Plan,
+        order: Option<&mut dyn CompletionOrder>,
     ) -> Result<ExecutionWithReceipt, IntegrationError> {
         let canonical = self.plan(
             config,
@@ -568,8 +582,11 @@ pub trait Integration: Send + Sync {
         });
         let outcome = dag
             .build()
-            .map_err(|e| IntegrationError(e.to_string()))
-            .and_then(|dag| dag.run().map_err(|e| IntegrationError(e.to_string())));
+            .and_then(|dag| match order {
+                Some(order) => dag.run_simulated(order),
+                None => dag.run(),
+            })
+            .map_err(|error| IntegrationError(error.to_string()));
         let cleanup = self.cleanup(&context);
         let mut report = match outcome {
             Ok(report) => report,

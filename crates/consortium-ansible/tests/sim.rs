@@ -3,34 +3,31 @@
 //! `run_playbook` runs under `Arc<SimExecutor>` with a pinned seed. Command
 //! classification for this pipeline:
 //!
-//! - `nix build .#ansibleEnvs.<env>` (per host, limit 1) — Local: no edge,
-//!   no failure schedule, output from the scripted rules alone.
-//! - `nix copy --to ssh-ng://root@ctrl01` (per host, limit 1) — DataCopy
-//!   edge sentinel→ctrl01; transfer_bytes drives the virtual clock.
+//! - `nix build .#ansibleEnvs.<env>` (shared) — Local: no edge, no failure
+//!   schedule, output from the scripted rules alone.
+//! - `nix copy --to ssh-ng://root@ctrl01` (shared) — DataCopy edge
+//!   sentinel→ctrl01; transfer_bytes drives the virtual clock.
 //! - `ansible-playbook --limit <host> <playbook>` over ssh on the control
 //!   node — SshControl edge sentinel→ctrl01 (0 bytes, latency only).
 //!
-//! All four edge commands share the single control edge, and the per-(edge,
-//! attempt-index) failure keying can't distinguish commands sharing an
-//! edge — so per-COMMAND failures (one playbook run fails, the other
-//! succeeds) are scripted with response rules placed FIRST (first match
-//! wins), never with failure schedules.
-//!
-//! Assertions use edge/kind filters over the invocation log, never log
-//! order: DAG worker threads interleave completions run to run.
+//! The playbooks share a control edge. In threaded runs, assert on per-host
+//! outcomes, not arrival order. Scheduled runs can replay which playbook
+//! receives a fault tied to a particular attempt on the shared edge.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use consortium::dag::{DagReport, TaskId};
-use consortium_ansible::{run_playbook, AnsibleOptions};
+use consortium_ansible::{run_playbook, AnsibleIntegration, AnsibleOptions};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimEvent, SimExecutor, SimOutcome,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor, SimOutcome,
 };
-use consortium_fanout_sim::NodeId;
-use consortium_integration::exec::{ExecOutput, Executor, Rule};
+use consortium_fanout_sim::{CompletionSchedule, NodeId};
+use consortium_integration::exec::{ExecOutput, Rule};
 use consortium_integration::fleet::{AnsibleFleetConfig, DeploymentNode, FleetConfig, ProfileType};
+use consortium_integration::grammar::Integration;
 
 const PLAYBOOK: &str = "site.yml";
 const ENV_NAME: &str = "default";
@@ -96,10 +93,23 @@ fn make_sim() -> SimExecutor {
         .build()
 }
 
-fn run(sim: &Arc<SimExecutor>, targets: &[String], opts: &AnsibleOptions) -> DagReport {
-    let exec: Arc<dyn Executor> = sim.clone();
-    run_playbook(exec, &fleet_config(), targets, PLAYBOOK, ENV_NAME, opts)
-        .expect("run_playbook returns Ok(report); task failures live in the report")
+fn run(
+    sim: &Arc<SimExecutor>,
+    targets: &[String],
+    opts: &AnsibleOptions,
+    order: Option<&mut CompletionSchedule>,
+) -> DagReport {
+    let config = fleet_config();
+    let Some(order) = order else {
+        return run_playbook(sim.clone(), &config, targets, PLAYBOOK, ENV_NAME, opts).unwrap();
+    };
+    let request = opts.request(targets, PLAYBOOK, ENV_NAME).unwrap();
+    let plan = AnsibleIntegration.plan(&config, &request).unwrap();
+    AnsibleIntegration
+        .execute_scheduled(sim.clone(), &config, &plan, Some(order))
+        .unwrap()
+        .execution
+        .dag
 }
 
 /// Shared staging completes once, followed by one playbook task per target.
@@ -145,8 +155,12 @@ fn assert_both_playbooks_attempted(log: &[SimEvent]) {
 
 #[test]
 fn happy_path_all_hosts_configured() {
+    assert_scenario_replays(SEED, check_healthy_fleet);
+}
+
+fn check_healthy_fleet(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_sim());
-    let report = run(&sim, &targets(), &AnsibleOptions::default());
+    let report = run(&sim, &targets(), &AnsibleOptions::default(), order);
 
     assert!(report.is_success(), "failed: {:?}", report.failed);
     assert_all_stages_completed(&report);
@@ -184,12 +198,58 @@ fn happy_path_all_hosts_configured() {
 
     // Virtual clock: one 50 MiB closure at 100 MiB/s.
     assert_eq!(sim.simulated_transfer_time(), Duration::from_millis(500));
+    log
+}
+
+#[test]
+fn replay_selects_which_playbook_receives_a_shared_edge_fault() {
+    let config = fleet_config();
+    let request = AnsibleOptions::default()
+        .request(&targets(), PLAYBOOK, ENV_NAME)
+        .unwrap();
+    let plan = AnsibleIntegration.plan(&config, &request).unwrap();
+
+    for [first, second] in [["node01", "node02"], ["node02", "node01"]] {
+        let sim = Arc::new(
+            SimExecutor::builder()
+                .hosts(SIM_HOSTS)
+                .failure_schedule(FailureSchedule::PartitionAtRound {
+                    src: NodeId(3),
+                    tgt: NodeId(0),
+                    round: 2, // copy and first playbook pass; the second hits the partition
+                })
+                .on("nix build", ExecOutput::ok("/nix/store/ansible-env\n"))
+                .on("nix copy", ExecOutput::ok(""))
+                .on("ansible-playbook", ExecOutput::ok(PLAY_RECAP))
+                .build(),
+        );
+        let first = format!("run-playbook:{first}");
+        let second = format!("run-playbook:{second}");
+        let mut order = CompletionSchedule::replay(vec![
+            format!("build-ansible-env:{ENV_NAME}"),
+            format!("copy-ansible-env:{ENV_NAME}"),
+            first.clone(),
+            second.clone(),
+        ]);
+
+        let dag = AnsibleIntegration
+            .execute_scheduled(sim, &config, &plan, Some(&mut order))
+            .unwrap()
+            .execution
+            .dag;
+        assert!(dag.completed.contains(&TaskId(first)));
+        assert!(dag.failed.contains_key(&TaskId(second)));
+    }
 }
 
 // ─── Scenario 2: control node killed ────────────────────────────────────────
 
 #[test]
 fn killed_control_node_aborts_playbooks() {
+    assert_scenario_replays(SEED, check_killed_control_node);
+}
+
+fn check_killed_control_node(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         SimExecutor::builder()
             .hosts(SIM_HOSTS)
@@ -205,7 +265,7 @@ fn killed_control_node_aborts_playbooks() {
             .on("ansible-playbook", ExecOutput::ok(PLAY_RECAP))
             .build(),
     );
-    let report = run(&sim, &targets(), &AnsibleOptions::default());
+    let report = run(&sim, &targets(), &AnsibleOptions::default(), order);
 
     assert!(!report.is_success());
     // Shared copy failure cancels both playbooks before execution.
@@ -242,12 +302,17 @@ fn killed_control_node_aborts_playbooks() {
         .all(|e| matches!(e.outcome, SimOutcome::Failed { status: 1, .. })));
     // Failed copies transfer nothing.
     assert_eq!(sim.simulated_transfer_time(), Duration::ZERO);
+    log
 }
 
 // ─── Scenario 3: one playbook fails, the other continues ────────────────────
 
 #[test]
 fn one_target_playbook_fails_others_continue() {
+    assert_scenario_replays(SEED, check_failed_playbook);
+}
+
+fn check_failed_playbook(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     // node02's playbook exits 1. Both playbook runs share the control edge,
     // so an edge-keyed failure schedule can't tell them apart — script the
     // per-COMMAND failure as a response rule, placed FIRST (first match
@@ -267,7 +332,7 @@ fn one_target_playbook_fails_others_continue() {
             .on("ansible-playbook", ExecOutput::ok(PLAY_RECAP))
             .build(),
     );
-    let report = run(&sim, &targets(), &AnsibleOptions::default());
+    let report = run(&sim, &targets(), &AnsibleOptions::default(), order);
 
     // ContinueIndependent: node02's failure fails the report but not
     // node01's chain.
@@ -288,18 +353,23 @@ fn one_target_playbook_fails_others_continue() {
     assert!(!log
         .iter()
         .any(|e| matches!(e.outcome, SimOutcome::Failed { .. })));
+    log
 }
 
 // ─── Scenario 4: check mode runs every phase ────────────────────────────────
 
 #[test]
 fn check_mode_still_runs_all_phases() {
+    assert_scenario_replays(SEED, check_dry_run);
+}
+
+fn check_dry_run(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_sim());
     let opts = AnsibleOptions {
         check_mode: true,
         ..AnsibleOptions::default()
     };
-    let report = run(&sim, &targets(), &opts);
+    let report = run(&sim, &targets(), &opts, order);
 
     assert!(report.is_success(), "failed: {:?}", report.failed);
     assert_all_stages_completed(&report);
@@ -328,6 +398,7 @@ fn check_mode_still_runs_all_phases() {
             e.command_line
         );
     }
+    log
 }
 
 // ─── Scenario 5: determinism ────────────────────────────────────────────────
@@ -336,7 +407,7 @@ fn check_mode_still_runs_all_phases() {
 fn deterministic_under_threads() {
     let run_once = || {
         let sim = Arc::new(make_sim());
-        let report = run(&sim, &targets(), &AnsibleOptions::default());
+        let report = run(&sim, &targets(), &AnsibleOptions::default(), None);
         (sim, report)
     };
     let (sim_a, report_a) = run_once();
@@ -366,7 +437,7 @@ fn deterministic_single_target_native_equivalence() {
     let one = vec!["node01".to_string()];
     let run_once = || {
         let sim = Arc::new(make_sim());
-        let report = run(&sim, &one, &AnsibleOptions::default());
+        let report = run(&sim, &one, &AnsibleOptions::default(), None);
         (sim, report)
     };
     let (sim_a, report_a) = run_once();

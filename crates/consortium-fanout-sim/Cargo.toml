@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Deterministic simulator for the consortium cascade primitive"
 
 [dependencies]
+consortium.workspace = true
 consortium-nix = { workspace = true }
 consortium-integration = { workspace = true }
 rand = "0.8"
@@ -17,7 +18,6 @@ serde_json = "1"
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 consortium-cli = { path = "../consortium-cli" }
-consortium = { path = "../consortium", package = "consortium-crate" }
 
 [[bench]]
 name = "cascade_strategies"

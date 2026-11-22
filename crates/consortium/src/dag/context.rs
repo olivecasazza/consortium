@@ -46,7 +46,11 @@ impl DagContext {
 
     /// Store a task's output.
     pub fn set_output<T: Send + 'static>(&self, id: TaskId, value: T) {
-        self.outputs.lock().unwrap().insert(id, Box::new(value));
+        self.set_boxed_output(id, Box::new(value));
+    }
+
+    pub(super) fn set_boxed_output(&self, id: TaskId, value: Box<dyn Any + Send>) {
+        self.outputs.lock().unwrap().insert(id, value);
     }
 
     /// Check if a task has produced output.

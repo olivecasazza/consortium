@@ -1,9 +1,8 @@
 //! Sim tests for the slurm submit pipeline under [`SimExecutor`].
 //!
-//! Runs `submit_job` against a seed-pinned simulated fleet (one submit node
-//! plus the build-host sentinel) and asserts pipeline semantics from the
-//! `DagReport` and edge/kind-filtered views of the invocation log — never
-//! from log order, which worker-thread interleaving makes nondeterministic.
+//! Runs each scenario through typed `submit_job` and the scheduled adapter
+//! on a fresh simulated fleet. Assertions check the `DagReport` and actual
+//! invocations; replay also checks their order under the same schedule.
 //!
 //! Rule-matching notes (substring, first match wins):
 //!
@@ -20,13 +19,16 @@ use std::time::Duration;
 use consortium::dag::{DagReport, TaskId};
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor, SimOutcome,
 };
-use consortium_fanout_sim::NodeId;
+use consortium_fanout_sim::{CompletionSchedule, NodeId};
 use consortium_integration::exec::{ExecOutput, Executor};
 use consortium_integration::fleet::{FleetConfig, SlurmFleetConfig};
-use consortium_slurm::{submit_job, SubmitOptions};
+use consortium_integration::grammar::Integration;
+use consortium_slurm::{submit_job, SlurmIntegration, SubmitOptions};
 
+const SEED: u64 = 0x1234;
 const SUBMIT_HOST: &str = "submit01";
 const SUBMIT_USER: &str = "root";
 const JOB: &str = "train";
@@ -85,7 +87,7 @@ fn wait_opts() -> SubmitOptions {
 fn base_sim() -> consortium_fanout_sim::simexec::SimExecutorBuilder {
     SimExecutor::builder()
         .hosts([SUBMIT_HOST])
-        .seed(0x1234)
+        .seed(SEED)
         .transfer_bytes("nix copy", ENV_BYTES)
         .on("nix build", ExecOutput::ok("/nix/store/env\n"))
         .on("nix copy", ExecOutput::ok(""))
@@ -108,16 +110,36 @@ fn run_submit(sim: &Arc<SimExecutor>, opts: &SubmitOptions) -> DagReport {
         .expect("submit_job itself should not error")
 }
 
+fn run_scenario(
+    sim: &Arc<SimExecutor>,
+    opts: &SubmitOptions,
+    order: Option<&mut CompletionSchedule>,
+) -> DagReport {
+    let Some(order) = order else {
+        return run_submit(sim, opts);
+    };
+    let config = fleet_config();
+    let plan = SlurmIntegration
+        .plan(&config, &opts.request(JOB, SCRIPT, Some("gpu"), None))
+        .expect("valid slurm job request");
+    SlurmIntegration
+        .execute_scheduled(sim.clone(), &config, &plan, Some(order))
+        .expect("pipeline failures surface in the report, not as Err")
+        .execution
+        .dag
+}
+
 /// All invocations classified onto the edge sentinel → submit node.
-fn submit_edge_events(sim: &Arc<SimExecutor>) -> Vec<consortium_fanout_sim::simexec::SimEvent> {
+fn submit_edge_events<'a>(
+    sim: &SimExecutor,
+    log: &'a [SimEvent],
+) -> impl Iterator<Item = &'a SimEvent> {
     let sentinel = sim.sentinel_node();
     let submit = sim
         .host_node(SUBMIT_HOST)
         .expect("submit host is in the fleet");
-    sim.invocation_log()
-        .into_iter()
-        .filter(|e| e.edge == Some((sentinel, submit)))
-        .collect()
+    log.iter()
+        .filter(move |e| e.edge == Some((sentinel, submit)))
 }
 
 // ── Scenarios ───────────────────────────────────────────────────────────────
@@ -127,8 +149,12 @@ fn submit_edge_events(sim: &Arc<SimExecutor>) -> Vec<consortium_fanout_sim::sime
 /// DataCopy edge to the submit node, and the collect `cat` is invoked.
 #[test]
 fn happy_path_full_pipeline() {
+    assert_scenario_replays(SEED, check_full_pipeline);
+}
+
+fn check_full_pipeline(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_happy_sim());
-    let report = run_submit(&sim, &full_opts());
+    let report = run_scenario(&sim, &full_opts(), order);
 
     assert!(report.is_success(), "failures: {:?}", report.failed);
     for phase in [
@@ -156,8 +182,7 @@ fn happy_path_full_pipeline() {
     assert!(builds[0].edge.is_none());
 
     // Exactly one DataCopy edge, sentinel → submit node, and it succeeded.
-    let copies: Vec<_> = submit_edge_events(&sim)
-        .into_iter()
+    let copies: Vec<_> = submit_edge_events(&sim, &log)
         .filter(|e| e.kind == SimCommandKind::DataCopy)
         .collect();
     assert_eq!(copies.len(), 1, "expected exactly one env copy: {copies:?}");
@@ -167,8 +192,7 @@ fn happy_path_full_pipeline() {
     assert!(matches!(copies[0].outcome, SimOutcome::Ok { .. }));
 
     // sbatch and the sacct poll are ssh control edges to the submit node.
-    let ssh: Vec<_> = submit_edge_events(&sim)
-        .into_iter()
+    let ssh: Vec<_> = submit_edge_events(&sim, &log)
         .filter(|e| e.kind == SimCommandKind::SshControl)
         .collect();
     assert!(ssh.iter().any(|e| e.command_line.contains("sbatch")));
@@ -186,18 +210,23 @@ fn happy_path_full_pipeline() {
     // Virtual clock sanity: 100 MiB over a uniform 100 MiB/s link ≈ 1s.
     let t = sim.simulated_transfer_time().as_secs_f64();
     assert!((0.5..=1.5).contains(&t), "transfer time off: {t}s");
+    log
 }
 
 /// A 1 MiB/s uplink still succeeds — the sim clock is virtual, so a 100 MiB
 /// env copy "takes" ~100s without any real waiting.
 #[test]
 fn slow_submit_uplink_still_succeeds() {
+    assert_scenario_replays(SEED, check_slow_uplink);
+}
+
+fn check_slow_uplink(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         base_sim()
             .bandwidth(BandwidthDistribution::Uniform(SLOW_BYTES_SEC))
             .build(),
     );
-    let report = run_submit(&sim, &wait_opts());
+    let report = run_scenario(&sim, &wait_opts(), order);
 
     assert!(report.is_success(), "failures: {:?}", report.failed);
 
@@ -207,6 +236,7 @@ fn slow_submit_uplink_still_succeeds() {
         (99.5..=100.5).contains(&t),
         "100 MiB over 1 MiB/s should take ~100s, got {t}s"
     );
+    sim.invocation_log()
 }
 
 /// Submit node killed at round 0: the env copy (DataCopy, sentinel → submit)
@@ -214,6 +244,10 @@ fn slow_submit_uplink_still_succeeds() {
 /// never attempted.
 #[test]
 fn killed_submit_node_aborts_before_sbatch() {
+    assert_scenario_replays(SEED, check_killed_submit_node);
+}
+
+fn check_killed_submit_node(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         base_sim()
             .failure_schedule(FailureSchedule::KillNodeAtRound {
@@ -222,7 +256,7 @@ fn killed_submit_node_aborts_before_sbatch() {
             })
             .build(),
     );
-    let report = run_submit(&sim, &full_opts());
+    let report = run_scenario(&sim, &full_opts(), order);
 
     assert!(!report.is_success());
     let copy_id = TaskId(format!("copy-job-env:{JOB}"));
@@ -258,16 +292,21 @@ fn killed_submit_node_aborts_before_sbatch() {
         .iter()
         .any(|e| e.command_line.contains("slurm-12345.out")));
     assert!(!log.iter().any(|e| e.kind == SimCommandKind::SshControl));
+    log
 }
 
 /// sacct reports a terminal failure state: the wait task fails, and with it
 /// the pipeline.
 #[test]
 fn sacct_reports_failed_state() {
+    assert_scenario_replays(SEED, check_sacct_failed);
+}
+
+fn check_sacct_failed(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         SimExecutor::builder()
             .hosts([SUBMIT_HOST])
-            .seed(0x1234)
+            .seed(SEED)
             .transfer_bytes("nix copy", ENV_BYTES)
             .on("nix build", ExecOutput::ok("/nix/store/env\n"))
             .on("nix copy", ExecOutput::ok(""))
@@ -275,7 +314,7 @@ fn sacct_reports_failed_state() {
             .on("sacct", ExecOutput::ok("FAILED\n"))
             .build(),
     );
-    let report = run_submit(&sim, &wait_opts());
+    let report = run_scenario(&sim, &wait_opts(), order);
 
     assert!(!report.is_success());
     let wait_id = TaskId(format!("slurm-wait:{JOB}"));
@@ -297,6 +336,7 @@ fn sacct_reports_failed_state() {
     let log = sim.invocation_log();
     assert!(log.iter().any(|e| e.command_line.contains("sbatch")));
     assert!(log.iter().any(|e| e.command_line.contains("sacct")));
+    log
 }
 
 /// Two identical runs of the happy path — each on a fresh executor from one

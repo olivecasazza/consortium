@@ -125,7 +125,8 @@
 //!
 //! ## Determinism contract
 //!
-//! Same builder config + same pipeline inputs ⇒
+//! In threaded runs where outcomes do not depend on which command reaches a
+//! shared edge first, the same builder config and pipeline inputs produce:
 //!
 //! - identical [`SimExecutor::invocation_log`] contents as an
 //!   attempt-insensitive multiset ([`logs_equivalent`] /
@@ -155,7 +156,12 @@
 //!   the attempt index;
 //! - **dependency-ordered per-host chains** give each edge a single
 //!   arrival order, so attempt binding — and [`per_edge_outcomes`] — is
-//!   stable there. Keep test DAGs that way when asserting on sequences.
+//!   stable there.
+//!
+//! To test arrival-sensitive faults, use [`crate::CompletionSchedule`] with
+//! [`consortium::dag::DagExecutor::run_simulated`]. The same task trace and
+//! fresh network fixture reproduce the raw invocation order for deterministic
+//! task bodies; reversing independent hosts can change which host fails.
 //!
 //! ## Writing a sim test for an integration
 //!
@@ -169,12 +175,11 @@
 //! 2. **Wire it in**: wrap in `Arc`, store as `Arc<dyn Executor>` under
 //!    the `"executor"` context state key, then call the integration's
 //!    entry fn (or drive its DAG directly, as below).
-//! 3. **Assert semantics, not order**: the `DagReport` / pipeline result
-//!    plus edge/kind-filtered views of the invocation log. Never assert on
-//!    log order (worker threads interleave) or wall-clock time (none
-//!    passes — the clock is virtual).
-//! 4. **Assert determinism**: run the identical scenario twice and call
-//!    [`assert_deterministic_equivalence`] on both logs.
+//! 3. **Assert outcomes**: check the `DagReport` and edge/kind-filtered log.
+//!    Assert exact log order only with a controlled completion schedule or
+//!    dependency-ordered chain. Use virtual time, not wall-clock time.
+//! 4. For order-independent outcomes, use [`assert_scenario_replays`] to run the
+//!    same assertions on threads, a seeded schedule, and its exact replay.
 //!
 //! Complete example — a 2-host fleet, a tiny `stage → run-per-host` DAG
 //! standing in for an integration pipeline, host2 killed, determinism
@@ -285,6 +290,7 @@ use crate::fixtures::{
     populate_uniform_latency, rng_from_seed, BandwidthDistribution, FailureSchedule,
     UplinkDistribution,
 };
+use crate::CompletionSchedule;
 
 /// Default per-edge bandwidth used when the network profile has no entry
 /// (mirrors [`crate::executor::DeterministicExecutor`]).
@@ -1147,6 +1153,37 @@ pub fn assert_deterministic_equivalence(run_a: &[SimEvent], run_b: &[SimEvent]) 
         "invocation logs diverged as multisets\nrun A: {:#?}\nrun B: {:#?}",
         canonical_log(run_a),
         canonical_log(run_b)
+    );
+}
+
+/// Check an order-independent scenario on threads, then record and replay its exact command log.
+/// Build fresh fixtures on each call. `None` selects the threaded entry point; `Some` must
+/// drive a nonempty DAG with the supplied schedule. Keep the scenario's outcome assertions in `run`.
+pub fn assert_scenario_replays(
+    seed: u64,
+    mut run: impl FnMut(Option<&mut CompletionSchedule>) -> Vec<SimEvent>,
+) {
+    let threaded = run(None);
+    let mut order = CompletionSchedule::seeded(seed);
+    let recorded = run(Some(&mut order));
+    let trace = order.into_trace();
+    assert!(
+        !trace.is_empty(),
+        "seed {seed}: no task completions recorded"
+    );
+    assert_deterministic_equivalence(&threaded, &recorded);
+
+    let steps = trace.len();
+    let mut replay = CompletionSchedule::replay(trace);
+    let replayed = run(Some(&mut replay));
+    assert_eq!(
+        replay.trace().len(),
+        steps,
+        "seed {seed}: incomplete replay"
+    );
+    assert_eq!(
+        replayed, recorded,
+        "seed {seed}: replay changed the command log"
     );
 }
 

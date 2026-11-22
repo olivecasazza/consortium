@@ -15,12 +15,87 @@ use crate::dag::context::DagContext;
 use crate::dag::error::{DagError, Result};
 use crate::dag::graph::DagGraph;
 use crate::dag::pool::WorkerPool;
-use crate::dag::types::{ErrorPolicy, TaskId, TaskOutcome};
+use crate::dag::types::{DagTask, ErrorPolicy, TaskId, TaskOutcome};
 
-/// Completion message from a worker thread.
+/// Choose which already-dispatched task completes next in an inline simulation.
+pub trait CompletionOrder {
+    /// Return an index into the nonempty, lexicographically sorted task IDs.
+    fn choose(&mut self, candidates: &[&TaskId]) -> Result<usize>;
+
+    /// Reject unconsumed choices at the end of a run.
+    fn finish(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct Dispatched {
+    id: TaskId,
+    task: Box<dyn DagTask>,
+    resource_tag: Option<String>,
+}
+
+impl Dispatched {
+    fn execute(self, context: &DagContext) -> CompletionEvent {
+        CompletionEvent {
+            task_id: self.id,
+            outcome: self.task.execute(context),
+            resource_tag: self.resource_tag,
+        }
+    }
+}
+
 struct CompletionEvent {
     task_id: TaskId,
     outcome: TaskOutcome,
+    resource_tag: Option<String>,
+}
+
+enum Workers<'a> {
+    Threaded {
+        tx: Option<mpsc::Sender<CompletionEvent>>,
+        rx: mpsc::Receiver<CompletionEvent>,
+    },
+    Simulated {
+        order: &'a mut dyn CompletionOrder,
+        pending: Vec<Dispatched>,
+    },
+}
+
+impl Workers<'_> {
+    fn dispatch(&mut self, work: Dispatched, context: &DagContext) {
+        match self {
+            Self::Threaded { tx, .. } => {
+                let tx = tx.as_ref().expect("dispatch after fail-fast").clone();
+                let ctx = context.clone();
+                thread::spawn(move || {
+                    let _ = tx.send(work.execute(&ctx));
+                });
+            }
+            Self::Simulated { pending, .. } => pending.push(work),
+        }
+    }
+
+    fn next(&mut self, context: &DagContext) -> Result<CompletionEvent> {
+        match self {
+            Self::Threaded { rx, .. } => rx.recv().map_err(|_| DagError::ChannelClosed),
+            Self::Simulated { order, pending } => {
+                let index = if let [only] = pending.as_slice() {
+                    order.choose(&[&only.id])?
+                } else {
+                    pending.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+                    let candidates: Vec<_> = pending.iter().map(|work| &work.id).collect();
+                    order.choose(&candidates)?
+                };
+                if index >= pending.len() {
+                    return Err(DagError::General(format!(
+                        "completion index {index} outside {} dispatched tasks",
+                        pending.len()
+                    )));
+                }
+                Ok(pending.swap_remove(index).execute(context))
+            }
+        }
+    }
 }
 
 /// Events emitted during DAG execution for monitoring.
@@ -46,7 +121,7 @@ pub struct DagReport {
     pub skipped: HashSet<TaskId>,
     /// Tasks that failed, with error messages.
     pub failed: HashMap<TaskId, String>,
-    /// Tasks cancelled because a dependency failed.
+    /// Tasks never started because of dependency failure or fail-fast.
     pub cancelled: HashSet<TaskId>,
 }
 
@@ -77,31 +152,34 @@ impl DagExecutor {
     ///
     /// Blocks until all tasks finish, are cancelled, or an error policy
     /// aborts execution.
-    pub fn run(mut self) -> Result<DagReport> {
+    pub fn run(self) -> Result<DagReport> {
+        let (tx, rx) = mpsc::channel();
+        self.run_with(Workers::Threaded { tx: Some(tx), rx })
+    }
+
+    /// Run task bodies one at a time in a chosen completion order, without
+    /// spawning workers. Use simulated tasks: their actual bodies still run.
+    pub fn run_simulated(self, order: &mut dyn CompletionOrder) -> Result<DagReport> {
+        self.run_with(Workers::Simulated {
+            order,
+            pending: Vec::new(),
+        })
+    }
+
+    fn run_with(mut self, mut workers: Workers<'_>) -> Result<DagReport> {
         self.graph.validate()?;
-
-        let (tx, rx) = mpsc::channel::<CompletionEvent>();
-
-        // Track unmet dependency count per task
-        let mut pending_deps: HashMap<TaskId, usize> = HashMap::new();
-        let all_task_ids: Vec<TaskId> = self.graph.tasks.keys().cloned().collect();
-        for id in &all_task_ids {
-            let dep_count = self
-                .graph
-                .dependencies
-                .get(id)
-                .map(|d| d.len())
-                .unwrap_or(0);
-            pending_deps.insert(id.clone(), dep_count);
+        let mut pending_deps = HashMap::with_capacity(self.graph.len());
+        let mut ready = VecDeque::new();
+        for (id, deps) in &self.graph.dependencies {
+            if deps.is_empty() {
+                ready.push_back(id.clone());
+            }
+            pending_deps.insert(id.clone(), deps.len());
         }
-
-        // Concurrency group tracking: group_name -> active count
-        let mut group_active: HashMap<String, usize> = HashMap::new();
-
-        let mut ready: VecDeque<TaskId> = VecDeque::new();
-        let mut deferred: VecDeque<TaskId> = VecDeque::new(); // tasks waiting for pool/group slots
-        let mut in_flight: HashSet<TaskId> = HashSet::new();
-
+        let mut group_active = HashMap::new();
+        let mut deferred = VecDeque::new();
+        let mut in_flight = 0;
+        let mut stopping = false;
         let mut report = DagReport {
             completed: HashSet::new(),
             skipped: HashSet::new(),
@@ -109,27 +187,25 @@ impl DagExecutor {
             cancelled: HashSet::new(),
         };
 
-        // Seed with root tasks
-        for id in &all_task_ids {
-            if pending_deps.get(id).copied().unwrap_or(0) == 0 {
-                ready.push_back(id.clone());
-            }
-        }
-
         loop {
-            // 1. Try to dispatch ready tasks
-            let mut retry_ready: VecDeque<TaskId> = VecDeque::new();
-
+            // A pool/group limit makes admission order observable to replay.
+            if matches!(workers, Workers::Simulated { .. }) {
+                ready.make_contiguous().sort_unstable();
+            }
+            let mut cache_ready = VecDeque::new();
             while let Some(task_id) = ready.pop_front() {
                 if report.cancelled.contains(&task_id) {
                     continue;
                 }
                 // Check cache (per-task or global)
                 if let Some(cached) = self.check_cache(&task_id) {
-                    self.context.set_output(task_id.clone(), cached);
-                    self.notify(DagEvent::TaskSkipped(task_id.clone()));
-                    report.skipped.insert(task_id.clone());
-                    self.mark_completed(&task_id, &mut pending_deps, &mut retry_ready);
+                    self.context.set_boxed_output(task_id.clone(), cached);
+                    if let Some(monitor) = &mut self.monitor {
+                        monitor.on_event(&DagEvent::TaskSkipped(task_id.clone()));
+                    }
+                    self.graph.take_task(&task_id);
+                    self.mark_completed(&task_id, &mut pending_deps, &mut cache_ready);
+                    report.skipped.insert(task_id);
                     continue;
                 }
 
@@ -140,68 +216,62 @@ impl DagExecutor {
                 }
 
                 // Check worker pool
-                let resource_tag = self
-                    .graph
-                    .tasks
-                    .get(&task_id)
-                    .and_then(|t| t.resource_tag().map(|s| s.to_string()));
-                if !self.pool.acquire(resource_tag.as_deref()) {
+                let task = &self.graph.tasks[&task_id];
+                let tag = task.resource_tag();
+                if !self.pool.acquire(tag) {
                     deferred.push_back(task_id);
                     continue;
                 }
 
-                // Dispatch to worker thread
-                let task = match self.graph.take_task(&task_id) {
-                    Some(t) => t,
-                    None => continue, // already taken (shouldn't happen)
-                };
-
+                let resource_tag = tag.map(str::to_owned);
+                let task = self.graph.take_task(&task_id).expect("ready task missing");
                 // Update group tracking
                 if let Some(group) = self.graph.task_groups.get(&task_id) {
                     *group_active.entry(group.clone()).or_insert(0) += 1;
                 }
 
-                let ctx = self.context.clone();
-                let tx = tx.clone();
-                let id = task_id.clone();
-                in_flight.insert(task_id.clone());
-                self.notify(DagEvent::TaskStarted(task_id));
-
-                thread::spawn(move || {
-                    let outcome = task.execute(&ctx);
-                    let _ = tx.send(CompletionEvent {
-                        task_id: id,
-                        outcome,
-                    });
-                });
+                in_flight += 1;
+                if let Some(monitor) = &mut self.monitor {
+                    monitor.on_event(&DagEvent::TaskStarted(task_id.clone()));
+                }
+                workers.dispatch(
+                    Dispatched {
+                        id: task_id,
+                        task,
+                        resource_tag,
+                    },
+                    &self.context,
+                );
             }
 
-            // Move retry_ready items back to ready
-            ready.extend(retry_ready);
-
-            // 2. If nothing in flight and nothing ready/deferred, we're done
-            if in_flight.is_empty() && ready.is_empty() && deferred.is_empty() {
-                break;
+            // A cache hit can unlock the next task without producing a worker event.
+            if !cache_ready.is_empty() {
+                ready = cache_ready;
+                continue;
             }
-
-            // 3. If nothing in flight but tasks are deferred, that's a deadlock
-            if in_flight.is_empty() && ready.is_empty() && !deferred.is_empty() {
-                // This can happen if pool limits are too tight
+            if in_flight == 0 {
+                if deferred.is_empty() {
+                    break;
+                }
                 return Err(DagError::General(format!(
                     "deadlock: {} deferred tasks but nothing in flight",
                     deferred.len()
                 )));
             }
 
-            // 4. Wait for a completion event
-            let event = rx.recv().map_err(|_| DagError::ChannelClosed)?;
-            let CompletionEvent { task_id, outcome } = event;
-
-            in_flight.remove(&task_id);
-
-            // Release pool slot
-            self.pool.release(None);
-
+            let CompletionEvent {
+                task_id,
+                outcome,
+                resource_tag,
+            } = workers.next(&self.context).inspect_err(|_| {
+                if let Workers::Simulated { pending, .. } = &workers {
+                    for work in pending {
+                        self.pool.release(work.resource_tag.as_deref());
+                    }
+                }
+            })?;
+            in_flight -= 1;
+            self.pool.release(resource_tag.as_deref());
             // Release concurrency group slot
             if let Some(group) = self.graph.task_groups.get(&task_id) {
                 if let Some(count) = group_active.get_mut(group) {
@@ -209,63 +279,52 @@ impl DagExecutor {
                 }
             }
 
-            let is_success = outcome.is_success();
-            let fail_msg = match &outcome {
-                TaskOutcome::Failed(msg) => Some(msg.clone()),
-                _ => None,
-            };
-
-            self.notify(DagEvent::TaskCompleted(task_id.clone(), outcome));
-
-            if is_success {
-                report.completed.insert(task_id.clone());
-                self.mark_completed(&task_id, &mut pending_deps, &mut ready);
-
-                // Re-check deferred tasks (pool slot freed)
-                let deferred_tasks: Vec<_> = deferred.drain(..).collect();
-                for dt in deferred_tasks {
-                    ready.push_back(dt);
+            if let Some(monitor) = &mut self.monitor {
+                monitor.on_event(&DagEvent::TaskCompleted(task_id.clone(), outcome.clone()));
+            }
+            if !stopping {
+                if outcome.is_success() {
+                    self.mark_completed(&task_id, &mut pending_deps, &mut ready);
+                } else if matches!(self.error_policy, ErrorPolicy::FailFast) {
+                    stopping = true;
+                    deferred.clear();
+                    if let Workers::Threaded { tx, .. } = &mut workers {
+                        tx.take();
+                    }
+                    // Dispatched and cached tasks have already left the graph.
+                    for (id, _) in std::mem::take(&mut self.graph.tasks) {
+                        if let Some(monitor) = &mut self.monitor {
+                            monitor.on_event(&DagEvent::TaskCancelled(id.clone()));
+                        }
+                        report.cancelled.insert(id);
+                    }
+                } else {
+                    self.cancel_dependents(
+                        &task_id,
+                        &mut pending_deps,
+                        &mut report.cancelled,
+                        &mut ready,
+                    );
                 }
-            } else if let Some(msg) = fail_msg {
-                match &self.error_policy {
-                    ErrorPolicy::FailFast => {
-                        report.failed.insert(task_id.clone(), msg);
-                        // Wait for in-flight tasks to finish, then return
-                        drop(tx);
-                        for event in rx {
-                            in_flight.remove(&event.task_id);
-                            report.cancelled.insert(event.task_id);
-                        }
-                        return Ok(report);
-                    }
-                    ErrorPolicy::ContinueIndependent => {
-                        report.failed.insert(task_id.clone(), msg);
-                        self.cancel_dependents(
-                            &task_id,
-                            &mut pending_deps,
-                            &mut report.cancelled,
-                            &mut ready,
-                        );
-                        let deferred_tasks: Vec<_> = deferred.drain(..).collect();
-                        for dt in deferred_tasks {
-                            if !report.cancelled.contains(&dt) {
-                                ready.push_back(dt);
-                            }
-                        }
-                    }
-                    ErrorPolicy::Retry { .. } => {
-                        report.failed.insert(task_id.clone(), msg);
-                        self.cancel_dependents(
-                            &task_id,
-                            &mut pending_deps,
-                            &mut report.cancelled,
-                            &mut ready,
-                        );
-                    }
+                ready.append(&mut deferred);
+            }
+
+            match outcome {
+                TaskOutcome::Success => {
+                    report.completed.insert(task_id);
+                }
+                TaskOutcome::Skipped => {
+                    report.skipped.insert(task_id);
+                }
+                TaskOutcome::Failed(error) => {
+                    report.failed.insert(task_id, error);
                 }
             }
         }
 
+        if let Workers::Simulated { order, .. } = &mut workers {
+            order.finish()?;
+        }
         Ok(report)
     }
 
@@ -394,6 +453,31 @@ mod tests {
         let report = dag.build().unwrap().run().unwrap();
         assert!(!report.is_success());
         assert!(report.failed.contains_key(&TaskId::from("a")));
+    }
+
+    #[test]
+    fn fail_fast_reports_every_dispatched_failure() {
+        let mut dag = DagBuilder::new();
+        dag.error_policy(ErrorPolicy::FailFast);
+        for host in ["west", "east"] {
+            dag.add_task(
+                host,
+                FnTask::new(host, move |_| TaskOutcome::Failed(host.into())),
+            );
+        }
+        dag.add_task("verify", FnTask::new("verify", |_| TaskOutcome::Success));
+        dag.add_dep("verify", "west");
+
+        let report = dag.build().unwrap().run().unwrap();
+
+        assert_eq!(
+            report.failed,
+            HashMap::from([
+                (TaskId::from("west"), "west".into()),
+                (TaskId::from("east"), "east".into()),
+            ])
+        );
+        assert_eq!(report.cancelled, HashSet::from([TaskId::from("verify")]));
     }
 
     #[test]
