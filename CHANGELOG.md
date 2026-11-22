@@ -61,6 +61,9 @@ All notable changes to this project will be documented in this file.
   as the README documents; clap previously rejected them as unknown flags.
 - Parse `mkFleet`'s camelCase JSON fields, including non-default `flakeUri`,
   correctly in the Rust fleet consumer.
+- `cast integration ray --wait true` recognizes the job state printed by the Ray
+  CLI without a TTY (a colored `cli.py` log record); waiting on a real Ray head
+  previously failed with `ray status returned no unambiguous state`.
 
 ### Performance
 

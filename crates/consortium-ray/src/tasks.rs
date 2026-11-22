@@ -11,6 +11,7 @@ use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
 use consortium_integration::exec::{CommandSpec, Executor};
 use consortium_integration::staging;
 
+use crate::cli;
 /// Fetch the shared executor from the DAG context.
 fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, TaskOutcome> {
     ctx.get_state::<Arc<dyn Executor>>("executor")
@@ -28,24 +29,31 @@ fn parse_job_id(stdout: &str) -> Option<String> {
     ids.all(|other| other == id).then(|| id.to_owned())
 }
 
+/// Read the job state from `ray job status`. Ray logs each terminal state at
+/// its own level; any other state is an INFO `Status for job` record.
 fn parse_status(stdout: &str, job_id: &str) -> Option<&'static str> {
+    let terminal = [
+        ("SUCC", format!("Job '{job_id}' succeeded"), "SUCCEEDED"),
+        ("ERR", format!("Job '{job_id}' failed"), "FAILED"),
+        ("WARN", format!("Job '{job_id}' was stopped"), "STOPPED"),
+    ];
+    let current = format!("Status for job '{job_id}': ");
     let mut found = None;
     for line in stdout.lines().map(str::trim) {
-        let state = if line == format!("Job '{job_id}' succeeded") {
-            Some("SUCCEEDED")
-        } else if line == format!("Job '{job_id}' failed") {
-            Some("FAILED")
-        } else if line == format!("Job '{job_id}' was stopped") {
-            Some("STOPPED")
-        } else {
-            let candidate = line
-                .strip_prefix("Status: ")
-                .or_else(|| line.strip_prefix(&format!("Status for job '{job_id}': ")))
-                .unwrap_or(line);
-            ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "STOPPED"]
-                .into_iter()
-                .find(|state| *state == candidate)
-        };
+        let state = terminal
+            .iter()
+            .find(|(level, text, _)| cli::message(line, level) == Some(text.as_str()))
+            .map(|(_, _, state)| *state)
+            .or_else(|| {
+                let message = cli::message(line, "INFO")?;
+                let candidate = message
+                    .strip_prefix("Status: ")
+                    .or_else(|| message.strip_prefix(&current))
+                    .unwrap_or(message);
+                ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "STOPPED"]
+                    .into_iter()
+                    .find(|state| *state == candidate)
+            });
         if let Some(state) = state {
             if found.is_some_and(|previous| previous != state) {
                 return None;
@@ -305,6 +313,67 @@ mod tests {
             parse_status("Status: FAILED\nStatus: SUCCEEDED", "raysubmit_test"),
             None
         );
+    }
+
+    /// `ray job status` stdout captured from a Ray 2.48.0 head without a TTY.
+    const RAY_2_48_STATUS: [(&str, &str, &str); 4] = [
+        (
+            concat!(
+                "2026-11-21 19:47:47,104\tINFO cli.py:41 -- \x1b[37mJob submission server address\x1b[39m: \x1b[1mhttp://127.0.0.1:32769\x1b[22m\n",
+                "2026-11-21 19:47:47,113\tSUCC cli.py:65 -- \x1b[32m------------------------------------------\x1b[39m\n",
+                "2026-11-21 19:47:47,113\tSUCC cli.py:66 -- \x1b[32mJob 'raysubmit_6mVVkYu6AggppTZ7' succeeded\x1b[39m\n",
+                "2026-11-21 19:47:47,113\tSUCC cli.py:67 -- \x1b[32m------------------------------------------\x1b[39m\n",
+            ),
+            "raysubmit_6mVVkYu6AggppTZ7",
+            "SUCCEEDED",
+        ),
+        (
+            concat!(
+                "2026-11-21 19:49:52,783\tINFO cli.py:41 -- \x1b[37mJob submission server address\x1b[39m: \x1b[1mhttp://127.0.0.1:32769\x1b[22m\n",
+                "2026-11-21 19:49:52,791\tERR cli.py:73 -- \x1b[31m---------------------------------------\x1b[39m\n",
+                "2026-11-21 19:49:52,791\tERR cli.py:74 -- \x1b[31mJob 'raysubmit_hwwwJKwtxrWM951t' failed\x1b[39m\n",
+                "2026-11-21 19:49:52,791\tERR cli.py:75 -- \x1b[31m---------------------------------------\x1b[39m\n",
+                "2026-11-21 19:49:52,791\tINFO cli.py:88 -- Status message: Job entrypoint command failed with exit code 3, last available logs (truncated to 20,000 chars):\n",
+                "2026-11-22 03:49:42,325\tINFO job_manager.py:531 -- Runtime env is setting up.\n",
+                "\n",
+            ),
+            "raysubmit_hwwwJKwtxrWM951t",
+            "FAILED",
+        ),
+        (
+            concat!(
+                "2026-11-21 19:49:52,177\tINFO cli.py:41 -- \x1b[37mJob submission server address\x1b[39m: \x1b[1mhttp://127.0.0.1:32769\x1b[22m\n",
+                "2026-11-21 19:49:52,183\tWARN cli.py:84 -- \x1b[33mJob 'raysubmit_mF6ku3SgnmjEZSAR' was stopped\x1b[39m\n",
+            ),
+            "raysubmit_mF6ku3SgnmjEZSAR",
+            "STOPPED",
+        ),
+        (
+            concat!(
+                "2026-11-21 19:49:47,296\tINFO cli.py:41 -- \x1b[37mJob submission server address\x1b[39m: \x1b[1mhttp://127.0.0.1:32769\x1b[22m\n",
+                "2026-11-21 19:49:47,302\tINFO cli.py:91 -- Status for job 'raysubmit_mF6ku3SgnmjEZSAR': RUNNING\n",
+                "2026-11-21 19:49:47,302\tINFO cli.py:93 -- Status message: Job is currently running.\n",
+            ),
+            "raysubmit_mF6ku3SgnmjEZSAR",
+            "RUNNING",
+        ),
+    ];
+
+    #[test]
+    fn reads_ray_2_48_status_records() {
+        for (stdout, job_id, state) in RAY_2_48_STATUS {
+            assert_eq!(parse_status(stdout, job_id), Some(state), "{stdout:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_job_logs_do_not_change_the_status() {
+        let (failed, job_id, _) = RAY_2_48_STATUS[1];
+        let quoted = format!(
+            "{failed}2026-11-22 03:49:43,000\tINFO job_manager.py:600 -- Job '{job_id}' succeeded\n\
+             2026-11-22 03:49:43,001\tINFO cli.py:66 -- Job '{job_id}' succeeded\n"
+        );
+        assert_eq!(parse_status(&quoted, job_id), Some("FAILED"));
     }
 
     #[test]

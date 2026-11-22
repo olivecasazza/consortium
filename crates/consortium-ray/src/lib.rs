@@ -13,6 +13,7 @@
 pub mod integration;
 pub use integration::RayIntegration;
 
+mod cli;
 pub mod error;
 pub mod tasks;
 
