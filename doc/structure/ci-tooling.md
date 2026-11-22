@@ -8,8 +8,9 @@ builds every root Nix check.
 The migration scorecard checks out consortium-tests, builds its PyO3 bridge,
 and runs the upstream suite against the Python oracle and Rust backend.
 Both repositories expect a sibling-checkout layout; the workflow provides
-that layout for Cargo path dependencies. The Python API smoke test runs
-with the bridge build in both repositories' parity workflows.
+that layout for Cargo path dependencies. Both workflows also build `claw`
+and run upstream's sorted-gather and fold-axis cases against that binary.
+The Python binding smoke test is separate; it does not invoke `claw`.
 
 `docs.yml` builds and publishes rustdoc; `release.yml` handles releases.
 `release-plz.toml` selects published crates; `cliff.toml` configures changelogs.
