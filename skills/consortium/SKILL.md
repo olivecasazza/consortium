@@ -111,9 +111,9 @@ For every target node, claw assembles one line and hands it to `sh -c`:
 <remote> <options> -o ConnectTimeout=<t> [<user>@]%h '<shell-escaped command>'
 ```
 
-`%h` is substituted with the node name before the shell sees the line, and the
-command is single-quoted unless it needs no quoting. With `claw -w node1 uptime`
-and no other flags that expands to `ssh node1 uptime`.
+Before the shell runs, `%h` expands to the node name and `%%` to a literal
+percent. Use `%%h` to pass `%h` through unchanged. The command is single-quoted
+unless it needs no quoting; `claw -w node1 uptime` expands to `ssh node1 uptime`.
 
 Two flags control the transport.
 

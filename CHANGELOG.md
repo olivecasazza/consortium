@@ -61,6 +61,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- `claw -R exec` expands `%%` to a literal percent and leaves `%%h` as `%h`.
+  Commands using a modulus expression now produce the same gathered groups as `clush`.
 - `cast --nix-args/--darwin-nix-args/--nixos-nix-args` accept values that start
   with `--` in the space-separated form (`--nixos-nix-args '--override-input …'`),
   as the README documents; clap previously rejected them as unknown flags.
