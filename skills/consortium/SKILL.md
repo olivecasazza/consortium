@@ -51,7 +51,7 @@ transfers unchanged.
 | `-o, --options OPTS` | Verbatim ssh option string, inserted into the command line as written. Include the leading `-o` yourself. |
 | `--remote PATH` | The binary that stands in for ssh. Default `ssh`. |
 | `--topology FILE` | Topology file for tree mode. |
-| `-b, --dshbak` | Gather nodes whose output is byte-identical under one header. |
+| `-b, --dshbak` | Gather nodes whose output is identical, line for line, under one header. |
 | `-L, --line` | Line mode: no output gathering. |
 | `-N, --label` | Turn node labels off. The flag reads as "label" but it disables them. |
 | `-q, --quiet` | Print nothing; report only through the exit code. |
@@ -96,7 +96,7 @@ subtraction. If the set ends up empty, claw exits with
 
 | Mode | Behavior |
 | default | Streams each line as it completes, prefixed with its node label unless `-N` is set. A progress bar appears on stderr when stderr is a TTY and more than one node is targeted. |
-| `-b, --dshbak` | Buffers instead of streaming, then prints one header per group of nodes that produced identical output, largest group first, with a folded bracket header and a node count. |
+| `-b, --dshbak` | Groups nodes by output lines, not pipe reads. A silent node and one that printed a blank line form separate groups; trailing blank lines are preserved. The largest group prints first, with a folded header and node count. |
 | `-L, --line` | Line mode, no output gathering. |
 | `-q, --quiet` | No stdout, no progress bar, no per-node return-code lines. The exit code is the only signal. |
 
@@ -111,9 +111,9 @@ For every target node, claw assembles one line and hands it to `sh -c`:
 <remote> <options> -o ConnectTimeout=<t> [<user>@]%h '<shell-escaped command>'
 ```
 
-`%h` is substituted with the node name before the shell sees the line, and the
-command is single-quoted unless it needs no quoting. With `claw -w node1 uptime`
-and no other flags that expands to `ssh node1 uptime`.
+Before the shell runs, `%h` expands to the node name and `%%` to a literal
+percent. Use `%%h` to pass `%h` through unchanged. The command is single-quoted
+unless it needs no quoting; `claw -w node1 uptime` expands to `ssh node1 uptime`.
 
 Two flags control the transport.
 

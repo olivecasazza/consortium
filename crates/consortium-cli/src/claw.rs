@@ -7,7 +7,6 @@
 //!   claw --copy /etc/hosts -w node[1-5]  # copy file to nodes
 //!   echo 'script' | claw -w node[1-5]    # pipe stdin to command
 
-use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process;
@@ -291,7 +290,7 @@ fn execute(args: Args) -> anyhow::Result<i32> {
     }
 
     // ── Collect and display output ─────────────────────────────────────
-    let max_rc = display_results(&task, &args, fold_axis, stream_lines, &mut out)?;
+    let max_rc = display_results(&mut task, &args, fold_axis, stream_lines, &mut out)?;
 
     if args.maxrc {
         Ok(max_rc.unwrap_or(0))
@@ -452,7 +451,7 @@ fn copy_worker(
 
 /// Display results from a completed task.
 fn display_results(
-    task: &Task,
+    task: &mut Task,
     args: &Args,
     fold_axis: Option<&[i64]>,
     streamed: bool,
@@ -504,37 +503,26 @@ fn display_results(
 /// honoring the `--axis` constraint (#356) and carry the ` (N)` node count
 /// like upstream `Display.format_header()`.
 fn display_dshbak(
-    task: &Task,
+    task: &mut Task,
     fold_axis: Option<&[i64]>,
     out: &mut impl Write,
 ) -> anyhow::Result<()> {
-    // Group nodes by their output
-    let mut output_to_nodes: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
-
-    // Iterate over all nodes that ran
-    let retcodes = task.iter_retcodes(None);
-    for (_rc, nodes) in &retcodes {
-        for node in nodes {
-            let buf = task.node_buffer(node).unwrap_or_default();
-            output_to_nodes
-                .entry(buf)
-                .or_default()
-                .push(node.to_string());
-        }
-    }
-
-    let mut groups: Vec<(Vec<u8>, Vec<String>)> = output_to_nodes.into_iter().collect();
-    for (_buf, names) in groups.iter_mut() {
-        names.sort();
-    }
+    let mut groups: Vec<_> = task
+        .gathered_stdout()?
+        .map(|(output, sources)| {
+            let mut names: Vec<_> = sources.into_iter().map(|(_, name)| name).collect();
+            names.sort_unstable();
+            (output, names)
+        })
+        .collect();
     // larger nodeset first, then sorted by first node index
     groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.1[0].cmp(&b.1[0])));
 
     for (output, names) in &groups {
         let folded = fold::fold_nodes(names, fold_axis);
         display::print_gathered_header(&folded, names.len(), out)?;
-        out.write_all(output)?;
-        if !output.is_empty() && !output.ends_with(b"\n") {
+        if let Some(lines) = output {
+            out.write_all(lines)?;
             writeln!(out)?;
         }
     }

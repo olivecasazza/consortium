@@ -3,6 +3,7 @@
 //! This module provides ExecWorker, a worker implementation that
 //! spawns child processes to execute commands on remote or local nodes.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -99,6 +100,41 @@ impl ChildProcess {
     }
 }
 
+/// Expand tokens from the command template, never from the inserted node name.
+fn substitute_node<'a>(command: &'a str, node: &str) -> Cow<'a, str> {
+    let mut expanded = None;
+    let mut literal_start = 0;
+    let mut cursor = 0;
+    while let Some(offset) = command[cursor..].find(['%', '{']) {
+        let start = cursor + offset;
+        let tail = &command[start..];
+        let (token, replacement) = if tail.starts_with("%%") {
+            ("%%", "%")
+        } else if tail.starts_with("%h") {
+            ("%h", node)
+        } else if tail.starts_with("{node}") {
+            ("{node}", node)
+        } else {
+            cursor = start + 1;
+            continue;
+        };
+        let out = expanded.get_or_insert_with(|| {
+            String::with_capacity(command.len() - token.len() + replacement.len())
+        });
+        out.push_str(&command[literal_start..start]);
+        out.push_str(replacement);
+        cursor = start + token.len();
+        literal_start = cursor;
+    }
+    match expanded {
+        Some(mut out) => {
+            out.push_str(&command[literal_start..]);
+            Cow::Owned(out)
+        }
+        None => Cow::Borrowed(command),
+    }
+}
+
 /// Worker implementation that runs commands on nodes via local execution.
 ///
 /// ExecWorker spawns child processes to execute commands on nodes.
@@ -135,7 +171,7 @@ impl ExecWorker {
     ///
     /// # Arguments
     /// * `nodes` - List of node names to execute the command on.
-    /// * `command` - Command to execute. Use %h or {node} as placeholders for the node name.
+    /// * `command` - Use `%h` or `{node}` for the node name and `%%` for a literal percent.
     /// * `fanout` - Maximum number of concurrent processes (default: 64).
     /// * `timeout` - Optional timeout per node.
     pub fn new(
@@ -165,17 +201,12 @@ impl ExecWorker {
         self
     }
 
-    /// Substitute node placeholders in the command.
-    fn substitute_node(&self, command: &str, node: &str) -> String {
-        command.replace("%h", node).replace("{node}", node)
-    }
-
     /// Spawn a new child process for a node.
     fn spawn_node(&mut self, node: &str) -> Result<()> {
-        let cmd = self.substitute_node(&self.command, node);
+        let cmd = substitute_node(&self.command, node);
         let child = Command::new("sh")
             .arg("-c")
-            .arg(cmd)
+            .arg(&*cmd)
             .stdout(Stdio::piped())
             .stderr(if self.stderr {
                 Stdio::piped()
@@ -190,8 +221,7 @@ impl ExecWorker {
         let process =
             ChildProcess::new(child, node.to_string(), self.stderr).map_err(WorkerError::Io)?;
 
-        let node_name = process.node.clone();
-        self.processes.insert(node_name.clone(), process);
+        self.processes.insert(process.node.clone(), process);
         self.running_count += 1;
 
         // Temporarily take handler to avoid borrow conflict
@@ -511,21 +541,37 @@ mod tests {
     /// Test node substitution in command (%h placeholder)
     #[test]
     fn test_node_substitution_percent_h() {
-        let nodes = vec!["myhost".to_string()];
-        let worker = ExecWorker::new(nodes, "ssh %h 'ls'".to_string(), 1, None);
-
-        let cmd = worker.substitute_node("ssh %h 'ls'", "myhost");
+        let cmd = substitute_node("ssh %h 'ls'", "myhost");
         assert_eq!(cmd, "ssh myhost 'ls'");
     }
 
     /// Test node substitution in command ({node} placeholder)
     #[test]
     fn test_node_substitution_braces() {
-        let nodes = vec!["myhost".to_string()];
-        let worker = ExecWorker::new(nodes, "ssh {node} 'ls'".to_string(), 1, None);
-
-        let cmd = worker.substitute_node("ssh {node} 'ls'", "myhost");
+        let cmd = substitute_node("ssh {node} 'ls'", "myhost");
         assert_eq!(cmd, "ssh myhost 'ls'");
+    }
+
+    #[test]
+    fn test_node_substitution_percent_escapes() {
+        assert_eq!(
+            substitute_node("expr %h %% 2; echo %%h %%%h", "12"),
+            "expr 12 % 2; echo %h %12"
+        );
+    }
+
+    #[test]
+    fn test_node_substitution_does_not_rescan_names() {
+        assert_eq!(
+            substitute_node("%h:{node}", "é{node}%h"),
+            "é{node}%h:é{node}%h"
+        );
+    }
+
+    #[test]
+    fn test_node_substitution_preserves_shell_syntax() {
+        let command = r#"printf '%s' "${name%.txt}" # 100%"#;
+        assert_eq!(substitute_node(command, "host"), command);
     }
 
     /// Test ExecWorker with simple echo command on localhost
