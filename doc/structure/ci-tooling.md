@@ -12,7 +12,9 @@ that layout for Cargo path dependencies. Both workflows also build `claw`
 and run upstream's sorted-gather and fold-axis cases against that binary.
 The Python binding smoke test is separate; it does not invoke `claw`.
 
-`docs.yml` builds and publishes rustdoc; `release.yml` handles releases.
+`docs.yml` builds rustdoc and is the only workflow that pushes `gh-pages`
+(`latest/`, `master/` and the root redirect); `release.yml` publishes crates
+and opens the release PR.
 `release-plz.toml` selects published crates; `cliff.toml` configures changelogs.
 Commit conventions are checked by commitlint and `scripts/verify-commits.sh`.
 

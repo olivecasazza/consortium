@@ -29,24 +29,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
-      - name: Deploy versioned docs
-        if: success()
-        run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LATEST_TAG" ]; then
-            cargo doc --workspace --no-deps
-            echo '<meta http-equiv="refresh" content="0; url=consortium/index.html">' > target/doc/index.html
-          fi
-
-      - name: Publish docs to /${{ github.ref_name }}/
-        if: success()
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./target/doc
-          destination_dir: ${{ github.ref_name }}
-          keep_files: true
-
   # Runs after publishing so release-pr reads the new crates.io versions;
   # run in parallel it re-proposes the release that was just published.
   release-plz-pr:
