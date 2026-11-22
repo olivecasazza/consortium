@@ -4,9 +4,9 @@
 //! against an `Arc<SimExecutor>`; the sim classifies every command
 //! (local / ssh control / data copy), applies the failure schedule per
 //! (edge, attempt index), and times copies on a virtual clock.
-//! Assertions target pipeline semantics — report contents, edge/kind
-//! filtered log views, simulated transfer time — never log order, which
-//! the DAG's worker threads make nondeterministic.
+//! Each scenario checks its report, log and virtual clock on worker
+//! threads and under a seeded completion schedule. Replaying the schedule
+//! must reproduce the exact invocation order.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,15 +14,17 @@ use std::time::Duration;
 
 use consortium_fanout_sim::fixtures::{BandwidthDistribution, FailureSchedule};
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimEvent, SimExecutor, SimExecutorBuilder,
-    SimOutcome,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor, SimExecutorBuilder, SimOutcome,
 };
+use consortium_fanout_sim::CompletionSchedule;
 use consortium_integration::exec::{ExecOutput, Executor};
 use consortium_nix::cascade::NodeId;
 use consortium_nix::config::{Builder, DeploymentNode, FleetConfig, ProfileType};
-use consortium_nix::{deploy, DeployAction, DeployReport};
+use consortium_nix::{deploy, deploy_scheduled, DeployAction, DeployOptions, DeployReport};
 
 const MIB: u64 = 1024 * 1024;
+const SEED: u64 = 0x1234;
 
 /// The fleet every scenario deploys to.
 fn targets() -> Vec<String> {
@@ -92,7 +94,7 @@ where
 {
     SimExecutor::builder()
         .hosts(hosts)
-        .seed(0x1234)
+        .seed(SEED)
         .bandwidth(BandwidthDistribution::Uniform(100 * MIB))
         .latency(Duration::from_millis(10))
         .transfer_bytes("nix copy", 100 * MIB)
@@ -136,6 +138,29 @@ fn run_deploy(
     deploy(exec, config, &targets(), action, 4, use_builders).expect("deploy pipeline error")
 }
 
+fn run_scenario(
+    sim: &Arc<SimExecutor>,
+    config: &FleetConfig,
+    action: DeployAction,
+    use_builders: bool,
+    order: Option<&mut CompletionSchedule>,
+) -> DeployReport {
+    let Some(order) = order else {
+        return run_deploy(sim, config, action, use_builders);
+    };
+    deploy_scheduled(
+        sim.clone(),
+        config,
+        &targets(),
+        action,
+        4,
+        use_builders,
+        &DeployOptions::default(),
+        Some(order),
+    )
+    .expect("scheduled deploy pipeline error")
+}
+
 /// Log events of `kind` on `edge`, in log (completion) order.
 fn edge_events(log: &[SimEvent], kind: SimCommandKind, edge: (NodeId, NodeId)) -> Vec<&SimEvent> {
     log.iter()
@@ -147,10 +172,14 @@ fn edge_events(log: &[SimEvent], kind: SimCommandKind, edge: (NodeId, NodeId)) -
 /// copies land and the virtual clock matches the bandwidth math.
 #[test]
 fn healthy_baseline_converges() {
+    assert_scenario_replays(SEED, check_healthy_baseline);
+}
+
+fn check_healthy_baseline(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let config = fleet_config();
     let sim = Arc::new(healthy_sim());
 
-    let report = run_deploy(&sim, &config, DeployAction::Switch, false);
+    let report = run_scenario(&sim, &config, DeployAction::Switch, false, order);
 
     assert!(report.is_success(), "expected clean deploy: {report:?}");
     assert_eq!(report.built, targets());
@@ -190,12 +219,17 @@ fn healthy_baseline_converges() {
     // Virtual clock: 2 copies × (100 MiB / 100 MiB/s + 10 ms latency).
     let expected = 2 * (Duration::from_secs(1) + Duration::from_millis(10));
     assert_eq!(sim.simulated_transfer_time(), expected);
+    log
 }
 
 /// node02 killed at round 0: its copy fails (status 1), its activation
 /// is cancelled before any ssh attempt, and node01 still converges.
 #[test]
 fn killed_target_fails_copy_but_fleet_continues() {
+    assert_scenario_replays(SEED, check_killed_target);
+}
+
+fn check_killed_target(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let config = fleet_config();
     // node02 = NodeId(1) (second .hosts entry); round 0 = dead from the
     // first attempt on any edge targeting it.
@@ -209,7 +243,7 @@ fn killed_target_fails_copy_but_fleet_continues() {
         .build(),
     );
 
-    let report = run_deploy(&sim, &config, DeployAction::Switch, false);
+    let report = run_scenario(&sim, &config, DeployAction::Switch, false, order);
 
     assert!(!report.is_success());
     // eval/build are local commands: the network kill cannot reach them.
@@ -256,12 +290,17 @@ fn killed_target_fails_copy_but_fleet_continues() {
         sim.simulated_transfer_time(),
         Duration::from_secs(1) + Duration::from_millis(10)
     );
+    log
 }
 
 /// `DeployAction::Build` runs only the local stages: no copy, no
 /// activation, zero edge commands — the kill schedule is irrelevant.
 #[test]
 fn build_action_ignores_network_kill() {
+    assert_scenario_replays(SEED, check_build_action);
+}
+
+fn check_build_action(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let config = fleet_config();
     let sim = Arc::new(
         script_healthy_outputs(base_sim_builder(["node01", "node02"]).failure_schedule(
@@ -273,7 +312,7 @@ fn build_action_ignores_network_kill() {
         .build(),
     );
 
-    let report = run_deploy(&sim, &config, DeployAction::Build, false);
+    let report = run_scenario(&sim, &config, DeployAction::Build, false, order);
 
     assert!(
         report.is_success(),
@@ -292,6 +331,7 @@ fn build_action_ignores_network_kill() {
         "build-only deploy must issue no edge commands: {log:?}"
     );
     assert_eq!(sim.simulated_transfer_time(), Duration::ZERO);
+    log
 }
 
 /// With `use_builders=true` and a configured builder whose ssh health
@@ -299,6 +339,10 @@ fn build_action_ignores_network_kill() {
 /// machines file, no `--builders` flag).
 #[test]
 fn unhealthy_builder_falls_back_to_local_build() {
+    assert_scenario_replays(SEED, check_unhealthy_builder);
+}
+
+fn check_unhealthy_builder(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let config = fleet_config_with_builder();
     // The builder IS part of the sim fleet, so its ssh health probe
     // forms an edge and reaches the scripted rules (an unlisted host
@@ -314,7 +358,7 @@ fn unhealthy_builder_falls_back_to_local_build() {
         .build(),
     );
 
-    let report = run_deploy(&sim, &config, DeployAction::Switch, true);
+    let report = run_scenario(&sim, &config, DeployAction::Switch, true, order);
 
     assert!(
         report.is_success(),
@@ -347,6 +391,7 @@ fn unhealthy_builder_falls_back_to_local_build() {
     assert!(builds
         .iter()
         .all(|e| !e.command_line.contains("--builders")));
+    log
 }
 
 /// The identical scenario built twice from one `make_sim()` closure and

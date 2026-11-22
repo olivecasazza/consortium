@@ -50,7 +50,7 @@ pub use options::{DeployOptions, NixArgs};
 
 use std::sync::Arc;
 
-use consortium::dag::DagReport;
+use consortium::dag::{CompletionOrder, DagReport};
 use consortium_integration::exec::Executor;
 use consortium_integration::report::IntegrationReport;
 
@@ -157,9 +157,35 @@ pub fn deploy_with_options(
     use_builders: bool,
     options: &DeployOptions,
 ) -> Result<DeployReport> {
+    deploy_scheduled(
+        exec,
+        config,
+        target_nodes,
+        action,
+        max_parallel,
+        use_builders,
+        options,
+        None,
+    )
+}
+
+/// Run the typed deployment with a controlled DAG completion order.
+/// Supply an order with a simulated executor to run tasks inline; `None`
+/// uses the same worker threads as [`deploy`].
+#[allow(clippy::too_many_arguments)]
+pub fn deploy_scheduled(
+    exec: Arc<dyn Executor>,
+    config: &FleetConfig,
+    target_nodes: &[String],
+    action: DeployAction,
+    max_parallel: usize,
+    use_builders: bool,
+    options: &DeployOptions,
+    order: Option<&mut dyn CompletionOrder>,
+) -> Result<DeployReport> {
     let request =
         integration::deployment_request(target_nodes, action, max_parallel, use_builders, options)?;
-    integration::run_deployment(exec, config, &request, action)
+    integration::run_deployment(exec, config, &request, action, order)
 }
 
 /// Probe the configured builders when `use_builders` is set and write a

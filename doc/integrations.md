@@ -126,14 +126,15 @@ assertions. Every integration ships a `tests/sim.rs` suite on top of it:
 | `consortium-skypilot` | `happy_path_launch_and_teardown` (all-local pipeline, command ordering), `no_teardown_leaves_cluster_up`, `launch_failure_skips_teardown`, `env_build_failure_aborts_before_any_sky_command`, `deterministic_runs` (unique temp yaml paths scrubbed via `.normalize_command_line(..)`) |
 | `consortium-ray` | `happy_path_submit_and_succeeded` (submit → status SUCCEEDED), `no_wait_submits_and_returns`, `submit_failure_skips_wait`, `job_failed_terminal_state`, `status_endpoint_flapping_then_timeout` (retried until timeout), `deterministic_runs` |
 
-For threaded `execute` runs, pass an `Arc<SimExecutor>` and compare reports
-and per-edge outcomes with `assert_deterministic_equivalence`. Independent
-tasks can reach the same edge in either order. `simexec.rs` in
-`consortium-fanout-sim` shows how to build a network fixture.
+For an adapter scenario whose outcome should not depend on completion order,
+use `simexec::assert_scenario_replays`. Build fresh fixtures and check the same
+host outcomes, cancellations and side effects on every call. The helper compares
+the threaded command log as a multiset and the seeded and replayed logs in exact
+order, including edge attempts. Tests for real overlap still run on threads.
 
 When order itself is under test, use `CompletionSchedule::seeded(seed)` and
 pass `Some(&mut order)` to `Integration::execute_scheduled` with a
-`SimExecutor`. Save `order.trace().to_vec()`, then pass those task IDs to
+`SimExecutor`. Take the recorded IDs with `order.into_trace()`, then pass them to
 `CompletionSchedule::replay` with a fresh executor and the same plan and
 network fixture. A missing, extra, or not-yet-dispatched task is an error.
 The trace orders whole dispatched tasks, not instructions or I/O within a

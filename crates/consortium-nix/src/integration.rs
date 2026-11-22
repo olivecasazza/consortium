@@ -1,6 +1,6 @@
 //! Adapter for the shared integration grammar.
 
-use consortium::dag::DagContext;
+use consortium::dag::{CompletionOrder, DagContext};
 use consortium_integration::fleet::FleetConfig;
 use consortium_integration::grammar::{
     duration_text, Condition, EffectKind, FailurePolicy, Grammar, Integration, IntegrationError,
@@ -323,13 +323,14 @@ pub(crate) fn run_deployment(
     config: &FleetConfig,
     request: &Request,
     action: crate::DeployAction,
+    order: Option<&mut dyn CompletionOrder>,
 ) -> crate::Result<crate::DeployReport> {
     crate::validate_targets(config, &request.targets)?;
     let plan = NixIntegration
         .plan(config, request)
         .map_err(|error| crate::NixError::General(error.to_string()))?;
     let execution = NixIntegration
-        .execute_detailed(exec, config, &plan)
+        .execute_scheduled(exec, config, &plan, order)
         .map_err(|error| crate::NixError::General(error.to_string()))?;
     let mut report = crate::DeployReport::from_dag_report(&execution.dag, &plan.targets, action);
     for (id, error) in &execution.dag.failed {
@@ -493,7 +494,7 @@ pub(crate) fn run_deployment_with_events(
     sink: Option<&dyn crate::cascade_events::EventSink>,
 ) -> crate::Result<crate::DeployReport> {
     let Some(sink) = sink else {
-        return run_deployment(exec, config, request, action);
+        return run_deployment(exec, config, request, action, None);
     };
     std::thread::scope(|scope| {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -506,6 +507,7 @@ pub(crate) fn run_deployment_with_events(
                 config,
                 request,
                 action,
+                None,
             )
         });
         for event in receiver {

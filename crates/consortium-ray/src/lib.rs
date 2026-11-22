@@ -54,6 +54,23 @@ impl Default for RayOptions {
     }
 }
 
+impl RayOptions {
+    /// Build the integration request for a typed job submission.
+    pub fn request(&self, job_name: &str, entrypoint: &str) -> Request {
+        let mut request = Request::default()
+            .with("name", job_name)
+            .with("entrypoint", entrypoint)
+            .with("wait", self.wait.to_string());
+        if self.wait {
+            request = request.with("poll-seconds", duration_text(self.poll_interval));
+            if let Some(timeout) = self.timeout {
+                request = request.with("timeout", duration_text(timeout));
+            }
+        }
+        request
+    }
+}
+
 /// Submit a ray job with a nix-built environment.
 ///
 /// Builds the DAG `NixBuildRayEnvTask → RaySubmitTask (→ RayWaitTask when
@@ -67,16 +84,7 @@ pub fn submit_job(
     opts: &RayOptions,
 ) -> Result<DagReport> {
     config.ray_config.as_ref().ok_or(RayError::NoConfig)?;
-    let mut request = Request::default()
-        .with("name", job_name)
-        .with("entrypoint", entrypoint)
-        .with("wait", opts.wait.to_string());
-    if opts.wait {
-        request = request.with("poll-seconds", duration_text(opts.poll_interval));
-        if let Some(timeout) = opts.timeout {
-            request = request.with("timeout", duration_text(timeout));
-        }
-    }
+    let request = opts.request(job_name, entrypoint);
     RayIntegration
         .run_detailed(exec, config, &request)
         .map(|result| result.dag)

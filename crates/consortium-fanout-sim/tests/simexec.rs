@@ -10,7 +10,8 @@ use consortium::dag::{
 };
 use consortium_fanout_sim::fixtures::FailureSchedule;
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimExecutor, SimOutcome,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor, SimOutcome,
 };
 use consortium_fanout_sim::{CompletionSchedule, NodeId};
 use consortium_integration::exec::{CommandSpec, ExecOutput, Executor, SshTarget};
@@ -90,11 +91,20 @@ fn pipeline_sim(schedule: FailureSchedule) -> SimExecutor {
 
 #[test]
 fn killed_host_fails_run_and_cancels_dependent() {
+    assert_scenario_replays(17, check_killed_host);
+}
+
+fn check_killed_host(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(pipeline_sim(FailureSchedule::KillNodeAtRound {
         node: NodeId(1), // node02
         round: 0,
     }));
-    let report = build_pipeline(&sim).run().unwrap();
+    let dag = build_pipeline(&sim);
+    let report = match order {
+        Some(order) => dag.run_simulated(order),
+        None => dag.run(),
+    }
+    .unwrap();
 
     // host1 path completes; host2's run fails and its dependent is
     // cancelled without ever issuing a command.
@@ -140,6 +150,7 @@ fn killed_host_fails_run_and_cancels_dependent() {
         .collect();
     assert_eq!(stage_events.len(), 1);
     assert!(stage_events[0].command_line.contains("nix build"));
+    log
 }
 
 #[test]
@@ -172,9 +183,9 @@ fn seeded_completions_replay_exact_invocations() {
     let mut repeated = CompletionSchedule::seeded(17);
     assert_eq!(run(&mut repeated), log);
     assert_eq!(repeated.trace(), generated.trace());
-    let mut replay = CompletionSchedule::replay(generated.trace().to_vec());
+    let mut replay = CompletionSchedule::replay(generated.into_trace());
     assert_eq!(run(&mut replay), log);
-    assert_eq!(replay.trace(), generated.trace());
+    assert_eq!(replay.trace(), repeated.trace());
 }
 
 #[test]

@@ -39,6 +39,12 @@ impl CompletionSchedule {
     pub fn trace(&self) -> &[String] {
         &self.choices[..self.consumed]
     }
+
+    /// Take the selected task IDs without copying them or including unused replay input.
+    pub fn into_trace(mut self) -> Vec<String> {
+        self.choices.truncate(self.consumed);
+        self.choices
+    }
 }
 
 impl CompletionOrder for CompletionSchedule {

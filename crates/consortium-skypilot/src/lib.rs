@@ -74,6 +74,16 @@ impl Default for SkyOptions {
     }
 }
 
+impl SkyOptions {
+    /// Build the launch request for planning or executing this cluster task.
+    pub fn request(&self, cluster_name: &str, task_yaml: &str) -> Request {
+        Request::default()
+            .with("name", cluster_name)
+            .with("task", task_yaml)
+            .with("teardown", self.teardown.to_string())
+    }
+}
+
 /// Launch a SkyPilot task on a cloud cluster.
 ///
 /// Pipeline: build the sky environment with nix → `sky launch` (the task
@@ -92,10 +102,7 @@ pub fn launch_task(
         .skypilot_config
         .as_ref()
         .ok_or(SkypilotError::NoConfig)?;
-    let request = Request::default()
-        .with("name", cluster_name)
-        .with("task", task_yaml)
-        .with("teardown", opts.teardown.to_string());
+    let request = opts.request(cluster_name, task_yaml);
     SkypilotIntegration
         .run_detailed(exec, config, &request)
         .map(|result| result.dag)

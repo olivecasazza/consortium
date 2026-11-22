@@ -28,13 +28,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use consortium::dag::TaskId;
+use consortium::dag::{DagReport, TaskId};
 use consortium_fanout_sim::simexec::{
-    assert_deterministic_equivalence, SimCommandKind, SimExecutor,
+    assert_deterministic_equivalence, assert_scenario_replays, SimCommandKind, SimEvent,
+    SimExecutor,
 };
+use consortium_fanout_sim::CompletionSchedule;
 use consortium_integration::exec::{ExecOutput, Rule};
 use consortium_integration::fleet::{DeploymentNode, FleetConfig, ProfileType, RayFleetConfig};
-use consortium_ray::{submit_job, RayOptions};
+use consortium_integration::grammar::Integration;
+use consortium_ray::{submit_job, RayIntegration, RayOptions};
 
 // ── Shared fixtures ─────────────────────────────────────────────────────────
 
@@ -100,10 +103,28 @@ fn task_id(prefix: &str) -> TaskId {
     TaskId(format!("{prefix}:{JOB_NAME}"))
 }
 
+fn run_submit(
+    sim: Arc<SimExecutor>,
+    opts: &RayOptions,
+    order: Option<&mut CompletionSchedule>,
+) -> DagReport {
+    let config = fleet_config();
+    let Some(order) = order else {
+        return submit_job(sim, &config, JOB_NAME, ENTRYPOINT, opts)
+            .expect("pipeline failures surface in the report, not as Err");
+    };
+    let plan = RayIntegration
+        .plan(&config, &opts.request(JOB_NAME, ENTRYPOINT))
+        .expect("valid ray job request");
+    RayIntegration
+        .execute_scheduled(sim, &config, &plan, Some(order))
+        .expect("pipeline failures surface in the report, not as Err")
+        .dag
+}
+
 /// Count invocations whose rendered command line contains `needle`.
-fn count_invocations(sim: &SimExecutor, needle: &str) -> usize {
-    sim.invocation_log()
-        .iter()
+fn count_invocations(log: &[SimEvent], needle: &str) -> usize {
+    log.iter()
         .filter(|e| e.command_line.contains(needle))
         .count()
 }
@@ -112,15 +133,12 @@ fn count_invocations(sim: &SimExecutor, needle: &str) -> usize {
 
 #[test]
 fn happy_path_submit_and_succeeded() {
+    assert_scenario_replays(SEED, check_happy_path);
+}
+
+fn check_happy_path(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_happy_sim());
-    let report = submit_job(
-        sim.clone(),
-        &fleet_config(),
-        JOB_NAME,
-        ENTRYPOINT,
-        &TEST_OPTS,
-    )
-    .expect("happy-path submit_job should not error");
+    let report = run_submit(sim.clone(), &TEST_OPTS, order);
 
     assert!(report.is_success(), "report: {report:?}");
     for prefix in ["build-ray-env", "ray-submit", "ray-wait"] {
@@ -147,7 +165,7 @@ fn happy_path_submit_and_succeeded() {
     );
 
     // Exactly one status poll: SUCCEEDED is terminal on the first check.
-    assert_eq!(count_invocations(&sim, "job status"), 1);
+    assert_eq!(count_invocations(&log, "job status"), 1);
 
     // Every command in this pipeline is classified Local (the ray CLI
     // talks HTTP to the head; no ssh/ssh-ng): no edges, no transfer work.
@@ -157,17 +175,22 @@ fn happy_path_submit_and_succeeded() {
         "ray pipeline commands should all be Local: {log:#?}"
     );
     assert_eq!(sim.simulated_transfer_time(), Duration::ZERO);
+    log
 }
 
 #[test]
 fn no_wait_submits_and_returns() {
+    assert_scenario_replays(SEED, check_no_wait);
+}
+
+fn check_no_wait(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(make_happy_sim());
     let opts = RayOptions {
         wait: false,
         ..TEST_OPTS
     };
-    let report = submit_job(sim.clone(), &fleet_config(), JOB_NAME, ENTRYPOINT, &opts)
-        .expect("no-wait submit_job should not error");
+    let report = run_submit(sim.clone(), &opts, order);
+    let log = sim.invocation_log();
 
     assert!(report.is_success(), "report: {report:?}");
     assert!(report.completed.contains(&task_id("ray-submit")));
@@ -176,14 +199,19 @@ fn no_wait_submits_and_returns() {
         "wait: false must not schedule a wait task"
     );
     assert_eq!(
-        count_invocations(&sim, "job status"),
+        count_invocations(&log, "job status"),
         0,
         "wait: false must never poll job status"
     );
+    log
 }
 
 #[test]
 fn submit_failure_skips_wait() {
+    assert_scenario_replays(SEED, check_submit_failure);
+}
+
+fn check_submit_failure(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         SimExecutor::builder()
             .seed(SEED)
@@ -197,14 +225,8 @@ fn submit_failure_skips_wait() {
             .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
             .build(),
     );
-    let report = submit_job(
-        sim.clone(),
-        &fleet_config(),
-        JOB_NAME,
-        ENTRYPOINT,
-        &TEST_OPTS,
-    )
-    .expect("pipeline failures surface in the report, not as Err");
+    let report = run_submit(sim.clone(), &TEST_OPTS, order);
+    let log = sim.invocation_log();
 
     assert!(!report.is_success());
     let submit = task_id("ray-submit");
@@ -214,14 +236,19 @@ fn submit_failure_skips_wait() {
     );
     assert!(report.failed[&submit].contains("connection refused"));
     assert_eq!(
-        count_invocations(&sim, "job status"),
+        count_invocations(&log, "job status"),
         0,
         "a failed submit must never reach the status poller"
     );
+    log
 }
 
 #[test]
 fn job_failed_terminal_state() {
+    assert_scenario_replays(SEED, check_failed_state);
+}
+
+fn check_failed_state(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         SimExecutor::builder()
             .seed(SEED)
@@ -230,14 +257,8 @@ fn job_failed_terminal_state() {
             .on("job status", ExecOutput::ok("Status: FAILED\n"))
             .build(),
     );
-    let report = submit_job(
-        sim.clone(),
-        &fleet_config(),
-        JOB_NAME,
-        ENTRYPOINT,
-        &TEST_OPTS,
-    )
-    .expect("pipeline failures surface in the report, not as Err");
+    let report = run_submit(sim.clone(), &TEST_OPTS, order);
+    let log = sim.invocation_log();
 
     assert!(!report.is_success());
     let wait = task_id("ray-wait");
@@ -247,14 +268,19 @@ fn job_failed_terminal_state() {
     );
     assert!(report.failed[&wait].contains("raysubmit_abc123"));
     assert_eq!(
-        count_invocations(&sim, "job status"),
+        count_invocations(&log, "job status"),
         1,
         "a FAILED terminal state must fail fast, without re-polling"
     );
+    log
 }
 
 #[test]
 fn status_endpoint_flapping_then_timeout() {
+    assert_scenario_replays(SEED, check_flapping_timeout);
+}
+
+fn check_flapping_timeout(order: Option<&mut CompletionSchedule>) -> Vec<SimEvent> {
     let sim = Arc::new(
         SimExecutor::builder()
             .seed(SEED)
@@ -275,9 +301,9 @@ fn status_endpoint_flapping_then_timeout() {
         timeout: Some(Duration::from_millis(50)),
     };
     let start = Instant::now();
-    let report = submit_job(sim.clone(), &fleet_config(), JOB_NAME, ENTRYPOINT, &opts)
-        .expect("pipeline failures surface in the report, not as Err");
+    let report = run_submit(sim.clone(), &opts, order);
     let elapsed = start.elapsed();
+    let log = sim.invocation_log();
 
     assert!(!report.is_success());
     let wait = task_id("ray-wait");
@@ -290,14 +316,14 @@ fn status_endpoint_flapping_then_timeout() {
         "expected a timeout failure: {report:?}"
     );
     assert!(
-        count_invocations(&sim, "job status") > 1,
-        "non-zero status exits are retried until the timeout; log: {:#?}",
-        sim.invocation_log()
+        count_invocations(&log, "job status") > 1,
+        "non-zero status exits are retried until the timeout; log: {log:#?}"
     );
     assert!(
         elapsed < Duration::from_secs(5),
         "the timeout spin should be fast; took {elapsed:?}"
     );
+    log
 }
 
 #[test]
