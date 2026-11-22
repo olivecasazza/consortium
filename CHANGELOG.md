@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking Changes
 
+- Scripted `ScriptedExecutor`/`SimExecutor` replies must match the real CLIs:
+  Slurm `Submitted batch job N` (newline-terminated, no leading zero, within
+  `u32`); Ray the `Job '<id>' submitted successfully` banner — a bare
+  `raysubmit_…` line is no longer a receipt.
 - Bumped the workspace to 0.3.0: published 0.2.0 Rust APIs were already
   incompatible with the current source, so the next release declares a
   pre-1.0 breaking change rather than claiming 0.2.0 compatibility.

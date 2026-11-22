@@ -66,14 +66,16 @@ from the job outcome. The field is absent if execution never reaches submission.
 | `{"state":"unknown"}` | The job may exist, but the reply did not establish acceptance or rejection. |
 
 **Do not rerun an `unknown` submission blindly.** `cast` does not retry, wait,
-or collect output after an uncertain reply. Use the endpoint in the diagnostic
-to investigate without changing scheduler state:
+or collect output after an uncertain reply. The diagnostic is the submit
+entry's `error` under `phases`; use the endpoint shown there to investigate
+without changing scheduler state:
 
 - **Slurm:** On the actual submit host, check `squeue` for active jobs and
   `sacct` for accounting history. Match the submitting user, submission time,
   and job name; inspect candidate job IDs.
-- **Ray:** Use `ray job list --address "$RAY_ADDRESS"` or the dashboard at the
-  same address. Compare entrypoints and submission times. The adapter's
+- **Ray:** Use `ray job list --address <address from the diagnostic>` (it
+  comes from the fleet's `rayConfig`) or the dashboard at the same address.
+  Compare entrypoints and submission times. The adapter's
   `--name` is not a unique Ray job ID.
 
 A matching name alone does not identify the job, and an empty lookup does not

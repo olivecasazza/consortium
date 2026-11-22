@@ -3,8 +3,8 @@
 //! The [CLI banner] follows a successful jobs POST. On failure, only the
 //! [head's request validation] is identified as a rejection before dispatch.
 //!
-//! [CLI banner]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/dashboard/modules/job/cli.py#L270-L300
-//! [head's request validation]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/dashboard/modules/job/job_head.py#L477-L504
+//! [CLI banner]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/dashboard/modules/job/cli.py#L278-L308
+//! [head's request validation]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/dashboard/modules/job/job_head.py#L481-L513
 
 use std::path::Path;
 

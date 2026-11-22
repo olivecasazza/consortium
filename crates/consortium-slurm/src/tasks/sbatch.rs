@@ -6,6 +6,11 @@ const SUBMITTED: &str = "Submitted batch job ";
 const FAILED: &str = "sbatch: error: Batch job submission failed: ";
 const PARTITION_DETAIL: &str = "sbatch: error: invalid partition specified: ";
 
+/// OpenSSH's first-contact notice wraps an arbitrary `<host>` (<keytype>)
+/// between a fixed prefix and suffix.
+const SSH_NOTICE_PREFIX: &str = "Warning: Permanently added ";
+const SSH_NOTICE_SUFFIX: &str = " to the list of known hosts.";
+
 /// The wait task can address a single unqualified numeric job ID on the submit node.
 /// Upstream sbatch prints `Submitted batch job %u` followed by a newline. Without
 /// the terminator, even valid-looking digits might be the prefix of a different ID.
@@ -35,12 +40,17 @@ pub(super) fn acknowledged_job_id(output: &ExecOutput) -> Option<u64> {
 
 /// Recognize the controller's invalid-partition refusal, optionally preceded by
 /// its partition detail. Require sbatch's default error status as well: SSH loss,
-/// a signal, or a timeout is not a scheduler refusal.
+/// a signal, or a timeout is not a scheduler refusal. OpenSSH first-contact
+/// host-key notices are not part of the refusal and are ignored.
 pub(super) fn rejected_invalid_partition(output: &ExecOutput) -> bool {
     if output.status != 1 || !output.stdout.is_empty() || !output.stderr.ends_with('\n') {
         return false;
     }
-    let mut lines = output.stderr.lines().rev();
+    let mut lines = output
+        .stderr
+        .lines()
+        .filter(|line| !(line.starts_with(SSH_NOTICE_PREFIX) && line.ends_with(SSH_NOTICE_SUFFIX)))
+        .rev();
     let reason = lines.next().and_then(|line| line.strip_prefix(FAILED));
     if reason != Some("Invalid partition name specified") {
         return false;

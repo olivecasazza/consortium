@@ -84,6 +84,41 @@ fn recognizes_ray_request_validation_before_dispatch() {
     }
 }
 
+/// `ray job submit --no-wait` stdout captured from a Ray 2.48.0 head
+/// (record mode, ANSI colors), exit status 0.
+const RAY_2_48_SUBMIT: &str = concat!(
+    "2026-11-21 20:10:38,983\tINFO cli.py:41 -- \x1b[37mJob submission server address\x1b[39m: \x1b[1mhttp://127.0.0.1:32769\x1b[22m\n",
+    "2026-11-21 20:10:38,997\tSUCC cli.py:65 -- \x1b[32m-------------------------------------------------------\x1b[39m\n",
+    "2026-11-21 20:10:38,997\tSUCC cli.py:66 -- \x1b[32mJob 'raysubmit_uu2CE2GQXM5dGyiW' submitted successfully\x1b[39m\n",
+    "2026-11-21 20:10:38,997\tSUCC cli.py:67 -- \x1b[32m-------------------------------------------------------\x1b[39m\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:291 -- \x1b[36mNext steps\x1b[39m\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:292 -- Query the logs of the job:\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:294 -- \x1b[1mray job logs raysubmit_uu2CE2GQXM5dGyiW\x1b[22m\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:296 -- Query the status of the job:\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:298 -- \x1b[1mray job status raysubmit_uu2CE2GQXM5dGyiW\x1b[22m\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:300 -- Request the job to be stopped:\n",
+    "2026-11-21 20:10:38,997\tINFO cli.py:302 -- \x1b[1mray job stop raysubmit_uu2CE2GQXM5dGyiW\x1b[22m\n",
+);
+
+#[test]
+fn classifies_a_real_ray_2_48_record_mode_submission() {
+    assert_eq!(
+        classify(&ExecOutput::new(0, RAY_2_48_SUBMIT, "")),
+        Reply::Accepted("raysubmit_uu2CE2GQXM5dGyiW")
+    );
+}
+
+#[test]
+fn only_exit_status_1_confirms_rejection() {
+    for status in [0, 2, 255, -1] {
+        assert_eq!(
+            classify(&ExecOutput::new(status, "", INVALID_REQUEST)),
+            Reply::Unknown,
+            "status {status}"
+        );
+    }
+}
+
 #[test]
 fn unrelated_or_nested_diagnostics_never_prove_rejection() {
     let nested = format!(

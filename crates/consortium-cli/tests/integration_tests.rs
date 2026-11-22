@@ -471,6 +471,20 @@ fn cli_execution_reports_outcomes_from_real_child_processes() {
             let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(report["integration"], name);
             assert_eq!(report["success"], !fail);
+            let expected_submission = if fail {
+                None
+            } else if name == "slurm" {
+                Some(serde_json::json!({"state": "accepted", "job_id": "12345"}))
+            } else if name == "ray" {
+                Some(serde_json::json!({"state": "accepted", "job_id": "raysubmit_123"}))
+            } else {
+                None
+            };
+            assert_eq!(
+                report.get("submission"),
+                expected_submission.as_ref(),
+                "{name}: submission receipt"
+            );
             if fail {
                 assert!(report["failed"].as_u64().unwrap() > 0);
                 let trace = std::fs::read_to_string(log).unwrap();

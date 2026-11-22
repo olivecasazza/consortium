@@ -24,7 +24,11 @@ pub enum SubmissionReceipt {
 }
 
 /// Read the receipt, if a submit task actually ran in this invocation.
-pub(crate) fn receipt(ctx: &DagContext) -> Option<SubmissionReceipt> {
+///
+/// The reader for custom `DagBuilder` pipelines that run `SlurmSubmitTask`
+/// or `RaySubmitTask` directly; the integration path instead returns the
+/// receipt through `Integration::execute_with_receipt`.
+pub fn receipt(ctx: &DagContext) -> Option<SubmissionReceipt> {
     ctx.get_state(RECEIPT_KEY)
 }
 

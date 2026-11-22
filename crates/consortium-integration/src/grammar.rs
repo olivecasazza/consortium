@@ -436,6 +436,10 @@ pub trait Integration: Send + Sync {
     }
 
     /// Execute only the phase selection validated and bound to this configuration.
+    ///
+    /// This delegates to `execute_with_receipt`, so an implementation that
+    /// overrides `execute_detailed` alone is bypassed by
+    /// `execute_with_receipt`; override `execute_with_receipt` instead.
     fn execute_detailed(
         &self,
         exec: Arc<dyn Executor>,
@@ -447,6 +451,9 @@ pub trait Integration: Send + Sync {
     }
 
     /// Execute the bound plan once, retaining a receipt when a submit task ran.
+    ///
+    /// This is the canonical execution path. `ExecutionWithReceipt` is
+    /// non-exhaustive, so overrides delegate to another implementation.
     fn execute_with_receipt(
         &self,
         exec: Arc<dyn Executor>,
