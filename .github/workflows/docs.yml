@@ -4,8 +4,6 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
-  # Note: release docs are deployed by the release workflow directly
-  # (GITHUB_TOKEN events don't trigger other workflows)
 
 permissions:
   contents: write
@@ -14,6 +12,11 @@ jobs:
   docs:
     name: Build & Deploy Docs
     runs-on: ubuntu-latest
+    # The only gh-pages writer. Overlapping pushes reject the later one, so
+    # runs queue instead of racing.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +37,7 @@ jobs:
         run: |
           mkdir -p site
           cp -r target/doc site/latest
+          cp -r target/doc site/master
           echo '<meta http-equiv="refresh" content="0; url=latest/consortium/index.html">' \
             > site/index.html
 
