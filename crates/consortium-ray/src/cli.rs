@@ -1,6 +1,10 @@
 //! Lines printed by Ray's `cli_logger`. Without a TTY each line is a record,
-//! `<time>\t<LEVEL> cli.py:<line> -- <message>`, and the message may still be
-//! wrapped in one ANSI color.
+//! `<time>\t<LEVEL> cli.py:<line> -- <message>` ([record format]
+//! [cli_logger rendering]), and the message may still be wrapped in one ANSI
+//! color.
+//!
+//! [record format]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/_private/ray_constants.py#L235
+//! [cli_logger rendering]: https://github.com/ray-project/ray/blob/ray-2.48.0/python/ray/autoscaler/_private/cli_logger.py#L369-L422
 
 /// The message of a `cli.py` record logged at `level`, or of a plain (TTY) line.
 ///

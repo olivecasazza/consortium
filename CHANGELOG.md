@@ -6,12 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking Changes
 
+- Scripted `ScriptedExecutor`/`SimExecutor` replies must match the real CLIs:
+  Slurm `Submitted batch job N` (newline-terminated, no leading zero, within
+  `u32`); Ray the `Job '<id>' submitted successfully` banner — a bare
+  `raysubmit_…` line is no longer a receipt.
 - Bumped the workspace to 0.3.0: published 0.2.0 Rust APIs were already
   incompatible with the current source, so the next release declares a
   pre-1.0 breaking change rather than claiming 0.2.0 compatibility.
 
 ### Features
 
+- Slurm and Ray report submission receipts; a lost acknowledgment yields `unknown` without a retry, wait, or output collection.
 - `cast deploy` prints a start line and a finish line (with duration) per
   host for the copy and activate stages, so a host that blocks mid-stage
   names itself. `--activate-timeout SECONDS` kills any single activation

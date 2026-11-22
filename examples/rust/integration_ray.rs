@@ -41,10 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scripted = Arc::new(
         ScriptedExecutor::new()
             .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-            // submit output must contain the job id line for ray-wait to poll.
             .on(
                 "job submit",
-                ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
+                ExecOutput::ok("Job 'raysubmit_abc123' submitted successfully\n"),
             )
             .on("job status", ExecOutput::ok("Status: SUCCEEDED\n")),
     );

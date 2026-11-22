@@ -10,18 +10,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use consortium::dag::{DagReport, DagTask};
-use consortium_integration::exec::{ExecOutput, Executor, Rule, ScriptedExecutor};
+use consortium_integration::exec::{
+    CommandSpec, ExecError, ExecOutput, Executor, Rule, ScriptedExecutor,
+};
 use consortium_integration::fleet::{DeploymentNode, FleetConfig, ProfileType, RayFleetConfig};
+use consortium_integration::grammar::{Integration, Request};
+use consortium_integration::submission::SubmissionReceipt;
 use consortium_integration_testkit::{
     integration_contract_tests, Contract, OptionVariant, PartialFailure, Phase,
 };
 use consortium_ray::tasks::{NixBuildRayEnvTask, RaySubmitTask, RayWaitTask};
-use consortium_ray::{submit_job, RayError, RayOptions};
+use consortium_ray::{submit_job, RayError, RayIntegration, RayOptions};
 
 // ── Shared fixtures ─────────────────────────────────────────────────────────
 
 const JOB_NAME: &str = "train";
 const ENTRYPOINT: &str = "python train.py";
+const SUBMIT_ACK: &str = "Job 'raysubmit_abc123' submitted successfully\n";
 
 fn fleet_config(with_ray: bool) -> FleetConfig {
     let mut nodes = HashMap::new();
@@ -59,10 +64,7 @@ fn fleet_config(with_ray: bool) -> FleetConfig {
 fn happy() -> ScriptedExecutor {
     ScriptedExecutor::new()
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-        .on(
-            "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-        )
+        .on("job submit", ExecOutput::ok(SUBMIT_ACK))
         .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
 }
 
@@ -71,10 +73,7 @@ fn failing(marker: &str) -> ScriptedExecutor {
     ScriptedExecutor::new()
         .rule(Rule::containing(marker, ExecOutput::new(1, "", "boom")))
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-        .on(
-            "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-        )
+        .on("job submit", ExecOutput::ok(SUBMIT_ACK))
         .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
 }
 
@@ -175,3 +174,80 @@ impl Contract for RayContract {
 }
 
 integration_contract_tests!(RayContract);
+
+// ── Submission receipts ─────────────────────────────────────────────────────
+
+fn receipt_plan(config: &FleetConfig) -> consortium_integration::grammar::Plan {
+    let request = Request::default()
+        .with("name", JOB_NAME)
+        .with("entrypoint", ENTRYPOINT)
+        .with("wait", "true");
+    RayIntegration.plan(config, &request).unwrap()
+}
+
+/// An executor whose `ray` cannot be spawned at all; every other command is
+/// delegated to the scripted executor.
+struct SubmitUnspawnable {
+    scripted: Arc<ScriptedExecutor>,
+}
+
+impl Executor for SubmitUnspawnable {
+    fn exec(&self, spec: &CommandSpec) -> Result<ExecOutput, ExecError> {
+        if spec.render().contains("job submit") {
+            return Err(ExecError::Spawn {
+                program: spec.program.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "no ray binary on PATH"),
+            });
+        }
+        self.scripted.exec(spec)
+    }
+}
+
+#[test]
+fn post_spawn_submit_errors_leave_the_receipt_unknown() {
+    let exec = Arc::new(
+        ScriptedExecutor::new()
+            .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
+            .on_error("job submit", "connection reset")
+            .on("job status", ExecOutput::ok("Status: SUCCEEDED\n")),
+    );
+    let config = fleet_config(true);
+    let plan = receipt_plan(&config);
+    let result = RayIntegration
+        .execute_with_receipt(exec.clone(), &config, &plan)
+        .unwrap();
+    assert_eq!(result.submission, Some(SubmissionReceipt::Unknown));
+    let error = result
+        .execution
+        .report
+        .phases
+        .iter()
+        .find(|phase| phase.phase == "submit")
+        .and_then(|phase| phase.error.as_deref())
+        .expect("submit phase must fail");
+    assert!(error.contains("connection reset"), "{error}");
+    exec.assert_invoked_containing("job submit");
+    // Wait must never poll a job whose ID was never established.
+    exec.assert_not_invoked_containing("job status");
+}
+
+#[test]
+fn spawn_failures_are_not_submitted_and_wait_never_polls() {
+    let scripted =
+        Arc::new(ScriptedExecutor::new().on("nix build", ExecOutput::ok("/nix/store/ray-env\n")));
+    let config = fleet_config(true);
+    let plan = receipt_plan(&config);
+    let result = RayIntegration
+        .execute_with_receipt(
+            Arc::new(SubmitUnspawnable {
+                scripted: scripted.clone(),
+            }),
+            &config,
+            &plan,
+        )
+        .unwrap();
+    assert_eq!(result.submission, Some(SubmissionReceipt::NotSubmitted));
+    // The delegated build ran; a poll would have been delegated and recorded.
+    scripted.assert_invoked_containing("nix build");
+    scripted.assert_not_invoked_containing("job status");
+}

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use clap::{Arg, ArgAction, ArgMatches, Command, FromArgMatches, Subcommand};
 use consortium_integration::fleet::FleetConfig;
-use consortium_integration::grammar::{Integration, ParameterKind, Request};
+use consortium_integration::grammar::{Integration, ParameterKind, Request, RunReport};
+use consortium_integration::submission::SubmissionReceipt;
 use consortium_integration::Executor;
 
 // Compiled from package.metadata.consortium.integrations; enrollment is gated by Nix.
@@ -177,17 +178,31 @@ pub fn dispatch(
         command.request.targets =
             crate::cast::resolve_targets(config, command.on.as_deref(), &command.tags)?;
     }
+    let plan = adapter.plan(config, &command.request)?;
     if command.plan_only {
-        let plan = adapter.plan(config, &command.request)?;
         render(&plan, format)?;
     } else {
-        let report = adapter.run(exec, config, &command.request)?;
-        render(&report, format)?;
+        let result = adapter.execute_with_receipt(exec, config, &plan)?;
+        let report = result.execution.report;
+        let output = CliRunReport {
+            report: &report,
+            submission: result.submission,
+        };
+        render(&output, format)?;
         if !report.success {
             anyhow::bail!("{}: integration run failed", report.integration);
         }
     }
     Ok(())
+}
+
+/// Keep the established report shape, adding a receipt only for submit runs.
+#[derive(serde::Serialize)]
+struct CliRunReport<'a> {
+    #[serde(flatten)]
+    report: &'a RunReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submission: Option<SubmissionReceipt>,
 }
 
 fn render(value: &impl serde::Serialize, format: &str) -> anyhow::Result<()> {

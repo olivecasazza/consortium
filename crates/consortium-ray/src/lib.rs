@@ -15,6 +15,7 @@ pub use integration::RayIntegration;
 
 mod cli;
 pub mod error;
+mod receipt;
 pub mod tasks;
 
 pub use error::{RayError, Result};
@@ -107,7 +108,10 @@ mod typed_contract_tests {
         Arc::new(
             ScriptedExecutor::new()
                 .on("nix build", ExecOutput::ok("/nix/store/env"))
-                .on("job submit", ExecOutput::ok("raysubmit_test"))
+                .on(
+                    "job submit",
+                    ExecOutput::ok("Job 'raysubmit_test' submitted successfully"),
+                )
                 .on("job status", ExecOutput::ok("Status: RUNNING")),
         )
     }

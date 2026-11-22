@@ -135,7 +135,7 @@ mod typed_contract_tests {
             ScriptedExecutor::new()
                 .on("nix build", ExecOutput::ok("/nix/store/env"))
                 .on("nix copy", ExecOutput::ok(""))
-                .on("sbatch", ExecOutput::ok("Submitted batch job 17"))
+                .on("sbatch", ExecOutput::ok("Submitted batch job 17\n"))
                 .on("sacct", ExecOutput::ok("RUNNING")),
         )
     }

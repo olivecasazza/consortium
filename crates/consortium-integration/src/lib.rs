@@ -22,6 +22,7 @@
 //!   payloads.
 //! - [`report`] — the [`report::IntegrationReport`] trait every integration's
 //!   report type satisfies.
+//! - [`submission`] — invocation-scoped scheduler acknowledgments for submit tasks.
 //!
 //! # Testing integrations
 //!
@@ -43,6 +44,7 @@ pub mod fleet;
 pub mod grammar;
 pub mod report;
 pub mod staging;
+pub mod submission;
 
 pub use exec::{
     shell_quote, ssh_argv, CommandSpec, Effect, ExecError, ExecOutput, Executor, ProcessExecutor,

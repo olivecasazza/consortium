@@ -19,6 +19,8 @@ use consortium_slurm::tasks::{
 };
 use consortium_slurm::{submit_job, SubmitOptions};
 
+mod sbatch_receipts;
+
 // ── Shared fixtures ─────────────────────────────────────────────────────────
 
 fn fleet_config(with_slurm: bool) -> FleetConfig {
@@ -54,26 +56,24 @@ fn fleet_config(with_slurm: bool) -> FleetConfig {
     }
 }
 
-fn happy() -> ScriptedExecutor {
+fn pipeline(exec: ScriptedExecutor) -> ScriptedExecutor {
     // nix rules come before ssh-wrapped rules (broad ssh substrings would
     // also match the `ssh-ng://` copy rendering); every rule here is
-    // phase-specific, so order only matters against the failing-rule prefix
-    // in `failing()` below.
-    ScriptedExecutor::new()
-        .on("nix build", ExecOutput::ok("/nix/store/env\n"))
+    // phase-specific. Earlier rules on the executor can override them.
+    exec.on("nix build", ExecOutput::ok("/nix/store/env\n"))
         .on("nix copy", ExecOutput::ok(""))
         .on("sbatch", ExecOutput::ok("Submitted batch job 12345\n"))
         .on("sacct", ExecOutput::ok("COMPLETED\n"))
 }
 
+fn happy() -> ScriptedExecutor {
+    pipeline(ScriptedExecutor::new())
+}
+
 fn failing(marker: &str) -> ScriptedExecutor {
     // The failing rule comes FIRST: ScriptedExecutor is first-match-wins.
-    ScriptedExecutor::new()
-        .rule(Rule::containing(marker, ExecOutput::new(1, "", "boom")))
-        .on("nix build", ExecOutput::ok("/nix/store/env\n"))
-        .on("nix copy", ExecOutput::ok(""))
-        .on("sbatch", ExecOutput::ok("Submitted batch job 12345\n"))
-        .on("sacct", ExecOutput::ok("COMPLETED\n"))
+    let failure = Rule::containing(marker, ExecOutput::new(1, "", "boom"));
+    pipeline(ScriptedExecutor::new().rule(failure))
 }
 
 // ── The contract under test ─────────────────────────────────────────────────

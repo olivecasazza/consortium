@@ -51,6 +51,16 @@ responses fail closed. SkyPilot
 launches a named cluster from task YAML with optional teardown. Job and
 cluster integrations reject host selectors rather than ignoring them.
 
+Slurm and Ray expose a per-run receipt through `Integration::execute_with_receipt`
+on the same DAG and through the CLI's optional top-level JSON `submission` field.
+Omit the field when no submit phase runs. Only an unambiguous positive
+acknowledgment with a valid job ID yields `accepted` with `job_id`; acceptance
+does not imply job success. Only explicit scheduler refusal yields `rejected`;
+a known failure to launch the submit command yields `not-submitted`.
+An inconclusive reply yields `unknown` and preserves the endpoint diagnostic.
+Only `accepted` carries an ID. On `unknown`, do not resubmit, wait, or collect.
+The existing `RunReport` and `ExecutionResult` shapes remain unchanged.
+
 Resource release requires a selected, confirmed acquisition immediately
 before it. Ambiguous or multi-resource lifecycle declarations are rejected.
 SkyPilot reports released, retained, uncertain, and cleanup-failed resource
