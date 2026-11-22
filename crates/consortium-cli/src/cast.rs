@@ -1094,13 +1094,15 @@ mod tests {
         dead.target_host = "198.51.100.7".into();
         config.nodes.insert("dead".into(), dead);
 
+        // First match wins: the remote probes also run `hostname`, so the
+        // local hostname rule comes last.
         let exec = ScriptedExecutor::new()
-            .on("hostname", ExecOutput::ok("workstation.lan\n"))
             .on("198.51.100.7", ExecOutput::new(255, "", "refused"))
             .on("dead.local", ExecOutput::new(255, "", "refused"))
-            .on(" dead 'true'", ExecOutput::new(255, "", "refused"))
+            .on(" dead 'hostname'", ExecOutput::new(255, "", "refused"))
             .on("192.0.2.1", ExecOutput::new(255, "", "stale"))
-            .on("filehost.local", ExecOutput::ok(""));
+            .on("filehost.local", ExecOutput::ok("filehost\n"))
+            .on("hostname", ExecOutput::ok("workstation.lan\n"));
         let targets = vec![
             "filehost".to_string(),
             "Workstation".to_string(),
@@ -1150,6 +1152,7 @@ mod tests {
                     "nixosConfigurations.filehost",
                     ExecOutput::ok("/nix/store/aaa-filehost-toplevel\n"),
                 )
+                .on("filehost.local 'hostname'", ExecOutput::ok("filehost\n"))
                 .on("filehost.local", ExecOutput::ok("")),
         );
         retry_copy_failures(

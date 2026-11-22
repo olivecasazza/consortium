@@ -61,6 +61,11 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- `cast deploy` uses a guessed endpoint (`<name>.local`, the bare name, or an
+  address they resolve to) only when `hostname` there reports the node's name.
+  A search-domain wildcard previously made the bare name of an offline Mac
+  resolve to an unrelated machine, which `cast` would have deployed to had it
+  accepted the login.
 - `claw -R exec` expands `%%` to a literal percent and leaves `%%h` as `%h`.
   Commands using a modulus expression now produce the same gathered groups as `clush`.
 - `cast --nix-args/--darwin-nix-args/--nixos-nix-args` accept values that start

@@ -12,9 +12,12 @@
 //! 4. the IPv4 addresses each of the above resolves to, in the same order,
 //!
 //! deduplicated, and picks the first endpoint that accepts a
-//! non-interactive `ssh … true`. The DNS lookup is injected so the probe
-//! order is testable without touching the network. When a connection over
-//! the chosen endpoint fails mid-deploy,
+//! non-interactive `ssh … true`. Every candidate except the configured
+//! `targetHost` is a guess derived from the node name, so it must also
+//! answer `ssh … hostname` with that name: a wildcard DNS record or a
+//! reused DHCP lease can point a guessed name at another machine. The DNS
+//! lookup is injected so the probe order is testable without touching the
+//! network. When a connection over the chosen endpoint fails mid-deploy,
 //! [`EndpointResolver::resolve_after_failure`] re-probes with that endpoint
 //! moved to the end.
 
@@ -101,8 +104,9 @@ impl<'a> EndpointResolver<'a> {
         out
     }
 
-    /// The first candidate accepting `ssh … true` as the node's user, or
-    /// [`NixError::SshFailed`] listing every endpoint tried.
+    /// The first candidate reachable as the node's user, or
+    /// [`NixError::SshFailed`] listing every endpoint tried. Guessed
+    /// candidates count only when `hostname` reports the node's name.
     pub fn resolve(&self, node: &DeploymentNode) -> Result<String> {
         validate_port(node)?;
         self.probe(node, &self.candidates(node))
@@ -122,23 +126,45 @@ impl<'a> EndpointResolver<'a> {
 
     fn probe(&self, node: &DeploymentNode, candidates: &[String]) -> Result<String> {
         let timeout = format!("-oConnectTimeout={}", self.connect_timeout);
+        let mut other_hosts = Vec::new();
         for candidate in candidates {
             let mut target = SshTarget::new(&node.target_user, candidate).extra_opt(&timeout);
             if let Some(port) = node.target_port {
                 target = target.port(port);
             }
-            let spec = CommandSpec::new("true").ssh(target);
-            if matches!(self.exec.exec(&spec), Ok(out) if out.success()) {
-                return Ok(candidate.clone());
+            if *candidate == node.target_host {
+                let spec = CommandSpec::new("true").ssh(target);
+                if matches!(self.exec.exec(&spec), Ok(out) if out.success()) {
+                    return Ok(candidate.clone());
+                }
+                continue;
             }
+            let spec = CommandSpec::new("hostname").ssh(target);
+            if let Ok(out) = self.exec.exec(&spec) {
+                if !out.success() {
+                    continue;
+                }
+                let reported = out.stdout.trim();
+                if bare_name(&node.name).eq_ignore_ascii_case(bare_name(reported)) {
+                    return Ok(candidate.clone());
+                }
+                other_hosts.push(format!("{candidate} is {reported:?}"));
+            }
+        }
+        let mut message = format!(
+            "no reachable ssh endpoint as {} (tried: {})",
+            node.target_user,
+            candidates.join(", ")
+        );
+        if !other_hosts.is_empty() {
+            message.push_str(&format!(
+                "; skipped other hosts: {}",
+                other_hosts.join(", ")
+            ));
         }
         Err(NixError::SshFailed {
             host: node.name.clone(),
-            message: format!(
-                "no reachable ssh endpoint as {} (tried: {})",
-                node.target_user,
-                candidates.join(", ")
-            ),
+            message,
         })
     }
 }
@@ -248,7 +274,7 @@ mod tests {
                 "mac01.local",
                 ExecOutput::new(255, "", "Connection timed out"),
             )
-            .on(" mac01 'true'", ExecOutput::ok(""));
+            .on(" mac01 'hostname'", ExecOutput::ok("mac01\n"));
         let r = EndpointResolver::new(&exec, &lookup).connect_timeout(3);
         let endpoint = r.resolve(&node("mac01", "192.0.2.9")).unwrap();
         assert_eq!(endpoint, "mac01");
@@ -256,9 +282,48 @@ mod tests {
         let calls = exec.invocations();
         assert_eq!(calls.len(), 3, "{calls:?}");
         assert!(calls[0].contains("-oConnectTimeout=3 -- 192.0.2.9 'true'"));
-        assert!(calls[1].contains("mac01.local 'true'"));
-        assert!(calls[2].contains("-l admin -oConnectTimeout=3 -- mac01 'true'"));
+        assert!(calls[1].contains("mac01.local 'hostname'"));
+        assert!(calls[2].contains("-l admin -oConnectTimeout=3 -- mac01 'hostname'"));
         exec.assert_invoked_containing("-oBatchMode=yes");
+    }
+
+    #[test]
+    fn guessed_endpoints_reaching_another_host_are_skipped() {
+        // A search-domain wildcard resolves the bare name to a machine that
+        // accepts the key but is not the node.
+        let wildcard = |name: &str| match name {
+            "mac01" => vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50))],
+            _ => vec![],
+        };
+        let exec = ScriptedExecutor::new()
+            .on("mac01.mesh.example", ExecOutput::new(255, "", "timed out"))
+            .on("mac01.local", ExecOutput::new(255, "", "timed out"))
+            .on("'hostname'", ExecOutput::ok("other-mac\n"));
+        let r = EndpointResolver::new(&exec, &wildcard);
+        let err = r.resolve(&node("mac01", "mac01.mesh.example")).unwrap_err();
+        match err {
+            NixError::SshFailed { message, .. } => assert!(
+                message.contains(
+                    r#"skipped other hosts: mac01 is "other-mac", 192.0.2.50 is "other-mac""#
+                ),
+                "{message}"
+            ),
+            other => panic!("expected SshFailed, got {other}"),
+        }
+        exec.assert_not_invoked_containing(" mac01 'true'");
+        exec.assert_not_invoked_containing("192.0.2.50 'true'");
+    }
+
+    #[test]
+    fn guessed_endpoint_reporting_the_node_name_is_used() {
+        let exec = ScriptedExecutor::new()
+            .on("192.0.2.9", ExecOutput::new(255, "", "refused"))
+            .on("mac01.local 'hostname'", ExecOutput::ok("MAC01.local\n"));
+        let r = EndpointResolver::new(&exec, &lookup);
+        assert_eq!(
+            r.resolve(&node("mac01", "192.0.2.9")).unwrap(),
+            "mac01.local"
+        );
     }
 
     #[test]
