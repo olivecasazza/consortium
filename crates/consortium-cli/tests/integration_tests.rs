@@ -428,7 +428,7 @@ case "$tool:${1-}:${2-}" in
         *sbatch*) printf 'Submitted batch job 12345\n' ;;
         *sacct*) printf 'COMPLETED\n' ;;
     esac ;;
-    ray:job:submit) printf 'Job submitted successfully\nraysubmit_123\n' ;;
+    ray:job:submit) printf "Job 'raysubmit_123' submitted successfully\n" ;;
     ray:job:status) printf 'Status: SUCCEEDED\n' ;;
 esac
 "#;

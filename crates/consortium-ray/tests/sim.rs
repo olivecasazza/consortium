@@ -41,6 +41,7 @@ use consortium_ray::{submit_job, RayOptions};
 const SEED: u64 = 0x1234;
 const JOB_NAME: &str = "train";
 const ENTRYPOINT: &str = "python train.py";
+const SUBMIT_ACK: &str = "Job 'raysubmit_abc123' submitted successfully\n";
 
 /// Instant-poll options: the scripted head answers SUCCEEDED on the first
 /// status check, so no timeout is needed on the happy path.
@@ -90,10 +91,7 @@ fn make_happy_sim() -> SimExecutor {
     SimExecutor::builder()
         .seed(SEED)
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-        .on(
-            "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-        )
+        .on("job submit", ExecOutput::ok(SUBMIT_ACK))
         .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
         .build()
 }
@@ -228,10 +226,7 @@ fn job_failed_terminal_state() {
         SimExecutor::builder()
             .seed(SEED)
             .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-            .on(
-                "job submit",
-                ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-            )
+            .on("job submit", ExecOutput::ok(SUBMIT_ACK))
             .on("job status", ExecOutput::ok("Status: FAILED\n"))
             .build(),
     );
@@ -271,10 +266,7 @@ fn status_endpoint_flapping_then_timeout() {
                 ExecOutput::new(1, "", "head node unreachable"),
             ))
             .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-            .on(
-                "job submit",
-                ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-            )
+            .on("job submit", ExecOutput::ok(SUBMIT_ACK))
             .build(),
     );
     let opts = RayOptions {

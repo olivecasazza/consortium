@@ -10,13 +10,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
-use consortium_integration::exec::{CommandSpec, Executor, SshTarget};
-use consortium_integration::staging;
+use consortium_integration::exec::{CommandSpec, ExecError, Executor, SshTarget};
+use consortium_integration::{staging, submission};
+
+mod sbatch;
 
 /// Fetch the shared executor from the DAG context.
-fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, TaskOutcome> {
+fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, &'static str> {
     ctx.get_state::<Arc<dyn Executor>>("executor")
-        .ok_or_else(|| TaskOutcome::Failed("executor not in context".into()))
+        .ok_or("executor not in context")
 }
 
 /// Build a hermetic job environment via nix.
@@ -40,7 +42,7 @@ impl DagTask for NixBuildJobEnvTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(reason) => return TaskOutcome::Failed(reason.into()),
         };
 
         match staging::build_flake_attr(&*exec, &self.flake_attr, None) {
@@ -71,7 +73,7 @@ impl DagTask for NixCopyToSubmitTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(reason) => return TaskOutcome::Failed(reason.into()),
         };
 
         let store_path: String =
@@ -110,11 +112,24 @@ pub struct SlurmSubmitTask {
     pub submit_user: String,
 }
 
+impl SlurmSubmitTask {
+    /// A job name is a search hint, not a scheduler-issued ID.
+    fn unknown(&self, ctx: &DagContext, evidence: impl std::fmt::Display) -> TaskOutcome {
+        submission::unknown(
+            ctx,
+            format_args!(
+                "sbatch for job {:?} on {}@{}: {evidence}",
+                self.job_name, self.submit_user, self.submit_host
+            ),
+        )
+    }
+}
+
 impl DagTask for SlurmSubmitTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(reason) => return submission::not_submitted(ctx, reason),
         };
 
         let mut args = vec![format!("--job-name={}", self.job_name)];
@@ -133,24 +148,25 @@ impl DagTask for SlurmSubmitTask {
             .args(args)
             .ssh(SshTarget::new(&self.submit_user, &self.submit_host));
 
-        match exec.exec(&spec) {
-            Ok(out) if out.success() => {
-                let Some(job_id) = out
-                    .stdout
-                    .trim()
-                    .strip_prefix("Submitted batch job ")
-                    .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .filter(|id| *id > 0)
-                else {
-                    return TaskOutcome::Failed("sbatch returned no valid job ID".into());
-                };
-                ctx.set_output(TaskId(format!("slurm-submit:{}", self.job_name)), job_id);
-                TaskOutcome::Success
-            }
-            Ok(out) => TaskOutcome::Failed(format!("sbatch failed: {}", out.stderr.trim())),
-            Err(e) => TaskOutcome::Failed(format!("sbatch exec failed: {e}")),
+        let output = match exec.exec(&spec) {
+            Ok(output) => output,
+            Err(error @ ExecError::Spawn { .. }) => return submission::not_submitted(ctx, error),
+            Err(error) => return self.unknown(ctx, error),
+        };
+        if let Some(job_id) = sbatch::acknowledged_job_id(&output) {
+            ctx.set_output(TaskId(format!("slurm-submit:{}", self.job_name)), job_id);
+            return submission::accepted(ctx, job_id);
         }
+        if sbatch::rejected_invalid_partition(&output) {
+            return submission::rejected(ctx, output.stderr.trim_end());
+        }
+        self.unknown(
+            ctx,
+            format_args!(
+                "ssh status {}; stdout={:?}; stderr={:?}",
+                output.status, output.stdout, output.stderr
+            ),
+        )
     }
 
     fn describe(&self) -> String {
@@ -203,7 +219,7 @@ impl DagTask for SlurmWaitTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(reason) => return TaskOutcome::Failed(reason.into()),
         };
 
         let job_id: u64 = match ctx.get_output(&TaskId(format!("slurm-submit:{}", self.job_name))) {
@@ -316,7 +332,7 @@ impl DagTask for SlurmCollectTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(reason) => return TaskOutcome::Failed(reason.into()),
         };
 
         let job_id: Option<u64> = ctx
@@ -353,40 +369,6 @@ impl DagTask for SlurmCollectTask {
 mod tests {
     use super::*;
     use consortium_integration::exec::{ExecOutput, ScriptedExecutor};
-
-    #[test]
-    fn test_sbatch_output_parsing() {
-        // sbatch outputs: "Submitted batch job 12345"
-        let output = "Submitted batch job 12345";
-        let job_id: u64 = output
-            .trim()
-            .rsplit_once(' ')
-            .and_then(|(_, id)| id.parse().ok())
-            .unwrap_or(0);
-        assert_eq!(job_id, 12345);
-    }
-
-    #[test]
-    fn test_sbatch_output_parsing_with_whitespace() {
-        let output = "Submitted batch job 99999\n";
-        let job_id: u64 = output
-            .trim()
-            .rsplit_once(' ')
-            .and_then(|(_, id)| id.parse().ok())
-            .unwrap_or(0);
-        assert_eq!(job_id, 99999);
-    }
-
-    #[test]
-    fn test_sbatch_output_parsing_unexpected() {
-        let output = "Error: something went wrong";
-        let job_id: u64 = output
-            .trim()
-            .rsplit_once(' ')
-            .and_then(|(_, id)| id.parse().ok())
-            .unwrap_or(0);
-        assert_eq!(job_id, 0); // fallback to 0 on parse failure
-    }
 
     #[test]
     fn test_slurm_job_states() {

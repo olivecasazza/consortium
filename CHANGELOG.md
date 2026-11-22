@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- Slurm and Ray report submission receipts; a lost acknowledgment yields `unknown` without a retry, wait, or output collection.
 - `cast deploy` prints a start line and a finish line (with duration) per
   host for the copy and activate stages, so a host that blocks mid-stage
   names itself. `--activate-timeout SECONDS` kills any single activation

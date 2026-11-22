@@ -8,25 +8,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use consortium::dag::{DagContext, DagTask, TaskId, TaskOutcome};
-use consortium_integration::exec::{CommandSpec, Executor};
-use consortium_integration::staging;
+use consortium_integration::exec::{CommandSpec, ExecError, Executor};
+use consortium_integration::{staging, submission};
 
 use crate::cli;
-/// Fetch the shared executor from the DAG context.
-fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, TaskOutcome> {
-    ctx.get_state::<Arc<dyn Executor>>("executor")
-        .ok_or_else(|| TaskOutcome::Failed("executor not in context".into()))
-}
+use crate::receipt::{classify, Reply};
 
-/// Parse the ray job ID out of `ray job submit` stdout.
-///
-/// Only one distinct, nonempty identifier is accepted.
-fn parse_job_id(stdout: &str) -> Option<String> {
-    let mut ids = stdout
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-        .filter(|word| word.starts_with("raysubmit_") && word.len() > "raysubmit_".len());
-    let id = ids.next()?;
-    ids.all(|other| other == id).then(|| id.to_owned())
+/// Fetch the shared executor from the DAG context.
+fn executor_from(ctx: &DagContext) -> Result<Arc<dyn Executor>, &'static str> {
+    ctx.get_state::<Arc<dyn Executor>>("executor")
+        .ok_or("executor not in context")
 }
 
 /// Read the job state from `ray job status`. Ray logs each terminal state at
@@ -83,7 +74,7 @@ impl DagTask for NixBuildRayEnvTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(message) => return TaskOutcome::Failed(message.into()),
         };
 
         match staging::build_flake_attr(&*exec, &self.flake_attr, None) {
@@ -111,13 +102,9 @@ pub struct RaySubmitTask {
     pub working_dir: Option<String>,
 }
 
-impl DagTask for RaySubmitTask {
-    fn execute(&self, ctx: &DagContext) -> TaskOutcome {
-        let exec = match executor_from(ctx) {
-            Ok(e) => e,
-            Err(outcome) => return outcome,
-        };
-
+impl RaySubmitTask {
+    /// Keep submission non-streaming: job logs must not be mistaken for a receipt.
+    fn command(&self, ctx: &DagContext) -> CommandSpec {
         let address = format!("http://{}:{}", self.head_address, self.dashboard_port);
 
         let mut spec = CommandSpec::new("ray").args([
@@ -137,22 +124,50 @@ impl DagTask for RaySubmitTask {
             spec = spec.args(["--working-dir".to_string(), env_path]);
         }
 
-        spec = spec.args(["--", "sh", "-c", &self.entrypoint]);
+        spec.args(["--", "sh", "-c", &self.entrypoint])
+    }
+}
 
-        let output = match exec.exec(&spec) {
-            Ok(o) => o,
-            Err(e) => return TaskOutcome::Failed(format!("ray submit failed: {}", e)),
+impl DagTask for RaySubmitTask {
+    fn execute(&self, ctx: &DagContext) -> TaskOutcome {
+        let exec = match executor_from(ctx) {
+            Ok(exec) => exec,
+            Err(message) => return submission::not_submitted(ctx, message),
         };
 
-        if output.success() {
-            let Some(job_id) = parse_job_id(&output.stdout) else {
-                return TaskOutcome::Failed("ray submit returned no unambiguous job ID".into());
-            };
-            ctx.set_output(TaskId(format!("ray-submit:{}", self.job_name)), job_id);
-            TaskOutcome::Success
-        } else {
-            TaskOutcome::Failed(format!("ray submit failed: {}", output.stderr.trim()))
-        }
+        let output = match exec.exec(&self.command(ctx)) {
+            Ok(output) => output,
+            Err(error @ ExecError::Spawn { .. }) => return submission::not_submitted(ctx, error),
+            Err(error) => {
+                return submission::unknown(
+                    ctx,
+                    format_args!(
+                        "ray job {:?} at http://{}:{}: {error}",
+                        self.job_name, self.head_address, self.dashboard_port
+                    ),
+                );
+            }
+        };
+
+        let report_error = match classify(&output) {
+            Reply::Accepted(id) => {
+                ctx.set_output(
+                    TaskId(format!("ray-submit:{}", self.job_name)),
+                    id.to_owned(),
+                );
+                return submission::accepted(ctx, id);
+            }
+            Reply::Rejected => submission::rejected,
+            Reply::Unknown => submission::unknown,
+        };
+        report_error(
+            ctx,
+            format_args!(
+                "ray job {:?} at http://{}:{}: ray job submit exit status {}; stdout: {:?}; stderr: {:?}",
+                self.job_name, self.head_address, self.dashboard_port,
+                output.status, output.stdout, output.stderr,
+            ),
+        )
     }
 
     fn describe(&self) -> String {
@@ -173,7 +188,7 @@ impl DagTask for RayWaitTask {
     fn execute(&self, ctx: &DagContext) -> TaskOutcome {
         let exec = match executor_from(ctx) {
             Ok(e) => e,
-            Err(outcome) => return outcome,
+            Err(message) => return TaskOutcome::Failed(message.into()),
         };
 
         let job_id: String = match ctx.get_output(&TaskId(format!("ray-submit:{}", self.job_name)))
@@ -264,34 +279,6 @@ mod tests {
         let ctx = DagContext::new();
         ctx.set_state("executor", exec);
         ctx
-    }
-
-    #[test]
-    fn test_ray_submit_job_id_parsing() {
-        // Ray job submit outputs a line like "raysubmit_abc123"
-        let stdout = "Job submitted successfully\nraysubmit_abc123def\nDone.";
-        assert_eq!(parse_job_id(stdout).as_deref(), Some("raysubmit_abc123def"));
-    }
-
-    #[test]
-    fn test_ray_submit_no_job_id() {
-        assert_eq!(parse_job_id("Some error output"), None);
-    }
-
-    #[test]
-    fn job_id_requires_one_unambiguous_identifier() {
-        for malformed in [
-            "",
-            "raysubmit_",
-            "notraysubmit_abc",
-            "raysubmit_a raysubmit_b",
-        ] {
-            assert_eq!(parse_job_id(malformed), None, "{malformed:?}");
-        }
-        assert_eq!(
-            parse_job_id("Job 'raysubmit_abc-123' submitted").as_deref(),
-            Some("raysubmit_abc-123")
-        );
     }
 
     #[test]
@@ -420,7 +407,7 @@ mod tests {
             working_dir: None,
         };
         match submit.execute(&ctx) {
-            TaskOutcome::Failed(msg) => assert!(msg.contains("executor not in context")),
+            TaskOutcome::Failed(msg) => assert_eq!(msg, "not submitted: executor not in context"),
             _ => panic!("expected Failed outcome"),
         }
     }
@@ -443,7 +430,7 @@ mod tests {
     fn test_submit_task_runs_scripted_ray_submit() {
         let scripted = Arc::new(ScriptedExecutor::new().on(
             "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
+            ExecOutput::ok("Job 'raysubmit_abc123' submitted successfully\n"),
         ));
         let ctx = test_ctx(scripted.clone());
         ctx.set_output(

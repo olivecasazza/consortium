@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::fleet::FleetConfig;
+use crate::submission::{self, SubmissionReceipt};
 use crate::{Executor, IntegrationReport};
 use consortium::dag::{DagBuilder, DagContext, DagTask, ErrorPolicy, TaskOutcome};
 
@@ -383,6 +384,15 @@ pub struct ExecutionResult {
     pub dag: consortium::dag::DagReport,
 }
 
+/// One execution and its scheduler receipt, independent of later phase failures.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ExecutionWithReceipt {
+    pub execution: ExecutionResult,
+    /// Absent when no submit task recorded a disposition in this invocation.
+    pub submission: Option<SubmissionReceipt>,
+}
+
 /// Object-safe adapter contract shared by CLI dispatch and parameterized tests.
 pub trait Integration: Send + Sync {
     fn grammar(&self) -> &'static Grammar;
@@ -432,6 +442,17 @@ pub trait Integration: Send + Sync {
         config: &FleetConfig,
         plan: &Plan,
     ) -> Result<ExecutionResult, IntegrationError> {
+        self.execute_with_receipt(exec, config, plan)
+            .map(|result| result.execution)
+    }
+
+    /// Execute the bound plan once, retaining a receipt when a submit task ran.
+    fn execute_with_receipt(
+        &self,
+        exec: Arc<dyn Executor>,
+        config: &FleetConfig,
+        plan: &Plan,
+    ) -> Result<ExecutionWithReceipt, IntegrationError> {
         let canonical = self.plan(
             config,
             &Request {
@@ -603,9 +624,12 @@ pub trait Integration: Send + Sync {
                 state,
             });
         }
-        Ok(ExecutionResult {
-            report: result,
-            dag: report,
+        Ok(ExecutionWithReceipt {
+            execution: ExecutionResult {
+                report: result,
+                dag: report,
+            },
+            submission: submission::receipt(&context),
         })
     }
 

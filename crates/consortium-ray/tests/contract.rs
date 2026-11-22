@@ -22,6 +22,7 @@ use consortium_ray::{submit_job, RayError, RayOptions};
 
 const JOB_NAME: &str = "train";
 const ENTRYPOINT: &str = "python train.py";
+const SUBMIT_ACK: &str = "Job 'raysubmit_abc123' submitted successfully\n";
 
 fn fleet_config(with_ray: bool) -> FleetConfig {
     let mut nodes = HashMap::new();
@@ -59,10 +60,7 @@ fn fleet_config(with_ray: bool) -> FleetConfig {
 fn happy() -> ScriptedExecutor {
     ScriptedExecutor::new()
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-        .on(
-            "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-        )
+        .on("job submit", ExecOutput::ok(SUBMIT_ACK))
         .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
 }
 
@@ -71,10 +69,7 @@ fn failing(marker: &str) -> ScriptedExecutor {
     ScriptedExecutor::new()
         .rule(Rule::containing(marker, ExecOutput::new(1, "", "boom")))
         .on("nix build", ExecOutput::ok("/nix/store/ray-env\n"))
-        .on(
-            "job submit",
-            ExecOutput::ok("Job submitted successfully\nraysubmit_abc123\n"),
-        )
+        .on("job submit", ExecOutput::ok(SUBMIT_ACK))
         .on("job status", ExecOutput::ok("Status: SUCCEEDED\n"))
 }
 

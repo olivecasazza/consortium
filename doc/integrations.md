@@ -53,6 +53,37 @@ The parameterized grammar suite lives in consortium-tests alongside the
 upstream parity and external integration suites. The design and acceptance
 criteria are in [.specs/draft/integration-grammar.md](../.specs/draft/integration-grammar.md).
 
+## Slurm and Ray submission receipts
+
+With `--format json`, inspect the run's top-level `submission` field separately
+from the job outcome. The field is absent if execution never reaches submission.
+
+| Receipt | Meaning |
+| --- | --- |
+| `{"state":"accepted","job_id":"123"}` | The scheduler acknowledged submission and supplied the ID. The job may still be queued, running, or unsuccessful. |
+| `{"state":"rejected"}` | The scheduler explicitly refused the submission. |
+| `{"state":"not-submitted"}` | The submit command did not launch. |
+| `{"state":"unknown"}` | The job may exist, but the reply did not establish acceptance or rejection. |
+
+**Do not rerun an `unknown` submission blindly.** `cast` does not retry, wait,
+or collect output after an uncertain reply. Use the endpoint in the diagnostic
+to investigate without changing scheduler state:
+
+- **Slurm:** On the actual submit host, check `squeue` for active jobs and
+  `sacct` for accounting history. Match the submitting user, submission time,
+  and job name; inspect candidate job IDs.
+- **Ray:** Use `ray job list --address "$RAY_ADDRESS"` or the dashboard at the
+  same address. Compare entrypoints and submission times. The adapter's
+  `--name` is not a unique Ray job ID.
+
+A matching name alone does not identify the job, and an empty lookup does not
+prove rejection. If the evidence is inconclusive, leave the outcome unknown.
+A manual rerun is a new submission and can create a duplicate.
+
+From the repository root, run `cargo test -p consortium-cli --test submission_receipts`
+to exercise the CLI against a synthetic scheduler that records admission and
+then drops the reply. This test does not contact a live cluster.
+
 ## Contract test suite
 
 Every integration implements `consortium_integration_testkit::Contract` and
